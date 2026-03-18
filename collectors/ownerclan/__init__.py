@@ -32,7 +32,7 @@ class OwnerclanCollector(BaseCollector):
 
         try:
             with sync_playwright() as p:
-                browser = p.chromium.launch(headless=False)
+                browser = p.chromium.launch(headless=True)
                 context = browser.new_context(accept_downloads=True)
                 page = context.new_page()
                 page.set_default_timeout(30000)
@@ -101,36 +101,10 @@ class OwnerclanCollector(BaseCollector):
 
                 print(f"[ownerclan] 다운로드 세트 생성 / idx={idx}")
 
-                # 7. 작업완료 대기 (최대 20분, 30초 간격)
-                completed = False
-                for attempt in range(40):
-                    status_text = page.evaluate(f"""
-                        () => {{
-                            const rows = document.querySelectorAll('table tr');
-                            for (const row of rows) {{
-                                const html = row.innerHTML || '';
-                                if (!html.includes('{idx}')) continue;
-                                if (html.includes('작업완료')) return '작업완료';
-                                if (html.includes('작업대기')) return '작업대기';
-                                if (html.includes('작업중')) return '작업중';
-                            }}
-                            return null;
-                        }}
-                    """)
-
-                    print(f"[ownerclan] 작업 상태: {status_text} ({attempt+1}/40)")
-
-                    if status_text == "작업완료":
-                        completed = True
-                        break
-
-                    time.sleep(30)
-                    page.reload()
-                    page.wait_for_load_state("networkidle")
-
-                if not completed:
-                    browser.close()
-                    return self._error("다운로드 세트 작업 시간 초과 (20분)")
+                # 7. 1시간 대기 후 다운로드 (작업 완료에 시간이 많이 걸림)
+                wait_seconds = int(os.getenv("OWNERCLAN_WAIT_SECONDS", "3600"))
+                print(f"[ownerclan] {wait_seconds}초 대기 후 다운로드 시작...")
+                time.sleep(wait_seconds)
 
                 # 8. showDownloadList 호출 → 하위 행(tr#downloadTr) 표시
                 page.evaluate(f"showDownloadList('{idx}')")
@@ -152,7 +126,7 @@ class OwnerclanCollector(BaseCollector):
                 # 브라우저 닫기 전에 프로젝트 downloads 폴더로 복사
                 import shutil
                 from datetime import datetime
-                downloads_dir = Path(r"C:\Users\cjh15\OneDrive\바탕 화면\테트리스")
+                downloads_dir = Path(os.getenv("DOWNLOADS_DIR", "/tmp/downloads"))
                 downloads_dir.mkdir(exist_ok=True)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 safe_path = str(downloads_dir / f"ownerclan_{timestamp}.zip")
