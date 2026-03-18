@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}도매처 통합 관리 시스템{% endblock %}</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'Malgun Gothic', sans-serif; background: #f5f5f5; color: #333; }
+        nav { background: #2c3e50; color: white; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; }
+        nav .logo { font-size: 16px; font-weight: bold; }
+        nav a { color: #ccc; text-decoration: none; font-size: 14px; }
+        nav a:hover { color: white; }
+        .container { max-width: 1200px; margin: 32px auto; padding: 0 24px; }
+        .card { background: white; border-radius: 8px; padding: 24px; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
+    </style>
+</head>
+<body>
+    {% block nav %}
+    <nav>
+        <span class="logo">도매처 통합 관리 시스템</span>
+        <a href="/logout">로그아웃</a>
+    </nav>
+    {% endblock %}
+
+    <div class="container">
+        {% block content %}{% endblock %}
+    </div>
+</body>
+</html>

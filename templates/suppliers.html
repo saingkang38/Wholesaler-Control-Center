@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}공급사 코드 관리{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2 style="font-size:18px; margin-bottom:4px;">공급사 코드 관리</h2>
+    <p style="font-size:13px; color:#888;">수집할 오너클랜 공급사 코드를 등록하세요.</p>
+</div>
+
+<div class="card">
+    <h3 style="font-size:15px; margin-bottom:16px;">공급사 코드 추가</h3>
+    <form method="POST" action="/suppliers/add" style="display:flex; gap:8px; flex-wrap:wrap;">
+        <input type="text" name="supplier_code" placeholder="공급사 코드 (필수)" required
+            style="padding:8px 12px; border:1px solid #ddd; border-radius:4px; font-size:14px; width:200px;">
+        <input type="text" name="supplier_name" placeholder="공급사 이름 (선택)"
+            style="padding:8px 12px; border:1px solid #ddd; border-radius:4px; font-size:14px; width:200px;">
+        <button type="submit"
+            style="padding:8px 20px; background:#2c3e50; color:white; border:none; border-radius:4px; font-size:14px; cursor:pointer;">
+            추가
+        </button>
+    </form>
+</div>
+
+<div class="card">
+    <h3 style="font-size:15px; margin-bottom:16px;">등록된 공급사 코드</h3>
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead>
+            <tr style="background:#f0f0f0;">
+                <th style="padding:8px; text-align:left;">공급사 코드</th>
+                <th style="padding:8px; text-align:left;">공급사 이름</th>
+                <th style="padding:8px; text-align:center;">상태</th>
+                <th style="padding:8px; text-align:left;">등록일</th>
+                <th style="padding:8px; text-align:center;">관리</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for s in suppliers %}
+            <tr style="border-bottom:1px solid #eee;">
+                <td style="padding:8px;">{{ s.supplier_code }}</td>
+                <td style="padding:8px; color:#555;">{{ s.supplier_name or '-' }}</td>
+                <td style="padding:8px; text-align:center;">
+                    <form method="POST" action="/suppliers/toggle/{{ s.id }}" style="display:inline;">
+                        <button type="submit"
+                            style="padding:4px 12px; border:none; border-radius:4px; font-size:12px; cursor:pointer;
+                            background:{{ '#27ae60' if s.is_active else '#bbb' }}; color:white;">
+                            {{ '활성' if s.is_active else '비활성' }}
+                        </button>
+                    </form>
+                </td>
+                <td style="padding:8px; color:#888;">{{ s.created_at.strftime('%Y-%m-%d') }}</td>
+                <td style="padding:8px; text-align:center;">
+                    <form method="POST" action="/suppliers/delete/{{ s.id }}"
+                        onsubmit="return confirm('삭제하시겠습니까?')" style="display:inline;">
+                        <button type="submit"
+                            style="padding:4px 12px; background:#e74c3c; color:white; border:none; border-radius:4px; font-size:12px; cursor:pointer;">
+                            삭제
+                        </button>
+                    </form>
+                </td>
+            </tr>
+            {% else %}
+            <tr><td colspan="5" style="padding:12px; color:#aaa;">등록된 공급사 코드 없음</td></tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<div style="margin-top:8px;">
+    <a href="/" style="font-size:13px; color:#555;">← 대시보드로 돌아가기</a>
+</div>
+{% endblock %}
