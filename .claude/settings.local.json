@@ -1,7 +1,12 @@
 {
   "permissions": {
     "allow": [
-      "Bash(find /c/Users/saing/Documents/GitHub/Wholesaler-Control-Center -not -path */.git/* -type f -o -type d)"
+      "Bash(find /c/Users/saing/Documents/GitHub/Wholesaler-Control-Center -not -path */.git/* -type f -o -type d)",
+      "Bash(dir:*)",
+      "Read(//c/Users/saing/Desktop/on test/**)",
+      "Bash(python -c \":*)",
+      "Bash(python -c \"import sys; data=sys.stdin.buffer.read\\(\\); print\\(data.decode\\(''''utf-8'''', errors=''''replace''''\\)\\)\")",
+      "Bash(python:*)"
     ]
   }
 }

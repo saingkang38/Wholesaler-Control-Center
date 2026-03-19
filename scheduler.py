@@ -46,11 +46,13 @@ def run_ownerclan():
         compare(old_snapshot, items)
         save_snapshot(items, downloads_dir)
 
-        # DB 마스터 갱신 + 텔레그램용 변경사항 생성
+        # DB 마스터 갱신 + 스토어 동기화 + 액션 시그널 감지
         telegram_changes = None
         try:
             from app import create_app
             from app.master import process_master_update
+            from app.store import sync_store_products
+            from app.actions import detect_action_signals
             from app.wholesalers.models import Wholesaler
 
             flask_app = create_app()
@@ -68,6 +70,21 @@ def run_ownerclan():
                         "이미지변경": master_stats.get("image_change", 0),
                         "상품명변경": master_stats.get("name_change", 0),
                     }
+
+                    # 스토어 동기화
+                    try:
+                        store_stats = sync_store_products(wholesaler.id)
+                        logger.info(f"[scheduler] 스토어 동기화: {store_stats}")
+                    except Exception as e:
+                        logger.error(f"[scheduler] 스토어 동기화 실패: {e}")
+
+                    # 액션 시그널 감지
+                    try:
+                        signal_stats = detect_action_signals(wholesaler.id)
+                        logger.info(f"[scheduler] 액션 시그널: {signal_stats}")
+                    except Exception as e:
+                        logger.error(f"[scheduler] 액션 시그널 감지 실패: {e}")
+
         except Exception as e:
             logger.error(f"[scheduler] 마스터 업데이트 실패: {e}")
 
