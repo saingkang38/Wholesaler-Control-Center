@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}액션 관리{% endblock %}
+
+{% block content %}
+<style>
+  .tab-bar { display: flex; gap: 8px; margin-bottom: 20px; }
+  .tab-bar a {
+    padding: 8px 18px; border-radius: 6px; text-decoration: none;
+    font-size: 14px; background: #e9ecef; color: #333;
+  }
+  .tab-bar a.active { background: #2c3e50; color: white; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { background: #f8f9fa; padding: 10px 12px; text-align: left; border-bottom: 2px solid #dee2e6; }
+  td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+  tr:hover { background: #fafafa; }
+
+  .badge {
+    display: inline-block; padding: 3px 10px; border-radius: 12px;
+    font-size: 12px; font-weight: bold;
+  }
+  .badge-danger { background: #fee2e2; color: #dc2626; }
+  .badge-info { background: #dbeafe; color: #2563eb; }
+  .badge-warning { background: #fef3c7; color: #d97706; }
+  .badge-success { background: #d1fae5; color: #059669; }
+  .badge-dark { background: #e5e7eb; color: #374151; }
+
+  .btn { padding: 5px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  .btn-approve { background: #059669; color: white; }
+  .btn-reject { background: #dc2626; color: white; }
+  .btn-skip { background: #9ca3af; color: white; }
+  .btn:hover { opacity: 0.85; }
+
+  .empty { text-align: center; padding: 60px; color: #9ca3af; font-size: 15px; }
+</style>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+    <h2 style="font-size:18px;">액션 관리
+      {% if pending_count > 0 %}
+      <span class="badge badge-danger" style="margin-left:8px;">{{ pending_count }}</span>
+      {% endif %}
+    </h2>
+  </div>
+
+  <div class="tab-bar">
+    <a href="/actions?status=pending" class="{{ 'active' if status_filter == 'pending' }}">대기중</a>
+    <a href="/actions?status=executed" class="{{ 'active' if status_filter == 'executed' }}">실행완료</a>
+    <a href="/actions?status=rejected" class="{{ 'active' if status_filter == 'rejected' }}">거절</a>
+    <a href="/actions?status=skipped" class="{{ 'active' if status_filter == 'skipped' }}">건너뜀</a>
+  </div>
+
+  {% if rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>유형</th>
+        <th>상품명</th>
+        <th>판매자관리코드</th>
+        <th>현재값</th>
+        <th>제안값</th>
+        <th>감지일시</th>
+        {% if status_filter == 'pending' %}<th>처리</th>{% endif %}
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr id="row-{{ row.id }}">
+        <td><span class="badge badge-{{ row.badge }}">{{ row.label }}</span></td>
+        <td>{{ row.product_name }}</td>
+        <td>{{ row.seller_code }}</td>
+        <td>{{ row.current | tojson(ensure_ascii=False) }}</td>
+        <td>{{ row.suggested | tojson(ensure_ascii=False) }}</td>
+        <td>{{ row.detected_at }}</td>
+        {% if status_filter == 'pending' %}
+        <td style="white-space:nowrap;">
+          <button class="btn btn-approve" onclick="resolve({{ row.id }}, 'approve')">승인</button>
+          <button class="btn btn-reject" onclick="resolve({{ row.id }}, 'reject')">거절</button>
+          <button class="btn btn-skip" onclick="resolve({{ row.id }}, 'skip')">건너뜀</button>
+        </td>
+        {% endif %}
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">처리할 항목이 없습니다.</div>
+  {% endif %}
+</div>
+
+<script>
+function resolve(id, action) {
+  fetch(`/actions/${id}/resolve`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({action})
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok) {
+      const row = document.getElementById('row-' + id);
+      if (row) row.remove();
+    }
+  })
+  .catch(() => alert('처리 중 오류가 발생했습니다.'));
+}
+</script>
+{% endblock %}

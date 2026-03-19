@@ -28,6 +28,12 @@ def create_app():
     from app.collections import collections_bp
     from app.normalization import normalization_bp
     from app.suppliers import suppliers_bp
+    from app.master import master_bp
+    from app.master.models import MasterProduct, ProductEvent  # noqa: F401 - 테이블 생성용
+    from app.store import store_bp
+    from app.store.models import StoreProduct  # noqa: F401 - 테이블 생성용
+    from app.actions import actions_bp
+    from app.actions.models import ActionSignal  # noqa: F401 - 테이블 생성용
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)
@@ -36,6 +42,9 @@ def create_app():
     app.register_blueprint(collections_bp)
     app.register_blueprint(normalization_bp)
     app.register_blueprint(suppliers_bp)
+    app.register_blueprint(master_bp)
+    app.register_blueprint(store_bp)
+    app.register_blueprint(actions_bp)
 
     with app.app_context():
         db.create_all()

@@ -143,8 +143,8 @@ class OwnerclanCollector(BaseCollector):
                 browser.close()
 
                 # 10. ZIP 해제 + xlsx 파싱
-                items = self._parse_zip(safe_path)
-                print(f"[ownerclan] 파싱 완료: {len(items)}건")
+                items, total_rows = self._parse_zip(safe_path)
+                print(f"[ownerclan] 파싱 완료: {total_rows}건")
 
         except PlaywrightTimeout as e:
             return {
@@ -166,67 +166,70 @@ class OwnerclanCollector(BaseCollector):
 
         return {
             "success": True,
-            "total_items": len(items),
+            "total_items": total_rows,
             "total_pages": 1,
-            "success_count": len(items),
+            "success_count": total_rows,
             "fail_count": 0,
             "error_summary": None,
             "items": items,
         }
 
-    def _parse_zip(self, zip_path) -> list:
+    def _parse_zip(self, zip_path) -> tuple:
         import openpyxl
         items = []
+        total_rows = 0
 
         with tempfile.TemporaryDirectory() as tmpdir:
             with zipfile.ZipFile(zip_path, "r") as zf:
                 zf.extractall(tmpdir)
 
-            xlsx_files = list(Path(tmpdir).glob("*.xlsx"))
+            xlsx_files = sorted(Path(tmpdir).glob("*.xlsx"))
             if not xlsx_files:
                 raise Exception("ZIP 내 xlsx 파일 없음")
 
-            wb = openpyxl.load_workbook(xlsx_files[0], read_only=True, data_only=True)
-            ws = wb.active
-            rows = list(ws.iter_rows(values_only=True))
-            wb.close()
+            print(f"[ownerclan] xlsx 파일 수: {len(xlsx_files)}개")
 
-        if not rows:
-            return items
+            for xlsx_file in xlsx_files:
+                wb = openpyxl.load_workbook(str(xlsx_file), read_only=True, data_only=True)
+                ws = wb.active
+                rows = list(ws.iter_rows(values_only=True))
+                wb.close()
 
-        # 첫 번째 행이 그룹 헤더인 경우 두 번째 행을 실제 헤더로 사용
-        # 비어있지 않은 셀이 더 많은 행을 헤더로 선택
-        header_row_idx = 0
-        if len(rows) > 1:
-            count0 = sum(1 for h in rows[0] if h)
-            count1 = sum(1 for h in rows[1] if h)
-            if count1 > count0:
-                header_row_idx = 1
+                if not rows:
+                    continue
 
-        headers = [str(h).strip() if h is not None else "" for h in rows[header_row_idx]]
-        print(f"[ownerclan] xlsx 컬럼 (행{header_row_idx+1}): {headers}")
+                # 비어있지 않은 셀이 더 많은 행을 실제 헤더로 선택
+                header_row_idx = 0
+                if len(rows) > 1:
+                    count0 = sum(1 for h in rows[0] if h)
+                    count1 = sum(1 for h in rows[1] if h)
+                    if count1 > count0:
+                        header_row_idx = 1
 
-        col = self._map_columns(headers)
+                headers = [str(h).strip() if h is not None else "" for h in rows[header_row_idx]]
+                col = self._map_columns(headers)
 
-        for row in rows[header_row_idx + 1:]:
-            if not any(row):
-                continue
-            code = self._cell(row, col.get("code"))
-            if not code:
-                continue
-            items.append({
-                "source_product_code": str(code),
-                "product_name": self._cell(row, col.get("name")),
-                "price": self._parse_price(self._cell(row, col.get("price"))),
-                "supply_price": self._parse_price(self._cell(row, col.get("supply_price"))),
-                "status": STATUS_MAP.get(self._cell(row, col.get("status")) or "", "active"),
-                "image_url": self._cell(row, col.get("image_url")),
-                "detail_url": self._cell(row, col.get("detail_url")),
-                "stock_qty": self._parse_int(self._cell(row, col.get("stock_qty"))),
-                "category_name": self._cell(row, col.get("category_name")),
-            })
+                data_rows = [r for r in rows[header_row_idx + 1:] if any(r)]
+                total_rows += len(data_rows)
 
-        return items
+                for row in data_rows:
+                    code = self._cell(row, col.get("code"))
+                    if not code:
+                        continue
+                    items.append({
+                        "source_product_code": str(code),
+                        "product_name": self._cell(row, col.get("name")),
+                        "price": self._parse_price(self._cell(row, col.get("price"))),
+                        "supply_price": self._parse_price(self._cell(row, col.get("supply_price"))),
+                        "status": STATUS_MAP.get(self._cell(row, col.get("status")) or "", "active"),
+                        "image_url": self._cell(row, col.get("image_url")),
+                        "detail_url": self._cell(row, col.get("detail_url")),
+                        "stock_qty": self._parse_int(self._cell(row, col.get("stock_qty"))),
+                        "category_name": self._cell(row, col.get("category_name")),
+                    })
+
+        print(f"[ownerclan] 전체 데이터 행: {total_rows}개 / 파싱 성공: {len(items)}개")
+        return items, total_rows
 
     def _map_columns(self, headers) -> dict:
         mapping = {}
@@ -244,7 +247,7 @@ class OwnerclanCollector(BaseCollector):
                 mapping["stock_qty"] = i
             elif "상태" in h and "status" not in mapping:
                 mapping["status"] = i
-            elif ("이미지" in h and ("url" in h_lower or "주소" in h or "링크" in h)) and "image_url" not in mapping:
+            elif "이미지" in h and "image_url" not in mapping:
                 mapping["image_url"] = i
             elif ("상세" in h and ("url" in h_lower or "주소" in h or "링크" in h)) and "detail_url" not in mapping:
                 mapping["detail_url"] = i
