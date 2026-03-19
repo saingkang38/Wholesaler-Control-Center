@@ -7,9 +7,11 @@ import requests
 API_BASE = "https://api.commerce.naver.com/external"
 
 
-def _get_access_token() -> str:
-    client_id = os.getenv("NAVER_CLIENT_ID")
-    client_secret = os.getenv("NAVER_CLIENT_SECRET")
+def _get_access_token(client_id: str = None, client_secret: str = None) -> str:
+    if not client_id:
+        client_id = os.getenv("NAVER_CLIENT_ID")
+    if not client_secret:
+        client_secret = os.getenv("NAVER_CLIENT_SECRET")
 
     if not client_id or not client_secret:
         raise Exception("NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 미설정")
@@ -35,8 +37,8 @@ def _get_access_token() -> str:
     return resp.json()["access_token"]
 
 
-def get_products(page: int = 1, size: int = 100) -> dict:
-    token = _get_access_token()
+def get_products(page: int = 1, size: int = 100, client_id: str = None, client_secret: str = None) -> dict:
+    token = _get_access_token(client_id, client_secret)
     resp = requests.post(
         f"{API_BASE}/v1/products/search",
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
@@ -47,13 +49,13 @@ def get_products(page: int = 1, size: int = 100) -> dict:
     return resp.json()
 
 
-def get_all_products() -> list:
+def get_all_products(client_id: str = None, client_secret: str = None) -> list:
     all_items = []
     page = 1
     size = 100
 
     while True:
-        data = get_products(page=page, size=size)
+        data = get_products(page=page, size=size, client_id=client_id, client_secret=client_secret)
         items = data.get("contents", [])
         all_items.extend(items)
 
@@ -62,15 +64,11 @@ def get_all_products() -> list:
             break
         page += 1
 
-    print(f"[naver] 스토어 상품 조회 완료: {len(all_items)}개")
     return all_items
 
 
-def change_status(origin_product_no: int, status: str) -> bool:
-    """
-    status: SALE / SUSPENSION / CLOSE (판매중 / 판매중지 / 품절)
-    """
-    token = _get_access_token()
+def change_status(origin_product_no: int, status: str, client_id: str = None, client_secret: str = None) -> bool:
+    token = _get_access_token(client_id, client_secret)
     resp = requests.put(
         f"{API_BASE}/v1/products/origin-products/{origin_product_no}/change-status",
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
@@ -81,8 +79,8 @@ def change_status(origin_product_no: int, status: str) -> bool:
     return True
 
 
-def update_price(origin_product_no: int, sale_price: int) -> bool:
-    token = _get_access_token()
+def update_price(origin_product_no: int, sale_price: int, client_id: str = None, client_secret: str = None) -> bool:
+    token = _get_access_token(client_id, client_secret)
     resp = requests.patch(
         f"{API_BASE}/v1/products/origin-products/multi-update",
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},

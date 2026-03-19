@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}스토어 관리{% endblock %}
+
+{% block content %}
+<style>
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { background: #f8f9fa; padding: 10px 12px; text-align: left; border-bottom: 2px solid #dee2e6; }
+  td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+  tr:hover { background: #fafafa; }
+  .badge { display: inline-block; padding: 3px 10px; border-radius: 12px; font-size: 12px; font-weight: bold; }
+  .badge-active { background: #d1fae5; color: #059669; }
+  .badge-inactive { background: #f3f4f6; color: #9ca3af; }
+  .btn { padding: 5px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  .btn-primary { background: #2c3e50; color: white; }
+  .btn-warning { background: #d97706; color: white; }
+  .btn-danger { background: #dc2626; color: white; }
+  .btn:hover { opacity: 0.85; }
+  input[type=text], input[type=password] {
+    width: 100%; padding: 8px 10px; border: 1px solid #d1d5db;
+    border-radius: 4px; font-size: 14px;
+  }
+  .flash-success { background: #d1fae5; color: #065f46; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; }
+  .flash-error { background: #fee2e2; color: #991b1b; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; }
+</style>
+
+<div class="card">
+  <h2 style="font-size:18px; margin-bottom:20px;">스토어 관리</h2>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  {% if stores %}
+  <table style="margin-bottom:32px;">
+    <thead>
+      <tr>
+        <th>스토어명</th>
+        <th>애플리케이션 ID</th>
+        <th>상태</th>
+        <th>등록일</th>
+        <th>처리</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in stores %}
+      <tr>
+        <td>{{ s.store_name }}</td>
+        <td style="font-family:monospace; font-size:12px;">{{ s.client_id }}</td>
+        <td>
+          <span class="badge {{ 'badge-active' if s.is_active else 'badge-inactive' }}">
+            {{ '활성' if s.is_active else '비활성' }}
+          </span>
+        </td>
+        <td>{{ s.created_at.strftime('%Y-%m-%d') }}</td>
+        <td style="white-space:nowrap;">
+          <form method="post" action="/stores/{{ s.id }}/toggle" style="display:inline;">
+            <button class="btn btn-warning">{{ '비활성화' if s.is_active else '활성화' }}</button>
+          </form>
+          <form method="post" action="/stores/{{ s.id }}/delete" style="display:inline;"
+                onsubmit="return confirm('{{ s.store_name }} 스토어를 삭제할까요?')">
+            <button class="btn btn-danger">삭제</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:#9ca3af; margin-bottom:24px;">등록된 스토어가 없습니다.</p>
+  {% endif %}
+
+  <h3 style="font-size:15px; margin-bottom:14px;">스토어 추가</h3>
+  <form method="post" action="/stores/add" style="max-width:500px;">
+    <div style="margin-bottom:12px;">
+      <label style="display:block; font-size:13px; margin-bottom:4px;">스토어 이름</label>
+      <input type="text" name="store_name" placeholder="예: 심플홈샵" required>
+    </div>
+    <div style="margin-bottom:12px;">
+      <label style="display:block; font-size:13px; margin-bottom:4px;">애플리케이션 ID</label>
+      <input type="text" name="client_id" placeholder="1Tgm6HnYMZONWYLI16RpM8" required>
+    </div>
+    <div style="margin-bottom:16px;">
+      <label style="display:block; font-size:13px; margin-bottom:4px;">애플리케이션 시크릿</label>
+      <input type="password" name="client_secret" placeholder="$2a$04$..." required>
+    </div>
+    <button type="submit" class="btn btn-primary">스토어 추가</button>
+  </form>
+</div>
+{% endblock %}
