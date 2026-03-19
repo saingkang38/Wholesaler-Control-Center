@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}스토어 상품{% endblock %}
+
+{% block content %}
+<style>
+  .status-cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+  .status-card {
+    background: white; border-radius: 8px; padding: 14px 20px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08); text-align: center;
+    min-width: 90px; cursor: pointer; text-decoration: none; color: #333;
+    border: 2px solid transparent;
+  }
+  .status-card:hover { border-color: #2c3e50; }
+  .status-card.active { border-color: #2c3e50; background: #f0f4f8; }
+  .status-card .count { font-size: 22px; font-weight: bold; color: #2c3e50; }
+  .status-card .label { font-size: 12px; color: #666; margin-top: 2px; }
+
+  .filter-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .filter-bar select { padding: 7px 12px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { background: #f8f9fa; padding: 10px 12px; text-align: left; border-bottom: 2px solid #dee2e6; white-space: nowrap; }
+  td { padding: 9px 12px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+  tr:hover { background: #fafafa; }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; }
+  .badge-SALE { background: #d1fae5; color: #059669; }
+  .badge-SOLDOUT { background: #fef3c7; color: #d97706; }
+  .badge-SUSPENSION { background: #fee2e2; color: #dc2626; }
+  .badge-CLOSE { background: #e5e7eb; color: #6b7280; }
+  .badge-WAIT { background: #dbeafe; color: #2563eb; }
+  .badge-PROHIBITION { background: #ede9fe; color: #7c3aed; }
+
+  .matched { color: #059669; font-size: 12px; }
+  .unmatched { color: #9ca3af; font-size: 12px; }
+
+  .pagination { display: flex; gap: 6px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }
+  .pagination a, .pagination span {
+    padding: 6px 12px; border-radius: 4px; font-size: 13px;
+    background: white; border: 1px solid #d1d5db; text-decoration: none; color: #333;
+  }
+  .pagination span.current { background: #2c3e50; color: white; border-color: #2c3e50; }
+</style>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+    <h2 style="font-size:18px;">스토어 상품</h2>
+  </div>
+
+  <!-- 스토어 필터 -->
+  <div class="filter-bar">
+    <select onchange="applyFilter('naver_store_id', this.value)">
+      <option value="">전체 스토어</option>
+      {% for s in stores %}
+      <option value="{{ s.id }}" {{ 'selected' if selected_store_id == s.id }}>{{ s.store_name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <!-- 상태별 카운트 카드 -->
+  <div class="status-cards">
+    <a href="{{ url_for('store.store_products_page', naver_store_id=selected_store_id) }}"
+       class="status-card {{ 'active' if not status_filter }}">
+      <div class="count">{{ total }}</div>
+      <div class="label">전체</div>
+    </a>
+    {% for code, label in status_labels.items() %}
+    <a href="{{ url_for('store.store_products_page', naver_store_id=selected_store_id, status=code) }}"
+       class="status-card {{ 'active' if status_filter == code }}">
+      <div class="count">{{ counts.get(code, 0) }}</div>
+      <div class="label">{{ label }}</div>
+    </a>
+    {% endfor %}
+  </div>
+
+  <!-- 상품 목록 -->
+  {% if products %}
+  <table>
+    <thead>
+      <tr>
+        <th>스토어</th>
+        <th>상품명</th>
+        <th>판매자관리코드</th>
+        <th>판매가</th>
+        <th>상태</th>
+        <th>마스터 매칭</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in products %}
+      <tr>
+        <td>{{ p.naver_store.store_name if p.naver_store else '-' }}</td>
+        <td>{{ p.product_name or '-' }}</td>
+        <td style="font-family:monospace; font-size:12px;">{{ p.seller_management_code or '-' }}</td>
+        <td>{{ '{:,}'.format(p.sale_price) if p.sale_price else '-' }}원</td>
+        <td>
+          <span class="badge badge-{{ p.store_status }}">
+            {{ status_labels.get(p.store_status, p.store_status) }}
+          </span>
+        </td>
+        <td>
+          {% if p.master_product_id %}
+          <span class="matched">매칭됨</span>
+          {% else %}
+          <span class="unmatched">미매칭</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- 페이지네이션 -->
+  {% if pagination.pages > 1 %}
+  <div class="pagination">
+    {% if pagination.has_prev %}
+    <a href="{{ url_for('store.store_products_page', naver_store_id=selected_store_id, status=status_filter, page=pagination.prev_num) }}">이전</a>
+    {% endif %}
+    {% for p in pagination.iter_pages(left_edge=2, right_edge=2, left_current=2, right_current=2) %}
+      {% if p %}
+        {% if p == pagination.page %}
+        <span class="current">{{ p }}</span>
+        {% else %}
+        <a href="{{ url_for('store.store_products_page', naver_store_id=selected_store_id, status=status_filter, page=p) }}">{{ p }}</a>
+        {% endif %}
+      {% else %}
+        <span>…</span>
+      {% endif %}
+    {% endfor %}
+    {% if pagination.has_next %}
+    <a href="{{ url_for('store.store_products_page', naver_store_id=selected_store_id, status=status_filter, page=pagination.next_num) }}">다음</a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% else %}
+  <div style="text-align:center; padding:60px; color:#9ca3af;">상품이 없습니다.</div>
+  {% endif %}
+</div>
+
+<script>
+function applyFilter(key, value) {
+  const url = new URL(window.location.href);
+  if (value) url.searchParams.set(key, value);
+  else url.searchParams.delete(key);
+  url.searchParams.delete('page');
+  window.location.href = url.toString();
+}
+</script>
+{% endblock %}

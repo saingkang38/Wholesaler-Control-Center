@@ -7,6 +7,8 @@ from app.master.models import MasterProduct
 
 store_bp = Blueprint("store", __name__)
 
+from app.store import routes  # noqa: F401, E402
+
 
 def sync_store_products(wholesaler_id: int) -> dict:
     """모든 활성 NaverStore를 순회하며 상품 동기화"""
