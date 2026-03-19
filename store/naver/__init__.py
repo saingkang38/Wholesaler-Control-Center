@@ -43,7 +43,7 @@ def get_products(page: int = 1, size: int = 100, token: str = None, client_id: s
     resp = requests.post(
         f"{API_BASE}/v1/products/search",
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        json={"pageNum": page, "pageSize": size},
+        json={"page": page, "size": size},
         timeout=15,
     )
     resp.raise_for_status()

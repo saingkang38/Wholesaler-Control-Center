@@ -37,11 +37,13 @@ def _sync_single_store(naver_store: NaverStore, wholesaler_id: int) -> dict:
 
     for item in raw_items:
         origin_no = item.get("originProductNo")
-        channel_no = item.get("channelProductNo")
-        seller_code = item.get("sellerManagementCode", "").strip()
-        name = item.get("name", "")
-        status = item.get("statusType", "")
-        price = item.get("salePrice")
+        channel_products = item.get("channelProducts", [])
+        channel = channel_products[0] if channel_products else {}
+        channel_no = channel.get("channelProductNo")
+        seller_code = (channel.get("sellerManagementCode") or "").strip()
+        name = channel.get("name", "")
+        status = channel.get("statusType", "")
+        price = channel.get("salePrice")
 
         if not origin_no:
             continue
