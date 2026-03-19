@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find /c/Users/saing/Documents/GitHub/Wholesaler-Control-Center -not -path */.git/* -type f -o -type d)"
+    ]
+  }
+}
