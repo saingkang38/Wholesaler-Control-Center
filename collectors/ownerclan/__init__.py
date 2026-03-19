@@ -108,10 +108,17 @@ class OwnerclanCollector(BaseCollector):
 
                 # 8. showDownloadList 호출 → 하위 행(tr#downloadTr) 표시
                 page.evaluate(f"showDownloadList('{idx}')")
-                time.sleep(1)
+
+                # AJAX 응답으로 DOM에 다운로드 링크가 생길 때까지 대기
+                download_selector = f'a[href*="downloadServer.php?idx={idx}"]'
+                try:
+                    page.wait_for_selector(download_selector, timeout=30000)
+                except PlaywrightTimeout:
+                    browser.close()
+                    return self._error(f"다운로드 링크 미표시 (idx={idx}) - showDownloadList 응답 없음")
 
                 # 9. 전체 다운로드 클릭 → 파일 다운로드
-                with page.expect_download(timeout=60000) as dl_info:
+                with page.expect_download(timeout=120000) as dl_info:
                     page.evaluate(f"""
                         () => {{
                             const link = document.querySelector('a[href*="downloadServer.php?idx={idx}"]');

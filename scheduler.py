@@ -2,6 +2,7 @@ import os
 import sys
 import logging
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
@@ -24,7 +25,7 @@ def run_ownerclan():
     from collectors.ownerclan import OwnerclanCollector
     from notifiers.telegram import notify_success, notify_failure
 
-    run_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+    run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
     logger.info(f"[scheduler] 오너클랜 수집 시작 ({run_time})")
 
     try:
