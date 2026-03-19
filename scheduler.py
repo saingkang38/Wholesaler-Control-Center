@@ -22,7 +22,7 @@ TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "Asia/Seoul")
 
 
 def run_store_sync():
-    """주 1회 스마트스토어 전체 동기화 (매주 월요일 새벽 2시)"""
+    """매일 새벽 3시 - 스마트스토어 전체 동기화"""
     from notifiers.telegram import notify_failure
     run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
     logger.info(f"[scheduler] 스토어 동기화 시작 ({run_time})")
@@ -30,7 +30,6 @@ def run_store_sync():
     try:
         from app import create_app
         from app.store import sync_store_products
-        from app.actions import detect_action_signals
         from app.wholesalers.models import Wholesaler
 
         flask_app = create_app()
@@ -39,11 +38,29 @@ def run_store_sync():
             if wholesaler:
                 store_stats = sync_store_products(wholesaler.id)
                 logger.info(f"[scheduler] 스토어 동기화 완료: {store_stats}")
-                signal_stats = detect_action_signals(wholesaler.id)
-                logger.info(f"[scheduler] 액션 시그널: {signal_stats}")
     except Exception as e:
         logger.error(f"[scheduler] 스토어 동기화 실패: {e}")
         notify_failure("스토어동기화", str(e)[:300], run_time)
+
+
+def run_match_and_signal():
+    """매일 새벽 5시 - 마스터↔스토어 매칭 + 액션 시그널 감지"""
+    run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
+    logger.info(f"[scheduler] 매칭 및 시그널 감지 시작 ({run_time})")
+
+    try:
+        from app import create_app
+        from app.actions import detect_action_signals
+        from app.wholesalers.models import Wholesaler
+
+        flask_app = create_app()
+        with flask_app.app_context():
+            wholesaler = Wholesaler.query.filter_by(code="ownerclan").first()
+            if wholesaler:
+                signal_stats = detect_action_signals(wholesaler.id)
+                logger.info(f"[scheduler] 액션 시그널: {signal_stats}")
+    except Exception as e:
+        logger.error(f"[scheduler] 매칭/시그널 감지 실패: {e}")
 
 
 def run_ownerclan():
@@ -76,8 +93,6 @@ def run_ownerclan():
         try:
             from app import create_app
             from app.master import process_master_update
-            from app.store import sync_store_products
-            from app.actions import detect_action_signals
             from app.wholesalers.models import Wholesaler
 
             flask_app = create_app()
@@ -96,12 +111,6 @@ def run_ownerclan():
                         "상품명변경": master_stats.get("name_change", 0),
                     }
 
-                    # 액션 시그널 감지
-                    try:
-                        signal_stats = detect_action_signals(wholesaler.id)
-                        logger.info(f"[scheduler] 액션 시그널: {signal_stats}")
-                    except Exception as e:
-                        logger.error(f"[scheduler] 액션 시그널 감지 실패: {e}")
 
         except Exception as e:
             logger.error(f"[scheduler] 마스터 업데이트 실패: {e}")
@@ -126,10 +135,16 @@ if __name__ == "__main__":
     scheduler.add_job(
         run_store_sync,
         trigger="cron",
-        day_of_week="mon",
-        hour=2,
+        hour=3,
         minute=0,
-        id="store_sync_weekly",
+        id="store_sync_daily",
+    )
+    scheduler.add_job(
+        run_match_and_signal,
+        trigger="cron",
+        hour=5,
+        minute=0,
+        id="match_signal_daily",
     )
 
     logger.info(f"[scheduler] 시작 - 매일 {SCHEDULE_HOUR:02d}:{SCHEDULE_MINUTE:02d} ({TIMEZONE}) 실행")
