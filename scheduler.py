@@ -21,6 +21,31 @@ SCHEDULE_MINUTE = int(os.getenv("SCHEDULE_MINUTE", "0"))
 TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "Asia/Seoul")
 
 
+def run_store_sync():
+    """주 1회 스마트스토어 전체 동기화 (매주 월요일 새벽 2시)"""
+    from notifiers.telegram import notify_failure
+    run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
+    logger.info(f"[scheduler] 스토어 동기화 시작 ({run_time})")
+
+    try:
+        from app import create_app
+        from app.store import sync_store_products
+        from app.actions import detect_action_signals
+        from app.wholesalers.models import Wholesaler
+
+        flask_app = create_app()
+        with flask_app.app_context():
+            wholesaler = Wholesaler.query.filter_by(code="ownerclan").first()
+            if wholesaler:
+                store_stats = sync_store_products(wholesaler.id)
+                logger.info(f"[scheduler] 스토어 동기화 완료: {store_stats}")
+                signal_stats = detect_action_signals(wholesaler.id)
+                logger.info(f"[scheduler] 액션 시그널: {signal_stats}")
+    except Exception as e:
+        logger.error(f"[scheduler] 스토어 동기화 실패: {e}")
+        notify_failure("스토어동기화", str(e)[:300], run_time)
+
+
 def run_ownerclan():
     from collectors.ownerclan import OwnerclanCollector
     from notifiers.telegram import notify_changes, notify_failure
@@ -71,13 +96,6 @@ def run_ownerclan():
                         "상품명변경": master_stats.get("name_change", 0),
                     }
 
-                    # 스토어 동기화
-                    try:
-                        store_stats = sync_store_products(wholesaler.id)
-                        logger.info(f"[scheduler] 스토어 동기화: {store_stats}")
-                    except Exception as e:
-                        logger.error(f"[scheduler] 스토어 동기화 실패: {e}")
-
                     # 액션 시그널 감지
                     try:
                         signal_stats = detect_action_signals(wholesaler.id)
@@ -104,6 +122,14 @@ if __name__ == "__main__":
         hour=SCHEDULE_HOUR,
         minute=SCHEDULE_MINUTE,
         id="ownerclan_daily",
+    )
+    scheduler.add_job(
+        run_store_sync,
+        trigger="cron",
+        day_of_week="mon",
+        hour=2,
+        minute=0,
+        id="store_sync_weekly",
     )
 
     logger.info(f"[scheduler] 시작 - 매일 {SCHEDULE_HOUR:02d}:{SCHEDULE_MINUTE:02d} ({TIMEZONE}) 실행")

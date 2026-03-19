@@ -37,8 +37,9 @@ def _get_access_token(client_id: str = None, client_secret: str = None) -> str:
     return resp.json()["access_token"]
 
 
-def get_products(page: int = 1, size: int = 100, client_id: str = None, client_secret: str = None) -> dict:
-    token = _get_access_token(client_id, client_secret)
+def get_products(page: int = 1, size: int = 100, token: str = None, client_id: str = None, client_secret: str = None) -> dict:
+    if not token:
+        token = _get_access_token(client_id, client_secret)
     resp = requests.post(
         f"{API_BASE}/v1/products/search",
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
@@ -54,15 +55,18 @@ def get_all_products(client_id: str = None, client_secret: str = None) -> list:
     page = 1
     size = 100
 
+    token = _get_access_token(client_id, client_secret)
+
     while True:
-        data = get_products(page=page, size=size, client_id=client_id, client_secret=client_secret)
+        data = get_products(page=page, size=size, token=token, client_id=client_id, client_secret=client_secret)
         items = data.get("contents", [])
         all_items.extend(items)
 
-        total = data.get("totalCount", 0)
-        if len(all_items) >= total or not items:
+        total_pages = data.get("totalPages", 1)
+        if data.get("last", True) or page >= total_pages:
             break
         page += 1
+        time.sleep(0.3)
 
     return all_items
 
