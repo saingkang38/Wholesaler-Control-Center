@@ -58,7 +58,20 @@ def get_all_products(client_id: str = None, client_secret: str = None) -> list:
     token = _get_access_token(client_id, client_secret)
 
     while True:
-        data = get_products(page=page, size=size, token=token, client_id=client_id, client_secret=client_secret)
+        retries = 0
+        while retries < 5:
+            try:
+                data = get_products(page=page, size=size, token=token, client_id=client_id, client_secret=client_secret)
+                break
+            except Exception as e:
+                retries += 1
+                wait = 10 * retries
+                print(f"[naver] 페이지 {page} 오류({e}), {wait}초 후 재시도 ({retries}/5)")
+                time.sleep(wait)
+        else:
+            print(f"[naver] 페이지 {page} 5회 재시도 실패, 건너뜀")
+            break
+
         items = data.get("contents", [])
         all_items.extend(items)
 
@@ -66,7 +79,7 @@ def get_all_products(client_id: str = None, client_secret: str = None) -> list:
         if data.get("last", True) or page >= total_pages:
             break
         page += 1
-        time.sleep(0.3)
+        time.sleep(1)
 
     return all_items
 
