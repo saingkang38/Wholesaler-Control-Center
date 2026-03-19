@@ -29,9 +29,22 @@
   .btn-approve { background: #059669; color: white; }
   .btn-reject { background: #dc2626; color: white; }
   .btn-skip { background: #9ca3af; color: white; }
+  .btn-bulk { background: #2c3e50; color: white; padding: 7px 16px; }
   .btn:hover { opacity: 0.85; }
 
   .empty { text-align: center; padding: 60px; color: #9ca3af; font-size: 15px; }
+  .toolbar { display: flex; gap: 10px; align-items: center; margin-bottom: 14px; flex-wrap: wrap; }
+  .per-page-btn {
+    padding: 5px 12px; border: 1px solid #d1d5db; border-radius: 4px;
+    background: white; cursor: pointer; font-size: 13px; text-decoration: none; color: #333;
+  }
+  .per-page-btn.active { background: #2c3e50; color: white; border-color: #2c3e50; }
+  .pagination { display: flex; gap: 6px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }
+  .pagination a, .pagination span {
+    padding: 6px 12px; border-radius: 4px; font-size: 13px;
+    background: white; border: 1px solid #d1d5db; text-decoration: none; color: #333;
+  }
+  .pagination span.current { background: #2c3e50; color: white; border-color: #2c3e50; }
 </style>
 
 <div class="card">
@@ -44,21 +57,41 @@
   </div>
 
   <div class="tab-bar">
-    <a href="/actions?status=pending" class="{{ 'active' if status_filter == 'pending' }}">대기중</a>
-    <a href="/actions?status=executed" class="{{ 'active' if status_filter == 'executed' }}">실행완료</a>
-    <a href="/actions?status=rejected" class="{{ 'active' if status_filter == 'rejected' }}">거절</a>
-    <a href="/actions?status=skipped" class="{{ 'active' if status_filter == 'skipped' }}">건너뜀</a>
+    <a href="/actions?status=pending&per_page={{ per_page }}" class="{{ 'active' if status_filter == 'pending' }}">대기중</a>
+    <a href="/actions?status=executed&per_page={{ per_page }}" class="{{ 'active' if status_filter == 'executed' }}">실행완료</a>
+    <a href="/actions?status=rejected&per_page={{ per_page }}" class="{{ 'active' if status_filter == 'rejected' }}">거절</a>
+    <a href="/actions?status=skipped&per_page={{ per_page }}" class="{{ 'active' if status_filter == 'skipped' }}">건너뜀</a>
+  </div>
+
+  <!-- 페이지당 수 선택 -->
+  <div class="toolbar">
+    <span style="font-size:13px; color:#666;">페이지당:</span>
+    {% for n in [30, 50, 100, 300, 500, 1000] %}
+    <a href="/actions?status={{ status_filter }}&per_page={{ n }}" class="per-page-btn {{ 'active' if per_page == n }}">{{ n }}</a>
+    {% endfor %}
+    <a href="/actions?status={{ status_filter }}&per_page=0" class="per-page-btn {{ 'active' if per_page == 0 }}">전체</a>
+
+    {% if status_filter == 'pending' %}
+    <span style="margin-left:10px; font-size:13px; color:#666;">선택:</span>
+    <button class="btn btn-bulk" onclick="bulkResolve('approve')">선택 승인</button>
+    <button class="btn btn-reject" onclick="bulkResolve('reject')">선택 거절</button>
+    <button class="btn btn-skip" onclick="bulkResolve('skip')">선택 건너뜀</button>
+    {% endif %}
   </div>
 
   {% if rows %}
   <table>
     <thead>
       <tr>
+        {% if status_filter == 'pending' %}
+        <th><input type="checkbox" id="checkAll" onclick="toggleAll(this)"></th>
+        {% endif %}
         <th>유형</th>
         <th>상품명</th>
         <th>판매자관리코드</th>
-        <th>현재값</th>
-        <th>제안값</th>
+        <th>도매가격</th>
+        <th>마진적용가격</th>
+        <th>판매가격</th>
         <th>감지일시</th>
         {% if status_filter == 'pending' %}<th>처리</th>{% endif %}
       </tr>
@@ -66,11 +99,15 @@
     <tbody>
       {% for row in rows %}
       <tr id="row-{{ row.id }}">
+        {% if status_filter == 'pending' %}
+        <td><input type="checkbox" class="row-check" value="{{ row.id }}"></td>
+        {% endif %}
         <td><span class="badge badge-{{ row.badge }}">{{ row.label }}</span></td>
         <td>{{ row.product_name }}</td>
         <td>{{ row.seller_code }}</td>
-        <td>{{ row.current | tojson(ensure_ascii=False) }}</td>
-        <td>{{ row.suggested | tojson(ensure_ascii=False) }}</td>
+        <td>{{ '{:,}'.format(row.wholesale_price) if row.wholesale_price else '-' }}</td>
+        <td>{{ '{:,}'.format(row.margin_price) if row.margin_price else '-' }}</td>
+        <td>{{ '{:,}'.format(row.sale_price) if row.sale_price else '-' }}</td>
         <td>{{ row.detected_at }}</td>
         {% if status_filter == 'pending' %}
         <td style="white-space:nowrap;">
@@ -83,12 +120,40 @@
       {% endfor %}
     </tbody>
   </table>
+
+  <!-- 페이지네이션 -->
+  {% if pagination and pagination.pages > 1 %}
+  <div class="pagination">
+    {% if pagination.has_prev %}
+    <a href="/actions?status={{ status_filter }}&per_page={{ per_page }}&page={{ pagination.prev_num }}">이전</a>
+    {% endif %}
+    {% for p in pagination.iter_pages(left_edge=2, right_edge=2, left_current=2, right_current=2) %}
+      {% if p %}
+        {% if p == pagination.page %}
+        <span class="current">{{ p }}</span>
+        {% else %}
+        <a href="/actions?status={{ status_filter }}&per_page={{ per_page }}&page={{ p }}">{{ p }}</a>
+        {% endif %}
+      {% else %}
+        <span>…</span>
+      {% endif %}
+    {% endfor %}
+    {% if pagination.has_next %}
+    <a href="/actions?status={{ status_filter }}&per_page={{ per_page }}&page={{ pagination.next_num }}">다음</a>
+    {% endif %}
+  </div>
+  {% endif %}
+
   {% else %}
   <div class="empty">처리할 항목이 없습니다.</div>
   {% endif %}
 </div>
 
 <script>
+function toggleAll(cb) {
+  document.querySelectorAll('.row-check').forEach(c => c.checked = cb.checked);
+}
+
 function resolve(id, action) {
   fetch(`/actions/${id}/resolve`, {
     method: 'POST',
@@ -103,6 +168,20 @@ function resolve(id, action) {
     }
   })
   .catch(() => alert('처리 중 오류가 발생했습니다.'));
+}
+
+function bulkResolve(action) {
+  const checked = [...document.querySelectorAll('.row-check:checked')].map(c => c.value);
+  if (checked.length === 0) { alert('선택된 항목이 없습니다.'); return; }
+  if (!confirm(`선택한 ${checked.length}개를 ${action === 'approve' ? '승인' : action === 'reject' ? '거절' : '건너뜀'} 처리할까요?`)) return;
+
+  Promise.all(checked.map(id =>
+    fetch(`/actions/${id}/resolve`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({action})
+    }).then(r => r.json())
+  )).then(() => location.reload());
 }
 </script>
 {% endblock %}

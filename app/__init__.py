@@ -34,6 +34,8 @@ def create_app():
     from app.store.models import StoreProduct, NaverStore  # noqa: F401 - 테이블 생성용
     from app.actions import actions_bp
     from app.actions.models import ActionSignal  # noqa: F401 - 테이블 생성용
+    from app.settings import settings_bp
+    from app.settings.models import MarginRule  # noqa: F401 - 테이블 생성용
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)
@@ -45,6 +47,7 @@ def create_app():
     app.register_blueprint(master_bp)
     app.register_blueprint(store_bp)
     app.register_blueprint(actions_bp)
+    app.register_blueprint(settings_bp)
 
     with app.app_context():
         db.create_all()

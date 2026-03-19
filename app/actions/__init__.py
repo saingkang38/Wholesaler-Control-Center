@@ -23,16 +23,33 @@ SIGNAL_LABELS = {
 @login_required
 def actions_page():
     status_filter = request.args.get("status", "pending")
-    signals = (
-        ActionSignal.query
-        .filter_by(status=status_filter)
-        .order_by(ActionSignal.detected_at.desc())
-        .all()
-    )
+    per_page = request.args.get("per_page", 50, type=int)
+    page = request.args.get("page", 1, type=int)
+
+    valid_per_page = [30, 50, 100, 300, 500, 1000, 0]
+    if per_page not in valid_per_page:
+        per_page = 50
+
+    query = ActionSignal.query.filter_by(status=status_filter).order_by(ActionSignal.detected_at.desc())
+
+    if per_page == 0:
+        signals = query.all()
+        pagination = None
+        total = len(signals)
+    else:
+        pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+        signals = pagination.items
+        total = pagination.total
+
+    from app.settings import apply_margin
+
     rows = []
     for s in signals:
         current = json.loads(s.current_value) if s.current_value else {}
         suggested = json.loads(s.suggested_value) if s.suggested_value else {}
+        wholesale_price = suggested.get("sale_price") or current.get("sale_price")
+        sale_price = current.get("sale_price")
+        margin_price = apply_margin(wholesale_price) if wholesale_price else None
         rows.append({
             "id": s.id,
             "signal_type": s.signal_type,
@@ -40,13 +57,16 @@ def actions_page():
             "badge": SIGNAL_LABELS.get(s.signal_type, {}).get("badge", "secondary"),
             "product_name": s.master.product_name if s.master else "-",
             "seller_code": s.store.seller_management_code if s.store else "-",
-            "current": current,
-            "suggested": suggested,
+            "wholesale_price": wholesale_price,
+            "margin_price": margin_price,
+            "sale_price": sale_price,
             "detected_at": s.detected_at.strftime("%Y-%m-%d %H:%M") if s.detected_at else "-",
             "status": s.status,
         })
     pending_count = ActionSignal.query.filter_by(status="pending").count()
-    return render_template("actions.html", rows=rows, status_filter=status_filter, pending_count=pending_count)
+    return render_template("actions.html", rows=rows, status_filter=status_filter,
+                           pending_count=pending_count, pagination=pagination,
+                           per_page=per_page, total=total)
 
 
 @actions_bp.route("/actions/<int:signal_id>/resolve", methods=["POST"])

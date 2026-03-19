@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block title %}마진 설정{% endblock %}
+
+{% block content %}
+<style>
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { background: #f8f9fa; padding: 10px 12px; text-align: left; border-bottom: 2px solid #dee2e6; }
+  td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; }
+  input[type=number] { width: 130px; padding: 7px 10px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px; }
+  .btn { padding: 7px 14px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  .btn-primary { background: #2c3e50; color: white; }
+  .btn-danger { background: #dc2626; color: white; }
+  .btn:hover { opacity: 0.85; }
+  .flash-success { background: #d1fae5; color: #065f46; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; }
+  .flash-error { background: #fee2e2; color: #991b1b; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; }
+  .hint { font-size: 12px; color: #9ca3af; margin-top: 4px; }
+</style>
+
+<div class="card">
+  <h2 style="font-size:18px; margin-bottom:20px;">마진 설정</h2>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+      <div class="flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+  {% endwith %}
+
+  {% if rules %}
+  <table style="margin-bottom:32px;">
+    <thead>
+      <tr>
+        <th>도매가 (이상)</th>
+        <th>도매가 (이하)</th>
+        <th>마진율</th>
+        <th>적용 예시</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in rules %}
+      <tr>
+        <td>{{ '{:,}'.format(r.price_from) }}원</td>
+        <td>{{ '{:,}'.format(r.price_to) ~ '원' if r.price_to else '제한없음' }}</td>
+        <td>{{ (r.margin_rate * 100) | round(1) }}%</td>
+        <td style="color:#059669;">
+          예) 10,000원 → {{ '{:,}'.format((10000 * (1 + r.margin_rate) / 10) | round | int * 10) }}원
+        </td>
+        <td>
+          <form method="post" action="/settings/margin/{{ r.id }}/delete" style="display:inline;">
+            <button class="btn btn-danger" onclick="return confirm('삭제할까요?')">삭제</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p style="color:#9ca3af; margin-bottom:24px;">설정된 마진 규칙이 없습니다.</p>
+  {% endif %}
+
+  <h3 style="font-size:15px; margin-bottom:14px;">마진 규칙 추가</h3>
+  <form method="post" action="/settings/margin/add" style="display:flex; gap:12px; align-items:flex-end; flex-wrap:wrap;">
+    <div>
+      <label style="display:block; font-size:13px; margin-bottom:4px;">도매가 이상 (원)</label>
+      <input type="number" name="price_from" placeholder="0" min="0" required>
+      <div class="hint">예: 1000</div>
+    </div>
+    <div>
+      <label style="display:block; font-size:13px; margin-bottom:4px;">도매가 이하 (원, 비우면 제한없음)</label>
+      <input type="number" name="price_to" placeholder="제한없음" min="0">
+      <div class="hint">예: 5000</div>
+    </div>
+    <div>
+      <label style="display:block; font-size:13px; margin-bottom:4px;">마진율 (%)</label>
+      <input type="number" name="margin_rate" placeholder="30" min="0" max="1000" step="0.1" required>
+      <div class="hint">예: 30 (= 30%)</div>
+    </div>
+    <div>
+      <button type="submit" class="btn btn-primary">추가</button>
+    </div>
+  </form>
+
+  <div style="margin-top:24px; padding:14px; background:#f8f9fa; border-radius:6px; font-size:13px; color:#666;">
+    <strong>적용 방식:</strong> 도매가 × (1 + 마진율) → 10원 단위 반올림<br>
+    규칙은 <strong>도매가 이상</strong> 기준으로 오름차순 적용됩니다. 여러 규칙이 겹치면 price_from이 작은 것부터 매칭됩니다.
+  </div>
+</div>
+{% endblock %}
