@@ -14,6 +14,7 @@ class MasterProduct(db.Model):
     supply_price = db.Column(db.Integer)
     image_url = db.Column(db.String(512))
     category_name = db.Column(db.String(256))
+    internal_code = db.Column(db.String(128), nullable=True)   # 내부 관리용 코드 (직접 입력)
 
     # 상태: active / missing / discontinued_candidate / discontinued
     current_status = db.Column(db.String(32), default="active", nullable=False)

@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}상품 목록 - 도매처 통합 관리 시스템{% endblock %}
+
+{% block content %}
+<div class="card">
+    <h2 style="margin-bottom:16px;">상품 목록</h2>
+
+    <form method="get" style="display:flex; gap:8px; margin-bottom:16px; flex-wrap:wrap;">
+        <input type="text" name="q" value="{{ keyword }}" placeholder="상품명 또는 상품코드 검색"
+               style="padding:8px 12px; border:1px solid #ddd; border-radius:4px; flex:1; min-width:200px;">
+        <select name="status" style="padding:8px 12px; border:1px solid #ddd; border-radius:4px;">
+            <option value="">전체 상태</option>
+            <option value="active" {% if status == 'active' %}selected{% endif %}>판매중</option>
+            <option value="out_of_stock" {% if status == 'out_of_stock' %}selected{% endif %}>품절</option>
+            <option value="discontinued" {% if status == 'discontinued' %}selected{% endif %}>단종</option>
+        </select>
+        <button type="submit" style="padding:8px 16px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer;">검색</button>
+        <a href="/products" style="padding:8px 16px; background:#eee; color:#333; border-radius:4px; text-decoration:none;">초기화</a>
+    </form>
+
+    <p style="margin-bottom:12px; color:#666; font-size:14px;">총 {{ pagination.total }}건</p>
+
+    {% if pagination.items %}
+    <div style="overflow-x:auto;">
+        <table style="width:100%; border-collapse:collapse; font-size:14px;">
+            <thead>
+                <tr style="background:#f8f9fa; border-bottom:2px solid #dee2e6;">
+                    <th style="padding:10px 8px; text-align:left; white-space:nowrap;">상품코드</th>
+                    <th style="padding:10px 8px; text-align:left;">상품명</th>
+                    <th style="padding:10px 8px; text-align:right; white-space:nowrap;">공급가</th>
+                    <th style="padding:10px 8px; text-align:right; white-space:nowrap;">판매가</th>
+                    <th style="padding:10px 8px; text-align:right; white-space:nowrap;">재고</th>
+                    <th style="padding:10px 8px; text-align:center; white-space:nowrap;">상태</th>
+                    <th style="padding:10px 8px; text-align:left; white-space:nowrap;">카테고리</th>
+                    <th style="padding:10px 8px; text-align:left; white-space:nowrap;">수집일시</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for p in pagination.items %}
+                <tr style="border-bottom:1px solid #eee;">
+                    <td style="padding:8px; font-family:monospace; font-size:12px; color:#666;">{{ p.source_product_code }}</td>
+                    <td style="padding:8px;">
+                        {% if p.detail_url %}
+                        <a href="{{ p.detail_url }}" target="_blank" style="color:#2c3e50; text-decoration:none;">{{ p.product_name or '-' }}</a>
+                        {% else %}
+                        {{ p.product_name or '-' }}
+                        {% endif %}
+                    </td>
+                    <td style="padding:8px; text-align:right;">{{ '{:,}'.format(p.supply_price) if p.supply_price else '-' }}</td>
+                    <td style="padding:8px; text-align:right;">{{ '{:,}'.format(p.price) if p.price else '-' }}</td>
+                    <td style="padding:8px; text-align:right;">{{ p.stock_qty if p.stock_qty is not none else '-' }}</td>
+                    <td style="padding:8px; text-align:center;">
+                        {% if p.status == 'active' %}
+                        <span style="background:#d4edda; color:#155724; padding:2px 8px; border-radius:12px; font-size:12px;">판매중</span>
+                        {% elif p.status == 'out_of_stock' %}
+                        <span style="background:#fff3cd; color:#856404; padding:2px 8px; border-radius:12px; font-size:12px;">품절</span>
+                        {% elif p.status == 'discontinued' %}
+                        <span style="background:#f8d7da; color:#721c24; padding:2px 8px; border-radius:12px; font-size:12px;">단종</span>
+                        {% else %}
+                        <span style="background:#e2e3e5; color:#383d41; padding:2px 8px; border-radius:12px; font-size:12px;">{{ p.status }}</span>
+                        {% endif %}
+                    </td>
+                    <td style="padding:8px; font-size:13px; color:#666;">{{ p.category_name or '-' }}</td>
+                    <td style="padding:8px; font-size:12px; color:#999; white-space:nowrap;">{{ p.updated_at.strftime('%m/%d %H:%M') if p.updated_at else '-' }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 페이지네이션 -->
+    <div style="margin-top:16px; display:flex; gap:4px; justify-content:center; flex-wrap:wrap;">
+        {% if pagination.has_prev %}
+        <a href="?page={{ pagination.prev_num }}&q={{ keyword }}&status={{ status }}"
+           style="padding:6px 12px; border:1px solid #ddd; border-radius:4px; text-decoration:none; color:#333;">이전</a>
+        {% endif %}
+        {% for p in pagination.iter_pages(left_edge=2, right_edge=2, left_current=2, right_current=2) %}
+            {% if p %}
+            <a href="?page={{ p }}&q={{ keyword }}&status={{ status }}"
+               style="padding:6px 12px; border:1px solid {% if p == pagination.page %}#2c3e50{% else %}#ddd{% endif %}; border-radius:4px; text-decoration:none; color:{% if p == pagination.page %}white{% else %}#333{% endif %}; background:{% if p == pagination.page %}#2c3e50{% else %}white{% endif %};">{{ p }}</a>
+            {% else %}
+            <span style="padding:6px 4px; color:#999;">…</span>
+            {% endif %}
+        {% endfor %}
+        {% if pagination.has_next %}
+        <a href="?page={{ pagination.next_num }}&q={{ keyword }}&status={{ status }}"
+           style="padding:6px 12px; border:1px solid #ddd; border-radius:4px; text-decoration:none; color:#333;">다음</a>
+        {% endif %}
+    </div>
+
+    {% else %}
+    <p style="color:#999; text-align:center; padding:40px;">수집된 상품이 없습니다.</p>
+    {% endif %}
+</div>
+{% endblock %}

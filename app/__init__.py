@@ -6,6 +6,7 @@ def create_app():
     app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "fallback-dev-key")
     app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///wholesaler.db")
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+    app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {"connect_args": {"timeout": 30}}
 
     from app.infrastructure import db
     db.init_app(app)
@@ -52,8 +53,9 @@ def create_app():
     with app.app_context():
         db.create_all()
         from app.auth.init_admin import create_initial_admin
-        from app.wholesalers import get_or_create_ownerclan
+        from app.wholesalers import get_or_create_ownerclan, get_or_create_jtckorea
         create_initial_admin()
         get_or_create_ownerclan()
+        get_or_create_jtckorea()
 
     return app

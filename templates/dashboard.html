@@ -8,10 +8,16 @@
         <h2 style="font-size:20px; font-weight:bold;">대시보드</h2>
         <p style="font-size:13px; color:#888; margin-top:4px;">{{ today.strftime('%Y년 %m월 %d일') }} 기준</p>
     </div>
-    <button onclick="triggerCollect('ownerclan')"
-        style="padding:10px 20px; background:#2c3e50; color:white; border:none; border-radius:6px; font-size:14px; cursor:pointer;">
-        수동 수집 실행
-    </button>
+    <div style="display:flex; gap:8px;">
+        <button onclick="triggerCollect('ownerclan')"
+            style="padding:10px 20px; background:#2c3e50; color:white; border:none; border-radius:6px; font-size:14px; cursor:pointer;">
+            오너클랜 수집
+        </button>
+        <button onclick="triggerCollect('jtckorea')"
+            style="padding:10px 20px; background:#27ae60; color:white; border:none; border-radius:6px; font-size:14px; cursor:pointer;">
+            JTC코리아 수집
+        </button>
+    </div>
 </div>
 <p id="collect-result" style="margin-bottom:16px; font-size:13px; color:#e74c3c;"></p>
 

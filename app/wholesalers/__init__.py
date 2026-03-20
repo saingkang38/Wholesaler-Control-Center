@@ -16,3 +16,17 @@ def get_or_create_ownerclan():
         db.session.commit()
         print("[초기화] 오너클랜 도매처 등록 완료")
     return w
+
+
+def get_or_create_jtckorea():
+    w = Wholesaler.query.filter_by(code="jtckorea").first()
+    if not w:
+        w = Wholesaler(
+            code="jtckorea",
+            name="JTC코리아",
+            site_url="https://www.1001094.com"
+        )
+        db.session.add(w)
+        db.session.commit()
+        print("[초기화] JTC코리아 도매처 등록 완료")
+    return w

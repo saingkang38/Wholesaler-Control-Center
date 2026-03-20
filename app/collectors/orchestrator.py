@@ -6,8 +6,10 @@ from app.wholesalers.models import Wholesaler
 
 def _build_registry():
     from collectors.ownerclan import OwnerclanCollector
+    from collectors.jtckorea import JtckoreaCollector
     return {
         "ownerclan": OwnerclanCollector,
+        "jtckorea": JtckoreaCollector,
     }
 
 
@@ -44,12 +46,15 @@ def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: 
 
         if result.get("success") and result.get("items"):
             from app.normalization import save_normalized_products
+            from app.master import process_master_update
             saved = save_normalized_products(
                 wholesaler_id=wholesaler.id,
                 run_id=run.id,
                 items=result["items"]
             )
             print(f"[orchestrator] 저장 완료: {saved}건")
+            process_master_update(wholesaler.id, result["items"])
+            print(f"[orchestrator] 마스터 업데이트 완료")
 
     except Exception as e:
         print(f"[orchestrator] 오류 발생: {e}")
