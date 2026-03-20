@@ -10,12 +10,18 @@ def _build_registry():
     from collectors.metaldiy import MetaldiyCollector
     from collectors.ds1008 import Ds1008Collector
     from collectors.hitdesign import HitdesignCollector
+    from collectors.chingudome import ChingudomeCollector
+    from collectors.zentrade import ZentraldeCollector
+    from collectors.mro3 import Mro3Collector
     return {
         "ownerclan": OwnerclanCollector,
         "jtckorea": JtckoreaCollector,
         "metaldiy": MetaldiyCollector,
         "ds1008": Ds1008Collector,
         "hitdesign": HitdesignCollector,
+        "chingudome": ChingudomeCollector,
+        "zentrade": ZentraldeCollector,
+        "mro3": Mro3Collector,
     }
 
 

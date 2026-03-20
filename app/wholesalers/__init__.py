@@ -76,3 +76,17 @@ def get_or_create_metaldiy():
         db.session.commit()
         print("[초기화] 철물박사 도매처 등록 완료")
     return w
+
+
+def get_or_create_mro3():
+    w = Wholesaler.query.filter_by(code="mro3").first()
+    if not w:
+        w = Wholesaler(
+            code="mro3",
+            name="3MRO",
+            site_url="https://www.3mro.co.kr",
+        )
+        db.session.add(w)
+        db.session.commit()
+        print("[초기화] 3MRO 도매처 등록 완료")
+    return w

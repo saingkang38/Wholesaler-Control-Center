@@ -5,6 +5,8 @@ from datetime import datetime
 
 normalization_bp = Blueprint("normalization", __name__)
 
+BATCH_SIZE = 500
+
 def save_normalized_products(wholesaler_id: int, run_id: int, items: list):
     saved = 0
 
@@ -13,7 +15,7 @@ def save_normalized_products(wholesaler_id: int, run_id: int, items: list):
         if not code:
             continue
 
-        unique_key = f"ownerclan_{code}"
+        unique_key = f"{wholesaler_id}_{code}"
         existing = NormalizedProduct.query.filter_by(unique_product_key=unique_key).first()
 
         if existing:
@@ -46,6 +48,8 @@ def save_normalized_products(wholesaler_id: int, run_id: int, items: list):
             db.session.add(product)
 
         saved += 1
+        if saved % BATCH_SIZE == 0:
+            db.session.commit()
 
     db.session.commit()
     return saved
