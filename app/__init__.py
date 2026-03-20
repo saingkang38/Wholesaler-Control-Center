@@ -53,9 +53,12 @@ def create_app():
     with app.app_context():
         db.create_all()
         from app.auth.init_admin import create_initial_admin
-        from app.wholesalers import get_or_create_ownerclan, get_or_create_jtckorea
+        from app.wholesalers import get_or_create_ownerclan, get_or_create_jtckorea, get_or_create_metaldiy, get_or_create_ds1008, get_or_create_hitdesign
         create_initial_admin()
         get_or_create_ownerclan()
         get_or_create_jtckorea()
+        get_or_create_metaldiy()
+        get_or_create_ds1008()
+        get_or_create_hitdesign()
 
     return app

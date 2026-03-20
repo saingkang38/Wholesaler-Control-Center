@@ -63,44 +63,60 @@ def run_match_and_signal():
         logger.error(f"[scheduler] 매칭/시그널 감지 실패: {e}")
 
 
-def run_ownerclan():
-    from collectors.ownerclan import OwnerclanCollector
+def _collect_wholesaler(wholesaler_code: str, name: str, flask_app, run_time: str):
+    """단일 도매처 수집 + 마스터 업데이트. 성공 여부 반환."""
+    from app.collectors.orchestrator import run_collection
+
+    logger.info(f"[scheduler] {name} 수집 시작")
+    try:
+        with flask_app.app_context():
+            result = run_collection(wholesaler_code, trigger_type="scheduled")
+        if result.get("success"):
+            logger.info(f"[scheduler] {name} 수집 완료")
+            return True
+        else:
+            logger.error(f"[scheduler] {name} 수집 실패: {result.get('error')}")
+            return False
+    except Exception as e:
+        logger.error(f"[scheduler] {name} 수집 예외: {e}")
+        return False
+
+
+def run_all_wholesalers():
+    """매일 새벽 1시 - 전체 도매처 순차 수집"""
     from notifiers.telegram import notify_changes, notify_failure
     from comparators import load_snapshot, save_snapshot, compare
+    from collectors.ownerclan import OwnerclanCollector
 
     downloads_dir = os.getenv("DOWNLOADS_DIR", "/tmp/downloads")
     run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
-    logger.info(f"[scheduler] 오너클랜 수집 시작 ({run_time})")
+    logger.info(f"[scheduler] 전체 도매처 수집 시작 ({run_time})")
 
+    from app import create_app
+    flask_app = create_app()
+
+    # 1. 오너클랜 (파일 스냅샷 + DB 마스터 갱신)
+    logger.info("[scheduler] 오너클랜 수집 시작")
     try:
         result = OwnerclanCollector().run()
     except Exception as e:
         logger.error(f"[scheduler] 오너클랜 수집 예외: {e}")
         notify_failure("오너클랜", str(e)[:300], run_time)
-        return
+        result = {"success": False}
 
     if result.get("success"):
-        total = result.get("total_items", 0)
         items = result.get("items", [])
-
-        # 파일 기반 스냅샷 저장 (스냅샷 유지용, 텔레그램에는 미사용)
         old_snapshot = load_snapshot(downloads_dir)
         compare(old_snapshot, items)
         save_snapshot(items, downloads_dir)
-
-        # DB 마스터 갱신 + 스토어 동기화 + 액션 시그널 감지
         telegram_changes = None
         try:
-            from app import create_app
             from app.master import process_master_update
             from app.wholesalers.models import Wholesaler
-
-            flask_app = create_app()
             with flask_app.app_context():
                 wholesaler = Wholesaler.query.filter_by(code="ownerclan").first()
                 if wholesaler:
                     master_stats = process_master_update(wholesaler.id, items)
-                    logger.info(f"[scheduler] 마스터 업데이트: {master_stats}")
                     telegram_changes = {
                         "신규": master_stats.get("new", 0),
                         "삭제": master_stats.get("discontinued_candidate", 0),
@@ -110,27 +126,52 @@ def run_ownerclan():
                         "이미지변경": master_stats.get("image_change", 0),
                         "상품명변경": master_stats.get("name_change", 0),
                     }
-
-
         except Exception as e:
-            logger.error(f"[scheduler] 마스터 업데이트 실패: {e}")
-
-        logger.info(f"[scheduler] 오너클랜 수집 완료: {total}건")
-        notify_changes("오너클랜", total, run_time, telegram_changes)
+            logger.error(f"[scheduler] 오너클랜 마스터 업데이트 실패: {e}")
+        notify_changes("오너클랜", result.get("total_items", 0), run_time, telegram_changes)
+        logger.info(f"[scheduler] 오너클랜 완료: {result.get('total_items', 0)}건")
     else:
-        error = result.get("error_summary", "알 수 없는 오류")
-        logger.error(f"[scheduler] 오너클랜 수집 실패: {error}")
-        notify_failure("오너클랜", error, run_time)
+        notify_failure("오너클랜", result.get("error_summary", "알 수 없는 오류"), run_time)
+
+    # 2. JTC코리아
+    jtc_ok = _collect_wholesaler("jtckorea", "JTC코리아", flask_app, run_time)
+
+    # 3. 철물박사
+    metal_ok = _collect_wholesaler("metaldiy", "철물박사", flask_app, run_time)
+
+    # 4. DS도매
+    ds_ok = _collect_wholesaler("ds1008", "DS도매", flask_app, run_time)
+
+    # 5. 히트가구
+    hit_ok = _collect_wholesaler("hitdesign", "히트가구", flask_app, run_time)
+
+    # 5. 실패한 도매처 1회 재시도
+    retry_targets = []
+    if not jtc_ok:
+        retry_targets.append(("jtckorea", "JTC코리아"))
+    if not metal_ok:
+        retry_targets.append(("metaldiy", "철물박사"))
+    if not ds_ok:
+        retry_targets.append(("ds1008", "DS도매"))
+    if not hit_ok:
+        retry_targets.append(("hitdesign", "히트가구"))
+
+    if retry_targets:
+        logger.info(f"[scheduler] 재시도 대상: {[n for _, n in retry_targets]}")
+        for code, name in retry_targets:
+            _collect_wholesaler(code, f"{name}(재시도)", flask_app, run_time)
+
+    logger.info(f"[scheduler] 전체 도매처 수집 완료 ({run_time})")
 
 
 if __name__ == "__main__":
     scheduler = BlockingScheduler(timezone=TIMEZONE)
     scheduler.add_job(
-        run_ownerclan,
+        run_all_wholesalers,
         trigger="cron",
         hour=SCHEDULE_HOUR,
         minute=SCHEDULE_MINUTE,
-        id="ownerclan_daily",
+        id="all_wholesalers_daily",
     )
     scheduler.add_job(
         run_store_sync,

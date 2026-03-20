@@ -7,9 +7,15 @@ from app.wholesalers.models import Wholesaler
 def _build_registry():
     from collectors.ownerclan import OwnerclanCollector
     from collectors.jtckorea import JtckoreaCollector
+    from collectors.metaldiy import MetaldiyCollector
+    from collectors.ds1008 import Ds1008Collector
+    from collectors.hitdesign import HitdesignCollector
     return {
         "ownerclan": OwnerclanCollector,
         "jtckorea": JtckoreaCollector,
+        "metaldiy": MetaldiyCollector,
+        "ds1008": Ds1008Collector,
+        "hitdesign": HitdesignCollector,
     }
 
 
