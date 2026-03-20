@@ -47,3 +47,14 @@ class StoreProduct(db.Model):
     __table_args__ = (
         db.UniqueConstraint("naver_store_id", "origin_product_no", name="uq_store_product"),
     )
+
+
+class ProductExclusion(db.Model):
+    __tablename__ = "product_exclusions"
+
+    id = db.Column(db.Integer, primary_key=True)
+    store_product_id = db.Column(db.Integer, db.ForeignKey("store_products.id"), unique=True, nullable=False)
+    reason = db.Column(db.String(256))  # 예외 사유 (선택)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    store_product = db.relationship("StoreProduct", backref=db.backref("exclusion", uselist=False))

@@ -92,7 +92,8 @@ def change_status(origin_product_no: int, status: str, client_id: str = None, cl
         json={"statusType": status},
         timeout=10,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        raise Exception(f"{resp.status_code} {resp.text}")
     return True
 
 
@@ -102,10 +103,18 @@ def update_price(origin_product_no: int, sale_price: int, client_id: str = None,
         f"{API_BASE}/v1/products/origin-products/multi-update",
         headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
         json={
-            "originProductNos": [origin_product_no],
-            "salePrice": sale_price,
+            "multiProductUpdateRequestVos": [
+                {
+                    "originProductNo": int(origin_product_no),
+                    "multiUpdateTypes": ["SALE_PRICE"],
+                    "productSalePrice": {
+                        "salePrice": int(sale_price),
+                    },
+                }
+            ]
         },
         timeout=10,
     )
-    resp.raise_for_status()
+    if not resp.ok:
+        raise Exception(f"{resp.status_code} {resp.text}")
     return True

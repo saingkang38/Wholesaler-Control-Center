@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}예외 상품 관리{% endblock %}
+
+{% block content %}
+<style>
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th { background: #f8f9fa; padding: 10px 12px; text-align: left; border-bottom: 2px solid #dee2e6; }
+  td { padding: 10px 12px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+  tr:hover { background: #fafafa; }
+  .btn { padding: 5px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
+  .btn-danger { background: #dc2626; color: white; }
+  .btn:hover { opacity: 0.85; }
+  .empty { text-align: center; padding: 60px; color: #9ca3af; font-size: 15px; }
+</style>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+    <h2 style="font-size:18px;">예외 상품 관리
+      <span style="font-size:14px; color:#9ca3af; font-weight:normal; margin-left:8px;">총 {{ exclusions|length }}개</span>
+    </h2>
+    <a href="/actions" style="font-size:13px; color:#2563eb; text-decoration:none;">← 액션 관리로</a>
+  </div>
+
+  <p style="font-size:13px; color:#9ca3af; margin-bottom:20px;">
+    예외 등록된 상품은 시그널 감지에서 제외됩니다. 해제하면 다음 감지 사이클부터 다시 포함됩니다.
+  </p>
+
+  {% if exclusions %}
+  <table>
+    <thead>
+      <tr>
+        <th>스토어</th>
+        <th>상품명</th>
+        <th>판매자관리코드</th>
+        <th>예외 사유</th>
+        <th>등록일시</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for exc in exclusions %}
+      <tr id="exc-{{ exc.id }}">
+        <td style="color:#2563eb; font-weight:500;">
+          {{ exc.store_product.naver_store.store_name if exc.store_product.naver_store else '-' }}
+        </td>
+        <td>{{ exc.store_product.product_name or '-' }}</td>
+        <td>{{ exc.store_product.seller_management_code or '-' }}</td>
+        <td style="color:#9ca3af;">{{ exc.reason or '-' }}</td>
+        <td>{{ exc.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>
+          <button class="btn btn-danger" onclick="removeExclusion({{ exc.id }})">해제</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">예외 등록된 상품이 없습니다.</div>
+  {% endif %}
+</div>
+
+<script>
+function removeExclusion(id) {
+  if (!confirm('예외를 해제할까요? 다음 감지 사이클부터 다시 시그널이 생성됩니다.')) return;
+  fetch(`/exclusions/${id}/delete`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok) {
+      const row = document.getElementById('exc-' + id);
+      if (row) row.remove();
+    } else {
+      alert('오류: ' + (data.error || '알 수 없는 오류'));
+    }
+  })
+  .catch(() => alert('처리 중 오류가 발생했습니다.'));
+}
+</script>
+{% endblock %}

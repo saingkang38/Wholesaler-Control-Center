@@ -30,6 +30,7 @@
   .btn-reject { background: #dc2626; color: white; }
   .btn-skip { background: #9ca3af; color: white; }
   .btn-bulk { background: #2c3e50; color: white; padding: 7px 16px; }
+  .btn-exclude { background: #f59e0b; color: white; }
   .btn:hover { opacity: 0.85; }
 
   .empty { text-align: center; padding: 60px; color: #9ca3af; font-size: 15px; }
@@ -56,20 +57,38 @@
     </h2>
   </div>
 
+  {% set store_qs = ("&store_id=" ~ store_filter) if store_filter else "" %}
   <div class="tab-bar">
-    <a href="/actions?status=pending&per_page={{ per_page }}" class="{{ 'active' if status_filter == 'pending' }}">대기중</a>
-    <a href="/actions?status=executed&per_page={{ per_page }}" class="{{ 'active' if status_filter == 'executed' }}">실행완료</a>
-    <a href="/actions?status=rejected&per_page={{ per_page }}" class="{{ 'active' if status_filter == 'rejected' }}">거절</a>
-    <a href="/actions?status=skipped&per_page={{ per_page }}" class="{{ 'active' if status_filter == 'skipped' }}">건너뜀</a>
+    <a href="/actions?status=pending&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'pending' }}">대기중</a>
+    <a href="/actions?status=executed&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'executed' }}">실행완료</a>
+    <a href="/actions?status=reverted&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'reverted' }}">되돌림</a>
+    <a href="/actions?status=rejected&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'rejected' }}">거절</a>
+    <a href="/actions?status=skipped&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'skipped' }}">건너뜀</a>
+  </div>
+
+  <!-- 스토어 필터 -->
+  <div style="margin-bottom:14px;">
+    <a href="/actions?status={{ status_filter }}&per_page={{ per_page }}"
+       style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none; margin-right:6px;
+              background:{{ '#2c3e50' if store_filter == 0 else '#e9ecef' }}; color:{{ 'white' if store_filter == 0 else '#333' }};">
+      전체 스토어
+    </a>
+    {% for st in all_stores %}
+    <a href="/actions?status={{ status_filter }}&per_page={{ per_page }}&store_id={{ st.id }}"
+       style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none; margin-right:6px;
+              background:{{ '#2c3e50' if store_filter == st.id else '#e9ecef' }}; color:{{ 'white' if store_filter == st.id else '#333' }};">
+      {{ st.store_name }}
+    </a>
+    {% endfor %}
   </div>
 
   <!-- 페이지당 수 선택 -->
   <div class="toolbar">
     <span style="font-size:13px; color:#666;">페이지당:</span>
     {% for n in [30, 50, 100, 300, 500, 1000] %}
-    <a href="/actions?status={{ status_filter }}&per_page={{ n }}" class="per-page-btn {{ 'active' if per_page == n }}">{{ n }}</a>
+    <a href="/actions?status={{ status_filter }}&per_page={{ n }}{{ store_qs }}" class="per-page-btn {{ 'active' if per_page == n }}">{{ n }}</a>
     {% endfor %}
-    <a href="/actions?status={{ status_filter }}&per_page=0" class="per-page-btn {{ 'active' if per_page == 0 }}">전체</a>
+    <a href="/actions?status={{ status_filter }}&per_page=0{{ store_qs }}" class="per-page-btn {{ 'active' if per_page == 0 }}">전체</a>
 
     {% if status_filter == 'pending' %}
     <span style="margin-left:10px; font-size:13px; color:#666;">선택:</span>
@@ -86,6 +105,8 @@
         {% if status_filter == 'pending' %}
         <th><input type="checkbox" id="checkAll" onclick="toggleAll(this)"></th>
         {% endif %}
+        <th>도매처</th>
+        <th>스토어</th>
         <th>유형</th>
         <th>상품명</th>
         <th>판매자관리코드</th>
@@ -93,7 +114,7 @@
         <th>마진적용가격</th>
         <th>판매가격</th>
         <th>감지일시</th>
-        {% if status_filter == 'pending' %}<th>처리</th>{% endif %}
+        {% if status_filter in ('pending', 'executed') %}<th>처리</th>{% endif %}
       </tr>
     </thead>
     <tbody>
@@ -102,6 +123,8 @@
         {% if status_filter == 'pending' %}
         <td><input type="checkbox" class="row-check" value="{{ row.id }}"></td>
         {% endif %}
+        <td style="font-size:13px; color:#666;">{{ row.wholesaler_name }}</td>
+        <td style="font-size:13px; color:#2563eb; font-weight:500;">{{ row.store_name }}</td>
         <td><span class="badge badge-{{ row.badge }}">{{ row.label }}</span></td>
         <td>{{ row.product_name }}</td>
         <td>{{ row.seller_code }}</td>
@@ -114,6 +137,11 @@
           <button class="btn btn-approve" onclick="resolve({{ row.id }}, 'approve')">승인</button>
           <button class="btn btn-reject" onclick="resolve({{ row.id }}, 'reject')">거절</button>
           <button class="btn btn-skip" onclick="resolve({{ row.id }}, 'skip')">건너뜀</button>
+          <button class="btn btn-exclude" onclick="exclude({{ row.store_product_id }}, this)">예외</button>
+        </td>
+        {% elif status_filter == 'executed' %}
+        <td>
+          <button class="btn" style="background:#7c3aed;color:white;" onclick="revert({{ row.id }})">되돌리기</button>
         </td>
         {% endif %}
       </tr>
@@ -124,22 +152,23 @@
   <!-- 페이지네이션 -->
   {% if pagination and pagination.pages > 1 %}
   <div class="pagination">
+    {% set base = "/actions?status=" ~ status_filter ~ "&per_page=" ~ per_page ~ ("&store_id=" ~ store_filter if store_filter else "") %}
     {% if pagination.has_prev %}
-    <a href="/actions?status={{ status_filter }}&per_page={{ per_page }}&page={{ pagination.prev_num }}">이전</a>
+    <a href="{{ base }}&page={{ pagination.prev_num }}">이전</a>
     {% endif %}
     {% for p in pagination.iter_pages(left_edge=2, right_edge=2, left_current=2, right_current=2) %}
       {% if p %}
         {% if p == pagination.page %}
         <span class="current">{{ p }}</span>
         {% else %}
-        <a href="/actions?status={{ status_filter }}&per_page={{ per_page }}&page={{ p }}">{{ p }}</a>
+        <a href="{{ base }}&page={{ p }}">{{ p }}</a>
         {% endif %}
       {% else %}
         <span>…</span>
       {% endif %}
     {% endfor %}
     {% if pagination.has_next %}
-    <a href="/actions?status={{ status_filter }}&per_page={{ per_page }}&page={{ pagination.next_num }}">다음</a>
+    <a href="{{ base }}&page={{ pagination.next_num }}">다음</a>
     {% endif %}
   </div>
   {% endif %}
@@ -165,6 +194,45 @@ function resolve(id, action) {
     if (data.ok) {
       const row = document.getElementById('row-' + id);
       if (row) row.remove();
+    } else {
+      alert('오류: ' + (data.error || '알 수 없는 오류'));
+    }
+  })
+  .catch(() => alert('처리 중 오류가 발생했습니다.'));
+}
+
+function exclude(store_product_id, btn) {
+  if (!confirm('이 상품을 예외 등록할까요?\n이후 시그널 감지에서 제외되고, 기존 대기중 시그널은 건너뜀 처리됩니다.')) return;
+  fetch('/exclusions/add', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({store_product_id})
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok) {
+      const row = btn.closest('tr');
+      if (row) row.remove();
+    } else {
+      alert('오류: ' + (data.error || '알 수 없는 오류'));
+    }
+  })
+  .catch(() => alert('처리 중 오류가 발생했습니다.'));
+}
+
+function revert(id) {
+  if (!confirm('이 상품을 실행 전 가격/상태로 되돌릴까요?')) return;
+  fetch(`/actions/${id}/revert`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok) {
+      const row = document.getElementById('row-' + id);
+      if (row) row.remove();
+    } else {
+      alert('오류: ' + (data.error || '알 수 없는 오류'));
     }
   })
   .catch(() => alert('처리 중 오류가 발생했습니다.'));

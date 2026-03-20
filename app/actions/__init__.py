@@ -30,7 +30,16 @@ def actions_page():
     if per_page not in valid_per_page:
         per_page = 50
 
-    query = ActionSignal.query.filter_by(status=status_filter).order_by(ActionSignal.detected_at.desc())
+    store_filter = request.args.get("store_id", 0, type=int)
+
+    from app.store.models import StoreProduct, NaverStore
+    query = ActionSignal.query.filter_by(status=status_filter)
+    if store_filter:
+        sub = db.session.query(StoreProduct.id).filter_by(naver_store_id=store_filter).subquery()
+        query = query.filter(ActionSignal.store_product_id.in_(sub))
+    query = query.order_by(ActionSignal.detected_at.desc())
+
+    all_stores = NaverStore.query.order_by(NaverStore.store_name).all()
 
     if per_page == 0:
         signals = query.all()
@@ -52,9 +61,12 @@ def actions_page():
         margin_price = apply_margin(wholesale_price) if wholesale_price else None
         rows.append({
             "id": s.id,
+            "store_product_id": s.store_product_id,
             "signal_type": s.signal_type,
             "label": SIGNAL_LABELS.get(s.signal_type, {}).get("label", s.signal_type),
             "badge": SIGNAL_LABELS.get(s.signal_type, {}).get("badge", "secondary"),
+            "wholesaler_name": s.master.wholesaler.name if s.master and s.master.wholesaler else "-",
+            "store_name": s.store.naver_store.store_name if s.store and s.store.naver_store else "-",
             "product_name": s.master.product_name if s.master else "-",
             "seller_code": s.store.seller_management_code if s.store else "-",
             "wholesale_price": wholesale_price,
@@ -66,7 +78,42 @@ def actions_page():
     pending_count = ActionSignal.query.filter_by(status="pending").count()
     return render_template("actions.html", rows=rows, status_filter=status_filter,
                            pending_count=pending_count, pagination=pagination,
-                           per_page=per_page, total=total)
+                           per_page=per_page, total=total,
+                           all_stores=all_stores, store_filter=store_filter)
+
+
+@actions_bp.route("/exclusions")
+@login_required
+def exclusions_page():
+    from app.store.models import ProductExclusion
+    exclusions = ProductExclusion.query.order_by(ProductExclusion.created_at.desc()).all()
+    return render_template("exclusions.html", exclusions=exclusions)
+
+
+@actions_bp.route("/exclusions/add", methods=["POST"])
+@login_required
+def add_exclusion():
+    from app.store.models import StoreProduct, ProductExclusion
+    store_product_id = request.json.get("store_product_id")
+    reason = request.json.get("reason", "")
+    store = StoreProduct.query.get_or_404(store_product_id)
+    if store.exclusion:
+        return jsonify({"ok": True})  # 이미 예외 등록됨
+    db.session.add(ProductExclusion(store_product_id=store_product_id, reason=reason))
+    # 기존 pending 시그널 스킵
+    ActionSignal.query.filter_by(store_product_id=store_product_id, status="pending").update({"status": "skipped"})
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@actions_bp.route("/exclusions/<int:exclusion_id>/delete", methods=["POST"])
+@login_required
+def delete_exclusion(exclusion_id):
+    from app.store.models import ProductExclusion
+    exc = ProductExclusion.query.get_or_404(exclusion_id)
+    db.session.delete(exc)
+    db.session.commit()
+    return jsonify({"ok": True})
 
 
 @actions_bp.route("/actions/<int:signal_id>/resolve", methods=["POST"])
@@ -75,18 +122,63 @@ def resolve_signal(signal_id):
     action = request.json.get("action")  # approve / reject / skip
     signal = ActionSignal.query.get_or_404(signal_id)
 
-    if action == "approve":
-        _execute_signal(signal)
-    elif action == "reject":
-        signal.status = "rejected"
-        signal.resolved_at = datetime.utcnow()
-        db.session.commit()
-    elif action == "skip":
-        signal.status = "skipped"
-        signal.resolved_at = datetime.utcnow()
-        db.session.commit()
+    try:
+        if action == "approve":
+            _execute_signal(signal)
+        elif action == "reject":
+            signal.status = "rejected"
+            signal.resolved_at = datetime.utcnow()
+            db.session.commit()
+        elif action == "skip":
+            signal.status = "skipped"
+            signal.resolved_at = datetime.utcnow()
+            db.session.commit()
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
     return jsonify({"ok": True})
+
+
+@actions_bp.route("/actions/<int:signal_id>/revert", methods=["POST"])
+@login_required
+def revert_signal(signal_id):
+    signal = ActionSignal.query.get_or_404(signal_id)
+    if signal.status != "executed":
+        return jsonify({"ok": False, "error": "실행된 항목만 되돌릴 수 있습니다."}), 400
+    try:
+        _revert_signal(signal)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True})
+
+
+def _revert_signal(signal: ActionSignal):
+    from store.naver import update_price, change_status
+
+    store = signal.store
+    current = json.loads(signal.current_value) if signal.current_value else {}
+
+    if not store or not store.naver_store:
+        raise ValueError("스토어 정보 없음")
+
+    client_id = store.naver_store.client_id
+    client_secret = store.naver_store.client_secret
+
+    if signal.signal_type in ("PRICE_UP_NEEDED", "PRICE_DOWN_POSSIBLE"):
+        orig_price = current.get("sale_price")
+        if orig_price:
+            update_price(store.origin_product_no, int(orig_price), client_id=client_id, client_secret=client_secret)
+            store.sale_price = orig_price
+
+    elif signal.signal_type in ("SUSPEND_NEEDED", "RESUME_POSSIBLE", "DISCONTINUE_NEEDED"):
+        orig_status = current.get("store_status")
+        if orig_status:
+            change_status(store.origin_product_no, orig_status, client_id=client_id, client_secret=client_secret)
+            store.store_status = orig_status
+
+    signal.status = "reverted"
+    signal.resolved_at = datetime.utcnow()
+    db.session.commit()
 
 
 def _execute_signal(signal: ActionSignal):
@@ -96,16 +188,24 @@ def _execute_signal(signal: ActionSignal):
         store = signal.store
         suggested = json.loads(signal.suggested_value) if signal.suggested_value else {}
 
+        if not store or not store.naver_store:
+            raise ValueError("스토어 정보 없음")
+
+        client_id = store.naver_store.client_id
+        client_secret = store.naver_store.client_secret
+
         if signal.signal_type in ("PRICE_UP_NEEDED", "PRICE_DOWN_POSSIBLE"):
-            new_price = suggested.get("sale_price")
-            if new_price and store:
-                update_price(store.origin_product_no, new_price)
+            wholesale_price = suggested.get("sale_price")
+            if wholesale_price:
+                from app.settings import apply_margin
+                new_price = apply_margin(wholesale_price)
+                update_price(store.origin_product_no, new_price, client_id=client_id, client_secret=client_secret)
                 store.sale_price = new_price
 
         elif signal.signal_type in ("SUSPEND_NEEDED", "RESUME_POSSIBLE", "DISCONTINUE_NEEDED"):
             new_status = suggested.get("store_status")
-            if new_status and store:
-                change_status(store.origin_product_no, new_status)
+            if new_status:
+                change_status(store.origin_product_no, new_status, client_id=client_id, client_secret=client_secret)
                 store.store_status = new_status
 
         signal.status = "executed"
@@ -113,8 +213,7 @@ def _execute_signal(signal: ActionSignal):
         db.session.commit()
 
     except Exception as e:
-        signal.status = "pending"
-        db.session.commit()
+        db.session.rollback()
         raise e
 
 
@@ -142,6 +241,9 @@ def detect_action_signals(wholesaler_id: int) -> dict:
         master = store.master
 
         if not master or master.wholesaler_id != wholesaler_id:
+            continue
+
+        if store.exclusion:
             continue
 
         _check_price_signals(master, store, stats)
