@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}{% if vat_mode %}부가세 내역{% else %}정산{% endif %}{% endblock %}
+{% block content %}
+<div class="card">
+    <h2 style="margin-bottom:16px;">{% if vat_mode %}부가세 내역{% else %}일별 정산{% endif %}</h2>
+
+    <form method="get" style="display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:20px;">
+        <select name="store_id" style="padding:6px 10px; border:1px solid #ccc; border-radius:4px;">
+            {% for s in stores %}
+            <option value="{{ s.id }}" {% if selected_store and s.id == selected_store.id %}selected{% endif %}>{{ s.store_name }}</option>
+            {% endfor %}
+        </select>
+        {% if vat_mode %}
+        <input type="month" name="year_month" value="{{ year_month }}" style="padding:6px 10px; border:1px solid #ccc; border-radius:4px;">
+        <span style="font-size:12px; color:#888;">※ 전월까지만 조회 가능</span>
+        {% else %}
+        <input type="date" name="start_date" value="{{ start_date }}" style="padding:6px 10px; border:1px solid #ccc; border-radius:4px;">
+        <span>~</span>
+        <input type="date" name="end_date" value="{{ end_date }}" style="padding:6px 10px; border:1px solid #ccc; border-radius:4px;">
+        {% endif %}
+        <button type="submit" style="padding:6px 16px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer;">조회</button>
+    </form>
+
+    <div style="display:flex; gap:8px; margin-bottom:20px;">
+        <a href="/settlement?store_id={{ selected_store.id if selected_store else '' }}"
+           style="padding:6px 14px; border-radius:4px; text-decoration:none; font-size:13px;
+                  background:{% if not vat_mode %}#2c3e50{% else %}#eee{% endif %};
+                  color:{% if not vat_mode %}white{% else %}#333{% endif %};">일별 정산</a>
+        <a href="/settlement/vat?store_id={{ selected_store.id if selected_store else '' }}"
+           style="padding:6px 14px; border-radius:4px; text-decoration:none; font-size:13px;
+                  background:{% if vat_mode %}#2c3e50{% else %}#eee{% endif %};
+                  color:{% if vat_mode %}white{% else %}#333{% endif %};">부가세 내역</a>
+    </div>
+
+    {% if error %}
+    <div style="padding:10px; background:#fee; color:#c00; border-radius:4px; margin-bottom:12px;">오류: {{ error }}</div>
+    {% endif %}
+
+    {% if not selected_store %}
+    <p style="color:#666;">스토어를 선택하세요.</p>
+    {% elif rows %}
+    <table style="width:100%; border-collapse:collapse; font-size:13px;">
+        <thead>
+            <tr style="background:#f0f0f0;">
+                {% if vat_mode %}
+                <th style="padding:8px; border:1px solid #ddd; text-align:left;">날짜</th>
+                <th style="padding:8px; border:1px solid #ddd; text-align:right;">총 판매금액</th>
+                <th style="padding:8px; border:1px solid #ddd; text-align:right;">신용카드</th>
+                <th style="padding:8px; border:1px solid #ddd; text-align:right;">현금영수증(공제)</th>
+                <th style="padding:8px; border:1px solid #ddd; text-align:right;">현금영수증(증빙)</th>
+                <th style="padding:8px; border:1px solid #ddd; text-align:right;">기타</th>
+                {% else %}
+                <th style="padding:8px; border:1px solid #ddd; text-align:left;">정산기준 시작</th>
+                <th style="padding:8px; border:1px solid #ddd; text-align:left;">정산기준 종료</th>
+                <th style="padding:8px; border:1px solid #ddd; text-align:left;">정산완료일</th>
+                <th style="padding:8px; border:1px solid #ddd; text-align:right;">지급정산금액</th>
+                <th style="padding:8px; border:1px solid #ddd; text-align:right;">수수료</th>
+                <th style="padding:8px; border:1px solid #ddd; text-align:right;">최종정산금액</th>
+                {% endif %}
+            </tr>
+        </thead>
+        <tbody>
+        {% for row in rows %}
+        <tr>
+            {% if vat_mode %}
+            <td style="padding:8px; border:1px solid #ddd;">{{ row.get('settleBasisDate','') }}</td>
+            <td style="padding:8px; border:1px solid #ddd; text-align:right;">{{ '{:,}'.format(row.get('totalSalesAmount', 0)|int) }}</td>
+            <td style="padding:8px; border:1px solid #ddd; text-align:right;">{{ '{:,}'.format(row.get('creditCardAmount', 0)|int) }}</td>
+            <td style="padding:8px; border:1px solid #ddd; text-align:right;">{{ '{:,}'.format(row.get('cashInComeDeductionAmount', 0)|int) }}</td>
+            <td style="padding:8px; border:1px solid #ddd; text-align:right;">{{ '{:,}'.format(row.get('cashOutGoingEvidenceAmount', 0)|int) }}</td>
+            <td style="padding:8px; border:1px solid #ddd; text-align:right;">{{ '{:,}'.format(row.get('otherAmount', 0)|int) }}</td>
+            {% else %}
+            <td style="padding:8px; border:1px solid #ddd;">{{ row.get('settleBasisStartDate','') }}</td>
+            <td style="padding:8px; border:1px solid #ddd;">{{ row.get('settleBasisEndDate','') }}</td>
+            <td style="padding:8px; border:1px solid #ddd;">{{ row.get('settleCompleteDate','') }}</td>
+            <td style="padding:8px; border:1px solid #ddd; text-align:right;">{{ '{:,}'.format(row.get('paySettleAmount', 0)|int) }}</td>
+            <td style="padding:8px; border:1px solid #ddd; text-align:right;">{{ '{:,}'.format(row.get('commissionSettleAmount', 0)|int) }}</td>
+            <td style="padding:8px; border:1px solid #ddd; text-align:right; font-weight:bold;">{{ '{:,}'.format(row.get('settleAmount', 0)|int) }}</td>
+            {% endif %}
+        </tr>
+        {% endfor %}
+        </tbody>
+        <tfoot>
+            <tr style="background:#f9f9f9; font-weight:bold;">
+                <td style="padding:8px; border:1px solid #ddd;">합계</td>
+                {% if vat_mode %}
+                <td style="padding:8px; border:1px solid #ddd; text-align:right;">{{ '{:,}'.format((totals.totalSalesAmount or 0)|int) }}</td>
+                <td style="padding:8px; border:1px solid #ddd; text-align:right;">{{ '{:,}'.format((totals.creditCardAmount or 0)|int) }}</td>
+                <td style="padding:8px; border:1px solid #ddd; text-align:right;">{{ '{:,}'.format((totals.cashInComeDeductionAmount or 0)|int) }}</td>
+                <td style="padding:8px; border:1px solid #ddd; text-align:right;">{{ '{:,}'.format((totals.cashOutGoingEvidenceAmount or 0)|int) }}</td>
+                <td style="padding:8px; border:1px solid #ddd; text-align:right;">{{ '{:,}'.format((totals.otherAmount or 0)|int) }}</td>
+                {% else %}
+                <td style="padding:8px; border:1px solid #ddd;"></td>
+                <td style="padding:8px; border:1px solid #ddd;"></td>
+                <td style="padding:8px; border:1px solid #ddd; text-align:right;">{{ '{:,}'.format(rows|sum(attribute='paySettleAmount')|int) }}</td>
+                <td style="padding:8px; border:1px solid #ddd; text-align:right;">{{ '{:,}'.format(rows|sum(attribute='commissionSettleAmount')|int) }}</td>
+                <td style="padding:8px; border:1px solid #ddd; text-align:right;">{{ '{:,}'.format(rows|sum(attribute='settleAmount')|int) }}</td>
+                {% endif %}
+            </tr>
+        </tfoot>
+    </table>
+    {% else %}
+    <p style="color:#666; padding:20px 0;">데이터가 없습니다.</p>
+    {% endif %}
+</div>
+{% endblock %}

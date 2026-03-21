@@ -55,6 +55,7 @@
         </td>
         <td>{{ s.created_at.strftime('%Y-%m-%d') }}</td>
         <td style="white-space:nowrap;">
+          <button class="btn btn-primary" onclick="openEdit({{ s.id }}, '{{ s.store_name }}', '{{ s.client_id }}')">수정</button>
           <form method="post" action="/stores/{{ s.id }}/toggle" style="display:inline;">
             <button class="btn btn-warning">{{ '비활성화' if s.is_active else '활성화' }}</button>
           </form>
@@ -88,4 +89,42 @@
     <button type="submit" class="btn btn-primary">스토어 추가</button>
   </form>
 </div>
+
+<!-- 수정 모달 -->
+<div id="editModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center;">
+  <div style="background:white; border-radius:8px; padding:28px; width:460px; max-width:95%;">
+    <h3 style="font-size:15px; margin-bottom:18px;">스토어 수정</h3>
+    <form id="editForm" method="post">
+      <div style="margin-bottom:12px;">
+        <label style="display:block; font-size:13px; margin-bottom:4px;">스토어 이름</label>
+        <input type="text" id="editName" name="store_name" required>
+      </div>
+      <div style="margin-bottom:12px;">
+        <label style="display:block; font-size:13px; margin-bottom:4px;">애플리케이션 ID</label>
+        <input type="text" id="editClientId" name="client_id" required>
+      </div>
+      <div style="margin-bottom:18px;">
+        <label style="display:block; font-size:13px; margin-bottom:4px;">애플리케이션 시크릿 <span style="color:#9ca3af; font-size:12px;">(변경 시만 입력)</span></label>
+        <input type="password" id="editClientSecret" name="client_secret" placeholder="변경하지 않으면 빈칸으로 두세요">
+      </div>
+      <div style="display:flex; gap:8px; justify-content:flex-end;">
+        <button type="button" onclick="closeEdit()" style="padding:7px 16px; border:1px solid #ccc; background:white; border-radius:4px; cursor:pointer; font-size:13px;">취소</button>
+        <button type="submit" class="btn btn-primary" style="padding:7px 16px;">저장</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+function openEdit(id, name, clientId) {
+  document.getElementById('editForm').action = '/stores/' + id + '/edit';
+  document.getElementById('editName').value = name;
+  document.getElementById('editClientId').value = clientId;
+  document.getElementById('editClientSecret').value = '';
+  document.getElementById('editModal').style.display = 'flex';
+}
+function closeEdit() {
+  document.getElementById('editModal').style.display = 'none';
+}
+</script>
 {% endblock %}

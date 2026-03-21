@@ -97,6 +97,27 @@ def change_status(origin_product_no: int, status: str, client_id: str = None, cl
     return True
 
 
+def update_seller_management_code(origin_product_no: int, seller_management_code: str, client_id: str = None, client_secret: str = None) -> bool:
+    token = _get_access_token(client_id, client_secret)
+    resp = requests.patch(
+        f"{API_BASE}/v1/products/origin-products/multi-update",
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
+        json={
+            "multiProductUpdateRequestVos": [
+                {
+                    "originProductNo": int(origin_product_no),
+                    "multiUpdateTypes": ["SELLER_MANAGEMENT_CODE"],
+                    "sellerManagementCode": seller_management_code,
+                }
+            ]
+        },
+        timeout=10,
+    )
+    if not resp.ok:
+        raise Exception(f"{resp.status_code} {resp.text}")
+    return True
+
+
 def update_price(origin_product_no: int, sale_price: int, client_id: str = None, client_secret: str = None) -> bool:
     token = _get_access_token(client_id, client_secret)
     resp = requests.patch(

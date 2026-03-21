@@ -1,0 +1,278 @@
+{% extends "base.html" %}
+{% block title %}상품 등록{% endblock %}
+{% block content %}
+<style>
+  .form-group { margin-bottom: 18px; }
+  .form-group label { display: block; font-size: 13px; color: #555; margin-bottom: 5px; font-weight: bold; }
+  .form-group input, .form-group select, .form-group textarea {
+    width: 100%; padding: 9px 12px; border: 1px solid #d1d5db; border-radius: 4px;
+    font-size: 13px; box-sizing: border-box;
+  }
+  .form-group textarea { resize: vertical; }
+  .hint { font-size: 12px; color: #9ca3af; margin-top: 3px; }
+  .required { color: #e74c3c; }
+  .section-title { font-size: 14px; font-weight: bold; color: #2c3e50; border-bottom: 2px solid #2c3e50; padding-bottom: 6px; margin: 24px 0 16px; }
+  .price-calc { background: #f0f4f8; border-radius: 6px; padding: 14px; font-size: 13px; margin-top: 8px; }
+  .search-result-box { border: 1px solid #e5e7eb; border-radius: 4px; max-height: 200px; overflow-y: auto; display: none; }
+  .search-result-item { padding: 8px 12px; cursor: pointer; font-size: 13px; border-bottom: 1px solid #f3f4f6; }
+  .search-result-item:hover { background: #f9fafb; }
+  .master-preview { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 14px; margin-bottom: 16px; display: none; }
+</style>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
+    <h2 style="font-size:18px;">상품 등록</h2>
+    <a href="/delivery-presets" style="font-size:13px; color:#2c3e50; text-decoration:underline;">배송비 프리셋 관리 →</a>
+  </div>
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+  {% if messages %}
+  {% for cat, msg in messages %}
+  <div style="padding:12px; margin-bottom:16px; border-radius:4px; background:{% if cat=='error' %}#fee{% else %}#efe{% endif %}; color:{% if cat=='error' %}#c00{% else %}#060{% endif %}; font-size:14px;">{{ msg }}</div>
+  {% endfor %}
+  {% endif %}
+  {% endwith %}
+
+  <form method="post" action="/product-register/submit" id="registerForm">
+    <!-- 스토어 선택 -->
+    <div class="form-group">
+      <label>스토어 <span class="required">*</span></label>
+      <select name="store_id" id="storeSelect">
+        {% for s in stores %}
+        <option value="{{ s.id }}" {% if selected_store and s.id == selected_store.id %}selected{% endif %}>{{ s.store_name }}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div class="section-title">도매처 상품 불러오기</div>
+
+    <!-- 도매처 상품 검색 -->
+    <div class="form-group">
+      <label>도매처 상품 검색</label>
+      <input type="text" id="masterSearch" placeholder="상품명 입력..." autocomplete="off">
+      <div class="search-result-box" id="masterResults"></div>
+    </div>
+
+    <!-- 선택된 도매처 상품 미리보기 -->
+    <div class="master-preview" id="masterPreview">
+      <div style="display:flex; gap:14px; align-items:flex-start;">
+        <img id="previewImg" src="" style="width:80px; height:80px; object-fit:cover; border-radius:4px; border:1px solid #e5e7eb;">
+        <div style="flex:1;">
+          <p style="font-weight:bold; font-size:14px; margin-bottom:4px;" id="previewName"></p>
+          <p style="font-size:13px; color:#6b7280;" id="previewInfo"></p>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-title">상품 기본 정보</div>
+
+    <div class="form-group">
+      <label>상품명 <span class="required">*</span></label>
+      <input type="text" name="name" id="fieldName" value="{{ master.product_name if master else '' }}" placeholder="스마트스토어에 표시될 상품명" required>
+      <p class="hint">최대 100자. 특수문자 과도 사용 금지.</p>
+    </div>
+
+    <div class="form-group">
+      <label>카테고리 <span class="required">*</span></label>
+      <input type="text" id="categorySearch" placeholder="카테고리 검색 (예: 가구, 의류...)" autocomplete="off">
+      <div class="search-result-box" id="categoryResults"></div>
+      <input type="hidden" name="category_id" id="categoryId" value="">
+      <p class="hint" id="categoryName" style="color:#2c3e50;"></p>
+    </div>
+
+    <div class="form-group">
+      <label>판매가 <span class="required">*</span></label>
+      <input type="number" name="sale_price" id="fieldPrice" value="{{ master.price if master else '' }}" placeholder="0" min="0" oninput="calcMargin()">
+      <div class="price-calc" id="priceCalc" style="display:none;">
+        <span>공급가: <strong id="calcSupply">-</strong>원</span>
+        &nbsp;|&nbsp;
+        <span>마진: <strong id="calcMargin">-</strong>원 (<strong id="calcRate">-</strong>%)</span>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label>재고 수량</label>
+      <input type="number" name="stock_qty" value="100" min="0">
+    </div>
+
+    <div class="form-group">
+      <label>판매자 관리 코드</label>
+      <input type="text" name="seller_code" id="fieldSellerCode" value="{{ master.supplier_product_code if master else '' }}" placeholder="도매처 상품코드 (선택)">
+    </div>
+
+    <div class="section-title">이미지</div>
+
+    <div class="form-group">
+      <label>대표 이미지 URL <span class="required">*</span></label>
+      <input type="url" name="image_url" id="fieldImageUrl" value="{{ master.image_url if master else '' }}" placeholder="https://" oninput="previewImage(this.value)">
+      <p class="hint">외부 URL → 네이버 CDN에 자동 업로드됩니다.</p>
+      <img id="imagePreview" src="" style="margin-top:8px; max-width:200px; max-height:200px; border-radius:4px; border:1px solid #e5e7eb; display:none;">
+    </div>
+
+    <div class="section-title">배송 설정</div>
+
+    <div class="form-group">
+      <label>배송비 프리셋 <span class="required">*</span></label>
+      {% if presets %}
+      <select name="preset_id" id="presetSelect" onchange="showPresetDetail()">
+        <option value="">선택하세요</option>
+        {% for p in presets %}
+        <option value="{{ p.id }}"
+                data-fee-type="{{ p.delivery_fee_type }}"
+                data-base-fee="{{ p.base_fee }}"
+                data-cond="{{ p.free_condition_amount }}"
+                data-pay-type="{{ p.delivery_fee_pay_type }}">
+          {{ p.name }}
+        </option>
+        {% endfor %}
+      </select>
+      <p class="hint" id="presetDetail"></p>
+      {% else %}
+      <div style="padding:12px; background:#fff3cd; border-radius:4px; font-size:13px; color:#856404;">
+        배송비 프리셋이 없습니다. <a href="/delivery-presets" style="color:#2c3e50; font-weight:bold;">프리셋 등록하기 →</a>
+      </div>
+      <input type="hidden" name="preset_id" value="">
+      {% endif %}
+    </div>
+
+    <div class="section-title">A/S 정보</div>
+
+    <div class="form-group">
+      <label>A/S 전화번호 <span class="required">*</span></label>
+      <input type="text" name="after_service_tel" placeholder="010-0000-0000" value="010-0000-0000">
+    </div>
+
+    <div class="section-title">상품 상세</div>
+
+    <div class="form-group">
+      <label>상세 설명</label>
+      <textarea name="detail_content" rows="6" placeholder="HTML 또는 텍스트 입력 (비우면 상품명으로 대체)"></textarea>
+      <p class="hint">HTML 태그 사용 가능. 이미지 태그도 포함 가능.</p>
+    </div>
+
+    <div style="margin-top:24px; display:flex; gap:12px;">
+      <button type="submit" style="padding:10px 28px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer; font-size:14px; font-weight:bold;">
+        스마트스토어에 등록
+      </button>
+      <a href="/store-products" style="padding:10px 20px; border:1px solid #ccc; border-radius:4px; font-size:14px; color:#333; text-decoration:none; display:inline-block;">취소</a>
+    </div>
+  </form>
+</div>
+
+<script>
+let supplyPrice = 0;
+
+// 도매처 상품 검색
+let masterTimer;
+document.getElementById('masterSearch').addEventListener('input', function() {
+  clearTimeout(masterTimer);
+  const q = this.value.trim();
+  if (q.length < 2) { document.getElementById('masterResults').style.display = 'none'; return; }
+  masterTimer = setTimeout(() => {
+    const storeId = document.getElementById('storeSelect').value;
+    fetch(`/product-register/search-master?q=${encodeURIComponent(q)}`)
+      .then(r => r.json())
+      .then(items => {
+        const box = document.getElementById('masterResults');
+        if (!items.length) { box.style.display = 'none'; return; }
+        box.innerHTML = items.map(m =>
+          `<div class="search-result-item" onclick="selectMaster(${JSON.stringify(m).replace(/"/g, '&quot;')})">
+            <strong>${m.product_name}</strong>
+            <span style="color:#9ca3af; font-size:12px; margin-left:8px;">${m.wholesaler_name} · ${(m.price||0).toLocaleString()}원</span>
+          </div>`
+        ).join('');
+        box.style.display = 'block';
+      });
+  }, 300);
+});
+
+function selectMaster(m) {
+  document.getElementById('fieldName').value = m.product_name;
+  document.getElementById('fieldPrice').value = m.price || '';
+  document.getElementById('fieldImageUrl').value = m.image_url || '';
+  document.getElementById('fieldSellerCode').value = m.supplier_product_code || '';
+  supplyPrice = m.supply_price || 0;
+  if (m.image_url) previewImage(m.image_url);
+  calcMargin();
+
+  const preview = document.getElementById('masterPreview');
+  document.getElementById('previewImg').src = m.image_url || '';
+  document.getElementById('previewName').textContent = m.product_name;
+  document.getElementById('previewInfo').textContent =
+    `${m.wholesaler_name} | 공급가 ${(m.supply_price||0).toLocaleString()}원 | 코드: ${m.supplier_product_code||'-'}`;
+  preview.style.display = 'block';
+
+  document.getElementById('masterResults').style.display = 'none';
+  document.getElementById('masterSearch').value = '';
+}
+
+// 카테고리 검색
+let catTimer;
+document.getElementById('categorySearch').addEventListener('input', function() {
+  clearTimeout(catTimer);
+  const q = this.value.trim();
+  if (q.length < 2) { document.getElementById('categoryResults').style.display = 'none'; return; }
+  catTimer = setTimeout(() => {
+    const storeId = document.getElementById('storeSelect').value;
+    fetch(`/product-register/search-category?q=${encodeURIComponent(q)}&store_id=${storeId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (data.error) { alert('카테고리 조회 실패: ' + data.error); return; }
+        const box = document.getElementById('categoryResults');
+        if (!data.length) { box.innerHTML = '<div class="search-result-item" style="color:#9ca3af;">검색 결과 없음</div>'; box.style.display='block'; return; }
+        box.innerHTML = data.map(c =>
+          `<div class="search-result-item" onclick="selectCategory('${c.id}', '${c.name.replace(/'/g,"\\'")}')">
+            ${c.name}
+          </div>`
+        ).join('');
+        box.style.display = 'block';
+      });
+  }, 300);
+});
+
+function selectCategory(id, name) {
+  document.getElementById('categoryId').value = id;
+  document.getElementById('categoryName').textContent = '선택됨: ' + name;
+  document.getElementById('categorySearch').value = name;
+  document.getElementById('categoryResults').style.display = 'none';
+}
+
+// 이미지 미리보기
+function previewImage(url) {
+  const img = document.getElementById('imagePreview');
+  if (url) { img.src = url; img.style.display = 'block'; }
+  else { img.style.display = 'none'; }
+}
+{% if master and master.image_url %}
+previewImage('{{ master.image_url }}');
+{% endif %}
+
+// 마진 계산
+function calcMargin() {
+  if (!supplyPrice) { document.getElementById('priceCalc').style.display = 'none'; return; }
+  const price = parseInt(document.getElementById('fieldPrice').value) || 0;
+  const margin = price - supplyPrice;
+  const rate = supplyPrice > 0 ? ((margin / supplyPrice) * 100).toFixed(1) : 0;
+  document.getElementById('calcSupply').textContent = supplyPrice.toLocaleString();
+  document.getElementById('calcMargin').textContent = margin.toLocaleString();
+  document.getElementById('calcRate').textContent = rate;
+  document.getElementById('priceCalc').style.display = 'block';
+}
+
+// 배송비 프리셋 상세
+function showPresetDetail() {
+  const sel = document.getElementById('presetSelect');
+  const opt = sel.options[sel.selectedIndex];
+  if (!opt.value) { document.getElementById('presetDetail').textContent = ''; return; }
+  const feeType = {'FREE':'무료배송', 'PAID':'유료', 'CONDITIONAL_FREE':'조건부 무료'}[opt.dataset.feeType] || opt.dataset.feeType;
+  const baseFee = parseInt(opt.dataset.baseFee||0).toLocaleString();
+  const cond = parseInt(opt.dataset.cond||0).toLocaleString();
+  const payType = opt.dataset.payType === 'PREPAID' ? '선결제' : '착불';
+  let detail = `${feeType}`;
+  if (opt.dataset.feeType === 'PAID') detail += ` · ${baseFee}원`;
+  if (opt.dataset.feeType === 'CONDITIONAL_FREE') detail += ` · ${cond}원 이상 무료`;
+  detail += ` · ${payType}`;
+  document.getElementById('presetDetail').textContent = detail;
+}
+</script>
+{% endblock %}

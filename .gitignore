@@ -1,4 +1,5 @@
 .env
+.env.local
 *.db
 __pycache__/
 *.pyc
@@ -6,3 +7,9 @@ __pycache__/
 downloads/
 instance/
 .pytest_cache/
+# 디버그/임시 파일
+debug_*.py
+test_*.py
+*_response.html
+zentrade_debug.txt
+where

@@ -15,8 +15,12 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
     if snapshot_date is None:
         snapshot_date = datetime.utcnow().date()
 
+    from app.wholesalers.models import Wholesaler
+    wholesaler = Wholesaler.query.get(wholesaler_id)
+    prefix = (wholesaler.prefix or "") if wholesaler else ""
+
     today_map = {
-        item["source_product_code"]: item
+        f"{prefix}{item['source_product_code']}": item
         for item in items
         if item.get("source_product_code")
     }

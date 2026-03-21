@@ -7,10 +7,44 @@
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Malgun Gothic', sans-serif; background: #f5f5f5; color: #333; }
-        nav { background: #2c3e50; color: white; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; }
+        nav { background: #2c3e50; color: white; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 8px; }
         nav .logo { font-size: 16px; font-weight: bold; }
         nav a { color: #ccc; text-decoration: none; font-size: 14px; }
         nav a:hover { color: white; }
+
+        /* 드롭다운 */
+        .nav-dropdown { position: relative; }
+        .nav-dropdown > .nav-dropdown-trigger {
+            color: #ccc; font-size: 14px; cursor: pointer;
+            padding: 4px 0;
+            display: flex; align-items: center; gap: 4px;
+        }
+        .nav-dropdown > .nav-dropdown-trigger:hover { color: white; }
+        .nav-dropdown > .nav-dropdown-trigger::after { content: '▾'; font-size: 11px; }
+        .nav-dropdown-menu {
+            display: none;
+            position: absolute;
+            top: 100%;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #1a252f;
+            border-radius: 6px;
+            min-width: 130px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+            z-index: 999;
+            overflow: hidden;
+            padding-top: 10px;
+        }
+        .nav-dropdown-menu a {
+            display: block;
+            padding: 10px 16px;
+            color: #ccc;
+            font-size: 13px;
+            white-space: nowrap;
+        }
+        .nav-dropdown-menu a:hover { background: #2c3e50; color: white; }
+        .nav-dropdown:hover .nav-dropdown-menu { display: block; }
+
         .container { max-width: 1200px; margin: 32px auto; padding: 0 24px; }
         .card { background: white; border-radius: 8px; padding: 24px; margin-bottom: 20px; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }
     </style>
@@ -19,13 +53,31 @@
     {% block nav %}
     <nav>
         <span class="logo">도매처 통합 관리 시스템</span>
-        <div style="display:flex; gap:20px; align-items:center;">
+        <div style="display:flex; gap:20px; align-items:center; flex-wrap:wrap;">
             <a href="/dashboard">대시보드</a>
+            <a href="/store-overview">스토어 현황</a>
             <a href="/store-products">스토어 상품</a>
-            <a href="/stores">스토어 관리</a>
+            <a href="/product-register">상품 등록</a>
+            <a href="/product-prep">상품 가공</a>
+            <a href="/bulk-register">대량 등록</a>
+            <a href="/orders">주문</a>
+            <a href="/inquiries">문의</a>
+            <a href="/settlement">정산</a>
             <a href="/actions">액션 관리</a>
             <a href="/exclusions">예외 관리</a>
-            <a href="/settings/margin">마진 설정</a>
+            <a href="/exporter/smartstore">엑셀 출력</a>
+            <a href="/logs">로그</a>
+
+            <!-- 설정 드롭다운 -->
+            <div class="nav-dropdown">
+                <span class="nav-dropdown-trigger">설정</span>
+                <div class="nav-dropdown-menu">
+                    <a href="/stores">스토어 관리</a>
+                    <a href="/delivery-presets">배송비 설정</a>
+                    <a href="/settings/margin">마진 설정</a>
+                </div>
+            </div>
+
             <a href="/logout">로그아웃</a>
         </div>
     </nav>

@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}자동 제안 — 미매칭 상품{% endblock %}
+{% block content %}
+<style>
+    .overview-header { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; flex-wrap: wrap; }
+    .store-select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th { background: #f0f0f0; padding: 10px 14px; text-align: left; border-bottom: 2px solid #ddd; }
+    td { padding: 10px 14px; border-bottom: 1px solid #eee; }
+    tr:hover td { background: #fafafa; }
+    .btn-sync { padding: 8px 16px; background: #2c3e50; color: white; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; text-decoration: none; display: inline-block; }
+    .btn-sync:hover { background: #3d5166; }
+    .btn-back { padding: 8px 16px; background: #6c757d; color: white; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; text-decoration: none; display: inline-block; }
+    .btn-back:hover { background: #5a6268; }
+    .flash-success { background: #e6f4ea; border: 1px solid #a8d5b5; color: #2e7d32; padding: 10px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
+    .flash-error { background: #fce8e8; border: 1px solid #f5c6c6; color: #c62828; padding: 10px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
+    .empty-msg { color: #999; padding: 20px 0; font-size: 14px; }
+</style>
+
+<div class="card">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+    <div class="flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+    {% endwith %}
+
+    <div class="overview-header">
+        <a href="/store-overview{% if selected_store %}?store_id={{ selected_store.id }}{% endif %}" class="btn-back">← 스토어 현황</a>
+        <h2 style="font-size:18px; font-weight:bold;">미매칭 상품 자동 제안</h2>
+        <form method="get" action="/store-overview/proposals" style="display:flex; align-items:center; gap:8px;">
+            <select name="store_id" class="store-select" onchange="this.form.submit()">
+                {% for s in stores %}
+                <option value="{{ s.id }}" {% if selected_store and s.id == selected_store.id %}selected{% endif %}>
+                    {{ s.store_name }}
+                </option>
+                {% endfor %}
+            </select>
+        </form>
+    </div>
+
+    <p style="font-size:13px; color:#666; margin-bottom:16px;">
+        스마트스토어에서 판매자관리코드를 직접 수정 후 sync를 실행하세요.
+        아래 목록은 sync 후에도 미매칭인 상품 중 DB와 코드가 정확히 일치하는 상품입니다.
+        적용 시 스마트스토어 코드는 변경되지 않으며, DB 매칭만 생성됩니다.
+    </p>
+
+    {% if proposals %}
+    <div style="margin-bottom:12px;">
+        <input type="checkbox" id="chk-all" onchange="toggleAll(this)"> <label for="chk-all" style="font-size:13px; cursor:pointer;">전체 선택</label>
+    </div>
+    <table>
+        <thead>
+            <tr>
+                <th style="width:36px;"></th>
+                <th>스토어 상품명</th>
+                <th>현재 코드</th>
+                <th>제안 도매처 상품명</th>
+                <th>제안 코드</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in proposals %}
+            <tr>
+                <td>
+                    <input type="checkbox" class="row-chk" checked
+                        data-code="{{ row.current_code }}">
+                </td>
+                <td style="max-width:220px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;" title="{{ row.store_name }}">{{ row.store_name }}</td>
+                <td style="font-size:12px; color:#888;">{{ row.current_code or '-' }}</td>
+                <td style="max-width:220px; overflow:hidden; white-space:nowrap; text-overflow:ellipsis;" title="{{ row.candidate_name }}">{{ row.candidate_name }}</td>
+                <td style="font-family:monospace; font-size:12px;">{{ row.candidate_code }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+
+    <div style="margin-top:16px; display:flex; align-items:center; gap:12px;">
+        <button type="button" class="btn-sync" onclick="applyProposals()">선택 항목 매칭 적용</button>
+        <span id="apply-result" style="font-size:13px;"></span>
+    </div>
+
+    {% else %}
+    <p class="empty-msg">exact match 가능한 미매칭 상품이 없습니다.</p>
+    {% endif %}
+</div>
+
+<script>
+const STORE_ID = {{ selected_store.id if selected_store else 'null' }};
+
+function toggleAll(el) {
+    document.querySelectorAll('.row-chk').forEach(c => c.checked = el.checked);
+}
+
+function applyProposals() {
+    const checked = document.querySelectorAll('.row-chk:checked');
+    if (!checked.length) {
+        alert('선택된 항목이 없습니다.');
+        return;
+    }
+    const codes = [];
+    checked.forEach(c => codes.push(c.dataset.code));
+
+    const resultEl = document.getElementById('apply-result');
+    resultEl.textContent = '적용 중...';
+    resultEl.style.color = '#999';
+
+    fetch('/store-overview/apply-proposals', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({store_id: STORE_ID, codes}),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.error) {
+            resultEl.textContent = `오류: ${data.error}`;
+            resultEl.style.color = '#c62828';
+        } else {
+            resultEl.textContent = `완료 — 매칭 ${data.matched}건 / 미매칭 ${data.unmatched}건 / DB없음 ${data.not_found}건`;
+            resultEl.style.color = '#2e7d32';
+            setTimeout(() => location.reload(), 1500);
+        }
+    })
+    .catch(e => {
+        resultEl.textContent = `오류: ${e}`;
+        resultEl.style.color = '#c62828';
+    });
+}
+</script>
+{% endblock %}

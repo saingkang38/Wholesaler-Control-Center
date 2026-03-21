@@ -1,7 +1,9 @@
 from pathlib import Path
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parent / ".env", override=True)
+base = Path(__file__).resolve().parent
+load_dotenv(base / ".env", override=True)
+load_dotenv(base / ".env.local", override=True)
 
 from app import create_app
 

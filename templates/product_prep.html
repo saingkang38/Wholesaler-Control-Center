@@ -1,0 +1,158 @@
+{% extends "base.html" %}
+{% block title %}상품 가공{% endblock %}
+{% macro buildPageUrl(p) %}
+/product-prep?page={{ p }}&limit={{ selected_limit }}{% if selected_wholesaler_id %}&wholesaler_id={{ selected_wholesaler_id }}{% endif %}
+{% endmacro %}
+{% block content %}
+<style>
+  .toolbar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
+  .btn { padding:7px 16px; border:none; border-radius:4px; cursor:pointer; font-size:14px; }
+  .btn-primary { background:#2c3e50; color:white; }
+  .btn-primary:hover { background:#1a252f; }
+  .btn-secondary { background:#eee; color:#333; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { background:#f0f0f0; padding:8px; text-align:left; border-bottom:2px solid #ddd; }
+  td { padding:8px; border-bottom:1px solid #eee; vertical-align:middle; }
+  .badge-ready { background:#d4edda; color:#155724; padding:2px 8px; border-radius:10px; font-size:12px; }
+  .badge-unready { background:#eee; color:#888; padding:2px 8px; border-radius:10px; font-size:12px; }
+  #uploadResult { margin-top:12px; padding:12px; border-radius:4px; display:none; }
+  #uploadResult.success { background:#d4edda; color:#155724; }
+  #uploadResult.error { background:#f8d7da; color:#721c24; }
+</style>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+    <h2 style="font-size:18px;">상품 가공 <span style="font-size:14px; color:#888;">(미가공 총 {{ total }}개 / {{ page }}/{{ total_pages }}페이지)</span></h2>
+  </div>
+
+  <div class="toolbar">
+    <select id="wholesalerSelect" onchange="changeWholesaler()" style="padding:6px 10px; border:1px solid #ccc; border-radius:4px; font-size:14px;">
+      <option value="">전체 도매처</option>
+      {% for w in wholesalers %}
+      <option value="{{ w.id }}" {% if selected_wholesaler_id == w.id %}selected{% endif %}>{{ w.name }}</option>
+      {% endfor %}
+    </select>
+    <select id="limitSelect" onchange="changeLimit()" style="padding:6px 10px; border:1px solid #ccc; border-radius:4px; font-size:14px;">
+      {% for n in [20, 50, 100, 300, 500, 1000, 2000] %}
+      <option value="{{ n }}" {% if selected_limit == n %}selected{% endif %}>{{ n }}개</option>
+      {% endfor %}
+    </select>
+    <a id="downloadBtn" href="/product-prep/download{% if selected_wholesaler_id %}?wholesaler_id={{ selected_wholesaler_id }}{% endif %}" class="btn btn-primary">CSV 다운로드</a>
+    <span style="font-size:13px; color:#666;">→ 외부 편집 후 아래에 재업로드</span>
+  </div>
+
+  <!-- 업로드 폼 -->
+  <div style="border:1px dashed #ccc; border-radius:6px; padding:16px; margin-bottom:20px;">
+    <p style="font-size:13px; color:#555; margin-bottom:10px;">
+      CSV에서 <strong>edited_name</strong>과 <strong>category_id</strong>를 모두 채운 행은 <strong>가공 완료</strong>로 처리됩니다.
+    </p>
+    <form id="uploadForm" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:center;">
+      <input type="file" name="file" accept=".csv" id="csvFile" style="font-size:13px;">
+      <button type="button" class="btn btn-primary" onclick="uploadCSV()">업로드</button>
+    </form>
+    <div id="uploadResult"></div>
+  </div>
+
+  <!-- 미가공 상품 목록 -->
+  <table>
+    <thead>
+      <tr>
+        <th>코드</th>
+        <th>도매처</th>
+        <th>원래 상품명</th>
+        <th>가공명</th>
+        <th>카테고리 ID</th>
+        <th>상태</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in products %}
+      <tr>
+        <td style="font-size:12px; color:#888;">{{ m.supplier_product_code }}</td>
+        <td>{{ m.wholesaler.name if m.wholesaler else '-' }}</td>
+        <td>{{ m.product_name or '-' }}</td>
+        <td>{{ m.edited_name or '-' }}</td>
+        <td>{{ m.category_id or '-' }}</td>
+        <td>
+          {% if m.is_prep_ready %}
+          <span class="badge-ready">완료</span>
+          {% else %}
+          <span class="badge-unready">미가공</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" style="text-align:center; color:#aaa; padding:20px;">미가공 상품이 없습니다.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- 페이지네이션 (하단, 게시판 스타일) -->
+  {% if total_pages > 1 %}
+  {% set group_size = 10 %}
+  {% set group_start = ((page - 1) // group_size) * group_size + 1 %}
+  {% set group_end = [group_start + group_size - 1, total_pages] | min %}
+  {% set prev_group = group_start - group_size %}
+  {% set next_group = group_start + group_size %}
+  <div style="display:flex; justify-content:center; align-items:center; gap:4px; margin-top:20px; flex-wrap:wrap;">
+    <!-- 맨 앞 -->
+    <a href="{{ buildPageUrl(1) }}" style="padding:5px 9px; border:1px solid #ddd; border-radius:4px; font-size:13px; text-decoration:none; color:{% if page == 1 %}#bbb{% else %}#333{% endif %}; pointer-events:{% if page == 1 %}none{% else %}auto{% endif %};">◀◀</a>
+    <!-- 이전 그룹 -->
+    <a href="{{ buildPageUrl([prev_group, 1]|max) }}" style="padding:5px 9px; border:1px solid #ddd; border-radius:4px; font-size:13px; text-decoration:none; color:{% if group_start == 1 %}#bbb{% else %}#333{% endif %}; pointer-events:{% if group_start == 1 %}none{% else %}auto{% endif %};">◀</a>
+    <!-- 페이지 번호 -->
+    {% for p in range(group_start, group_end + 1) %}
+    <a href="{{ buildPageUrl(p) }}" style="padding:5px 10px; border:1px solid {% if p == page %}#2c3e50{% else %}#ddd{% endif %}; border-radius:4px; font-size:13px; text-decoration:none; background:{% if p == page %}#2c3e50{% else %}white{% endif %}; color:{% if p == page %}white{% else %}#333{% endif %};">{{ p }}</a>
+    {% endfor %}
+    <!-- 다음 그룹 -->
+    <a href="{{ buildPageUrl([next_group, total_pages]|min) }}" style="padding:5px 9px; border:1px solid #ddd; border-radius:4px; font-size:13px; text-decoration:none; color:{% if group_start + group_size > total_pages %}#bbb{% else %}#333{% endif %}; pointer-events:{% if group_start + group_size > total_pages %}none{% else %}auto{% endif %};">▶</a>
+    <!-- 맨 뒤 -->
+    <a href="{{ buildPageUrl(total_pages) }}" style="padding:5px 9px; border:1px solid #ddd; border-radius:4px; font-size:13px; text-decoration:none; color:{% if page == total_pages %}#bbb{% else %}#333{% endif %}; pointer-events:{% if page == total_pages %}none{% else %}auto{% endif %};">▶▶</a>
+  </div>
+  {% endif %}
+</div>
+
+<script>
+function buildUrl(page) {
+  const wid = document.getElementById('wholesalerSelect').value;
+  const lim = document.getElementById('limitSelect').value;
+  const params = new URLSearchParams();
+  if (wid) params.set('wholesaler_id', wid);
+  if (lim) params.set('limit', lim);
+  params.set('page', page || 1);
+  return '/product-prep?' + params.toString();
+}
+
+function changeWholesaler() { window.location.href = buildUrl(1); }
+function changeLimit() { window.location.href = buildUrl(1); }
+
+async function uploadCSV() {
+  const fileInput = document.getElementById('csvFile');
+  if (!fileInput.files.length) {
+    alert('CSV 파일을 선택하세요.');
+    return;
+  }
+  const formData = new FormData();
+  formData.append('file', fileInput.files[0]);
+
+  const resp = await fetch('/product-prep/upload', { method: 'POST', body: formData });
+  const data = await resp.json();
+  const el = document.getElementById('uploadResult');
+  el.style.display = 'block';
+
+  if (resp.ok) {
+    el.className = 'success';
+    let msg = `완료: ${data.updated}개 가공 처리, ${data.skipped}개 건너뜀`;
+    if (data.errors && data.errors.length) {
+      msg += `<br>오류: ${data.errors.join(', ')}`;
+    }
+    el.innerHTML = msg;
+    if (data.updated > 0) {
+      setTimeout(() => location.reload(), 1500);
+    }
+  } else {
+    el.className = 'error';
+    el.textContent = data.error || '업로드 실패';
+  }
+}
+</script>
+{% endblock %}

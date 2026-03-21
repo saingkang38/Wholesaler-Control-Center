@@ -1,0 +1,118 @@
+{% extends "base.html" %}
+{% block title %}스토어 현황{% endblock %}
+{% block content %}
+<style>
+    .overview-header { display: flex; align-items: center; gap: 16px; margin-bottom: 24px; }
+    .store-select { padding: 8px 12px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th { background: #f0f0f0; padding: 10px 14px; text-align: left; border-bottom: 2px solid #ddd; }
+    td { padding: 10px 14px; border-bottom: 1px solid #eee; }
+    tr:hover td { background: #fafafa; }
+    .tfoot td { font-weight: bold; background: #f9f9f9; border-top: 2px solid #ddd; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+    .badge-sale { background: #e6f4ea; color: #2e7d32; }
+    .badge-soldout { background: #fce8e8; color: #c62828; }
+    .badge-price { background: #fff3e0; color: #e65100; }
+    .unmatched-box { background: #fff8e1; border: 1px solid #ffe082; border-radius: 6px; padding: 12px 16px; margin-top: 16px; font-size: 14px; }
+    .num { text-align: right; }
+    .btn-sync { padding: 8px 16px; background: #2c3e50; color: white; border: none; border-radius: 6px; font-size: 14px; cursor: pointer; }
+    .btn-sync:hover { background: #3d5166; }
+    .flash-success { background: #e6f4ea; border: 1px solid #a8d5b5; color: #2e7d32; padding: 10px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
+    .flash-error { background: #fce8e8; border: 1px solid #f5c6c6; color: #c62828; padding: 10px 16px; border-radius: 6px; margin-bottom: 16px; font-size: 14px; }
+</style>
+
+<div class="card">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% for category, message in messages %}
+    <div class="flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+    {% endwith %}
+
+    <div class="overview-header">
+        <h2 style="font-size:18px; font-weight:bold;">스토어별 도매처 현황</h2>
+        <form method="get" action="/store-overview" style="display:flex; align-items:center; gap:8px;">
+            <select name="store_id" class="store-select" onchange="this.form.submit()">
+                {% for s in stores %}
+                <option value="{{ s.id }}" {% if selected_store and s.id == selected_store.id %}selected{% endif %}>
+                    {{ s.store_name }}
+                </option>
+                {% endfor %}
+            </select>
+        </form>
+        {% if selected_store %}
+        <form method="post" action="/store-overview/sync">
+            <input type="hidden" name="store_id" value="{{ selected_store.id }}">
+            <button type="submit" class="btn-sync">🔄 지금 동기화 (재매칭)</button>
+        </form>
+        {% endif %}
+    </div>
+
+    {% if data %}
+    <table>
+        <thead>
+            <tr>
+                <th>도매처</th>
+                <th class="num">총 상품수</th>
+                <th class="num">판매중</th>
+                <th class="num">품절</th>
+                <th class="num">가격변동 필요</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for row in data %}
+            <tr>
+                <td>{{ row.wholesaler_name }}</td>
+                <td class="num">{{ row.total }}</td>
+                <td class="num"><span class="badge badge-sale">{{ row.sale }}</span></td>
+                <td class="num"><span class="badge badge-soldout">{{ row.soldout }}</span></td>
+                <td class="num">
+                    {% if row.price_changes > 0 %}
+                    <span class="badge badge-price">{{ row.price_changes }}</span>
+                    {% else %}
+                    <span style="color:#aaa;">0</span>
+                    {% endif %}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+        <tfoot>
+            <tr class="tfoot">
+                <td>합계</td>
+                <td class="num">{{ totals.total }}</td>
+                <td class="num">{{ totals.sale }}</td>
+                <td class="num">{{ totals.soldout }}</td>
+                <td class="num">{{ totals.price_changes }}</td>
+            </tr>
+        </tfoot>
+    </table>
+
+    {% if unmatched > 0 %}
+    <div class="unmatched-box">
+        ⚠ 도매처 미매칭 상품 <strong>{{ unmatched }}건</strong> — 판매자관리코드가 없거나 prefix가 맞지 않는 상품입니다.
+        <a href="/store-overview/proposals?store_id={{ selected_store.id }}" class="btn-sync" style="margin-left:12px; font-size:13px; padding:5px 12px; text-decoration:none;">자동 제안 불러오기</a>
+    </div>
+    {% endif %}
+
+    {% else %}
+    <p style="color:#999; padding: 20px 0;">스토어를 선택하면 도매처별 현황이 표시됩니다.</p>
+    {% endif %}
+</div>
+
+{% if selected_store %}
+<div class="card">
+    <h3 style="font-size:15px; font-weight:bold; margin-bottom:12px;">부분 재매칭 (선택 코드만)</h3>
+    <p style="font-size:13px; color:#666; margin-bottom:10px;">
+        스마트스토어에서 판매자관리코드를 수정한 상품 코드를 아래에 붙여넣으세요.<br>
+        한 줄에 하나씩, 네이버 API 호출 없이 빠르게 재매칭합니다.
+    </p>
+    <form method="post" action="/store-overview/rematch-codes">
+        <input type="hidden" name="store_id" value="{{ selected_store.id }}">
+        <textarea name="codes" rows="6" placeholder="예시:&#10;on_W000312&#10;on_W000450&#10;ds_A1234" style="width:100%; padding:10px; border:1px solid #ddd; border-radius:6px; font-size:13px; font-family:monospace; resize:vertical;"></textarea>
+        <div style="margin-top:10px;">
+            <button type="submit" class="btn-sync">재매칭 실행</button>
+        </div>
+    </form>
+</div>
+{% endif %}
+
+{% endblock %}

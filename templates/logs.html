@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block title %}동기화 로그{% endblock %}
+{% block content %}
+<style>
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { background: #f0f0f0; padding: 10px 14px; text-align: left; border-bottom: 2px solid #ddd; }
+    td { padding: 10px 14px; border-bottom: 1px solid #eee; vertical-align: top; }
+    tr:hover td { background: #fafafa; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
+    .badge-success { background: #e6f4ea; color: #2e7d32; }
+    .badge-error { background: #fce8e8; color: #c62828; }
+    .badge-sync { background: #e3f2fd; color: #1565c0; }
+    .badge-rematch { background: #fff3e0; color: #e65100; }
+    .mono { font-family: monospace; font-size: 12px; color: #555; }
+</style>
+
+<div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <h2 style="font-size:18px; font-weight:bold;">동기화 / 재매칭 로그</h2>
+        <span style="font-size:13px; color:#999;">최근 200건</span>
+    </div>
+
+    {% if logs %}
+    <table>
+        <thead>
+            <tr>
+                <th style="width:160px;">시각</th>
+                <th>스토어</th>
+                <th style="width:100px;">액션</th>
+                <th style="width:80px;">결과</th>
+                <th>상세</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for log in logs %}
+            <tr>
+                <td class="mono">{{ log.created_at.strftime('%Y-%m-%d %H:%M:%S') }}</td>
+                <td>{{ log.naver_store.store_name if log.naver_store else '-' }}</td>
+                <td>
+                    {% if log.action == 'FULL_SYNC' %}
+                    <span class="badge badge-sync">전체동기화</span>
+                    {% elif log.action == 'REMATCH' %}
+                    <span class="badge badge-rematch">부분재매칭</span>
+                    {% else %}
+                    <span class="badge">{{ log.action }}</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <span class="badge badge-{{ log.result }}">{{ log.result }}</span>
+                </td>
+                <td class="mono">{{ log.detail }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color:#999; padding:20px 0;">아직 로그가 없습니다. 동기화 또는 재매칭을 실행하면 여기에 기록됩니다.</p>
+    {% endif %}
+</div>
+{% endblock %}

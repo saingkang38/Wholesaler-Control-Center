@@ -1,0 +1,244 @@
+{% extends "base.html" %}
+{% block title %}대량 등록{% endblock %}
+{% block content %}
+<style>
+  .filter-bar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
+  .filter-bar select, .filter-bar input { padding:6px 10px; border:1px solid #ccc; border-radius:4px; font-size:14px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { background:#f0f0f0; padding:8px; text-align:left; border-bottom:2px solid #ddd; }
+  td { padding:8px; border-bottom:1px solid #eee; vertical-align:middle; }
+  tr:hover td { background:#fafafa; }
+  .img-thumb { width:48px; height:48px; object-fit:cover; border-radius:4px; }
+  .btn { padding:7px 16px; border:none; border-radius:4px; cursor:pointer; font-size:14px; }
+  .btn-primary { background:#2c3e50; color:white; }
+  .btn-primary:hover { background:#1a252f; }
+  .btn-primary:disabled { background:#aaa; cursor:not-allowed; }
+  .overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:100; align-items:center; justify-content:center; }
+  .overlay.active { display:flex; }
+  .modal { background:white; border-radius:8px; padding:28px; width:440px; max-width:95vw; }
+  .modal h3 { margin-bottom:16px; font-size:16px; }
+  .form-row { margin-bottom:14px; }
+  .form-row label { display:block; font-size:13px; margin-bottom:4px; font-weight:600; }
+  .form-row input, .form-row select { width:100%; padding:7px 10px; border:1px solid #ccc; border-radius:4px; font-size:14px; }
+  .progress-wrap { background:#eee; border-radius:4px; height:14px; overflow:hidden; margin:10px 0 4px; }
+  .progress-bar { height:100%; background:#2c3e50; transition:width 0.3s; }
+  .status-badge { padding:2px 8px; border-radius:10px; font-size:12px; font-weight:600; }
+  .status-pending { background:#eee; color:#666; }
+  .status-success { background:#d4edda; color:#155724; }
+  .status-error { background:#f8d7da; color:#721c24; }
+  .count-info { font-size:13px; color:#666; }
+</style>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+    <h2 style="font-size:18px;">대량 상품 등록</h2>
+    <div class="filter-bar">
+      <select id="storeSelect" onchange="changeStore()">
+        {% for s in stores %}
+        <option value="{{ s.id }}" {% if selected_store and selected_store.id == s.id %}selected{% endif %}>{{ s.store_name }}</option>
+        {% endfor %}
+      </select>
+      <input type="text" id="searchInput" placeholder="상품명 검색..." oninput="filterTable()" style="width:200px;">
+      <span class="count-info" id="countInfo">0개</span>
+      <button class="btn btn-primary" onclick="openModal()" id="registerBtn" disabled>선택 등록</button>
+    </div>
+  </div>
+
+  <div id="loadingMsg" style="text-align:center;padding:20px;color:#888;">불러오는 중...</div>
+
+  <table id="productTable" style="display:none;">
+    <thead>
+      <tr>
+        <th><input type="checkbox" id="checkAll" onchange="toggleAll(this)"></th>
+        <th>이미지</th>
+        <th>상품명</th>
+        <th>도매처</th>
+        <th>코드</th>
+        <th>공급가</th>
+        <th>정가</th>
+      </tr>
+    </thead>
+    <tbody id="tableBody"></tbody>
+  </table>
+</div>
+
+<!-- 설정 모달 -->
+<div class="overlay" id="modalOverlay">
+  <div class="modal">
+    <h3>대량 등록 설정</h3>
+    <div class="form-row">
+      <label>배송비 프리셋</label>
+      <select id="presetId">
+        <option value="">-- 무료배송(기본) --</option>
+        {% for p in presets %}
+        <option value="{{ p.id }}">{{ p.name }} ({{ p.delivery_fee_type }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-row">
+      <label>마진율 (%)</label>
+      <input type="number" id="marginRate" value="30" min="0" max="200">
+    </div>
+    <div class="form-row">
+      <label>A/S 전화번호</label>
+      <input type="text" id="afterServiceTel" value="010-0000-0000">
+    </div>
+    <div style="display:flex; gap:10px; justify-content:flex-end; margin-top:20px;">
+      <button class="btn" style="background:#eee;" onclick="closeModal()">취소</button>
+      <button class="btn btn-primary" id="startBtn" onclick="startBulkRegister()">등록 시작</button>
+    </div>
+  </div>
+</div>
+
+<!-- 진행 상황 모달 -->
+<div class="overlay" id="progressOverlay">
+  <div class="modal">
+    <h3>등록 진행 중...</h3>
+    <div class="progress-wrap"><div class="progress-bar" id="progressBar" style="width:0%"></div></div>
+    <div id="progressText" style="font-size:13px; text-align:center; margin-bottom:16px;">0 / 0</div>
+    <table style="width:100%; font-size:12px;">
+      <thead><tr><th>상품명</th><th>상태</th></tr></thead>
+      <tbody id="progressBody"></tbody>
+    </table>
+    <div style="text-align:center; margin-top:16px;">
+      <button class="btn" style="background:#eee;" id="closeProgressBtn" onclick="closeProgress()" disabled>닫기</button>
+    </div>
+  </div>
+</div>
+
+<script>
+let allProducts = [];
+let currentJobId = null;
+let pollTimer = null;
+
+function changeStore() {
+  const sid = document.getElementById('storeSelect').value;
+  window.location.href = `/bulk-register?store_id=${sid}`;
+}
+
+async function loadProducts() {
+  const sid = document.getElementById('storeSelect').value;
+  if (!sid) return;
+  const resp = await fetch(`/bulk-register/unregistered?store_id=${sid}`);
+  allProducts = await resp.json();
+  renderTable(allProducts);
+  document.getElementById('loadingMsg').style.display = 'none';
+  document.getElementById('productTable').style.display = '';
+  updateCount();
+}
+
+function renderTable(products) {
+  const tbody = document.getElementById('tableBody');
+  tbody.innerHTML = products.map(p => `
+    <tr data-id="${p.id}">
+      <td><input type="checkbox" class="row-check" value="${p.id}" onchange="updateCount()"></td>
+      <td>${p.image_url ? `<img src="${p.image_url}" class="img-thumb" onerror="this.style.display='none'">` : '-'}</td>
+      <td>${p.product_name || '-'}</td>
+      <td>${p.wholesaler_name || '-'}</td>
+      <td style="font-size:12px;color:#888;">${p.supplier_product_code || '-'}</td>
+      <td>${(p.supply_price||0).toLocaleString()}원</td>
+      <td>${(p.price||0).toLocaleString()}원</td>
+    </tr>
+  `).join('');
+}
+
+function filterTable() {
+  const q = document.getElementById('searchInput').value.toLowerCase();
+  const filtered = q ? allProducts.filter(p => (p.product_name||'').toLowerCase().includes(q)) : allProducts;
+  renderTable(filtered);
+  updateCount();
+}
+
+function toggleAll(chk) {
+  document.querySelectorAll('.row-check').forEach(c => { c.checked = chk.checked; });
+  updateCount();
+}
+
+function updateCount() {
+  const checked = document.querySelectorAll('.row-check:checked').length;
+  document.getElementById('countInfo').textContent = `${checked}개 선택`;
+  document.getElementById('registerBtn').disabled = checked === 0;
+}
+
+function getSelectedIds() {
+  return [...document.querySelectorAll('.row-check:checked')].map(c => parseInt(c.value));
+}
+
+function openModal() {
+  if (getSelectedIds().length === 0) return;
+  document.getElementById('modalOverlay').classList.add('active');
+}
+
+function closeModal() {
+  document.getElementById('modalOverlay').classList.remove('active');
+}
+
+async function startBulkRegister() {
+  const ids = getSelectedIds();
+  const storeId = parseInt(document.getElementById('storeSelect').value);
+  const presetId = document.getElementById('presetId').value;
+  const marginRate = parseFloat(document.getElementById('marginRate').value) || 30;
+  const afterServiceTel = document.getElementById('afterServiceTel').value.trim() || '010-0000-0000';
+
+  document.getElementById('startBtn').disabled = true;
+
+  const resp = await fetch('/bulk-register/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      store_id: storeId,
+      master_ids: ids,
+      preset_id: presetId ? parseInt(presetId) : null,
+      margin_rate: marginRate,
+      after_service_tel: afterServiceTel,
+    }),
+  });
+
+  const data = await resp.json();
+  if (!resp.ok) { alert(data.error || '오류 발생'); document.getElementById('startBtn').disabled = false; return; }
+
+  currentJobId = data.job_id;
+  closeModal();
+  document.getElementById('progressOverlay').classList.add('active');
+  document.getElementById('progressBody').innerHTML = '';
+  startPolling();
+}
+
+function startPolling() {
+  pollTimer = setInterval(pollStatus, 1500);
+}
+
+async function pollStatus() {
+  if (!currentJobId) return;
+  const resp = await fetch(`/bulk-register/status/${currentJobId}`);
+  const data = await resp.json();
+
+  const pct = data.total > 0 ? Math.round((data.completed + data.failed) / data.total * 100) : 0;
+  document.getElementById('progressBar').style.width = pct + '%';
+  document.getElementById('progressText').textContent = `${data.completed + data.failed} / ${data.total} (성공:${data.completed}, 실패:${data.failed})`;
+
+  // 항목별 상태
+  const tbody = document.getElementById('progressBody');
+  tbody.innerHTML = data.items.map(item => `
+    <tr>
+      <td>${item.master_product_id}</td>
+      <td><span class="status-badge status-${item.status}">${item.status}</span>${item.error_msg ? `<br><span style="color:#c00;font-size:11px;">${item.error_msg}</span>` : ''}</td>
+    </tr>
+  `).join('');
+
+  if (data.status === 'done' || data.status === 'error') {
+    clearInterval(pollTimer);
+    document.getElementById('progressText').textContent += ' — 완료';
+    document.getElementById('closeProgressBtn').disabled = false;
+  }
+}
+
+function closeProgress() {
+  clearInterval(pollTimer);
+  document.getElementById('progressOverlay').classList.remove('active');
+  loadProducts(); // 목록 새로고침
+}
+
+loadProducts();
+</script>
+{% endblock %}

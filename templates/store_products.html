@@ -84,6 +84,7 @@
         <th>판매가</th>
         <th>상태</th>
         <th>마스터 매칭</th>
+        <th>수정</th>
       </tr>
     </thead>
     <tbody>
@@ -103,6 +104,12 @@
           <span class="matched">매칭됨</span>
           {% else %}
           <span class="unmatched">미매칭</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if p.origin_product_no %}
+          <button onclick="openEditModal({{ p.id }})"
+                  style="padding:3px 10px; font-size:12px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer;">수정</button>
           {% endif %}
         </td>
       </tr>
@@ -138,6 +145,39 @@
   {% endif %}
 </div>
 
+<!-- 상품 수정 모달 -->
+<div id="editModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center;">
+  <div style="background:white; border-radius:8px; padding:28px; width:420px; max-width:90vw;">
+    <h3 style="margin:0 0 20px; font-size:16px;">상품 수정</h3>
+    <div id="editLoading" style="text-align:center; padding:20px; color:#666;">불러오는 중...</div>
+    <div id="editForm" style="display:none;">
+      <input type="hidden" id="editProductId">
+      <div style="margin-bottom:14px;">
+        <label style="display:block; font-size:13px; margin-bottom:4px; color:#555;">상품명</label>
+        <input id="editName" type="text" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box; font-size:13px;">
+      </div>
+      <div style="margin-bottom:14px;">
+        <label style="display:block; font-size:13px; margin-bottom:4px; color:#555;">판매가 (원)</label>
+        <input id="editPrice" type="number" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box; font-size:13px;">
+      </div>
+      <div style="margin-bottom:20px;">
+        <label style="display:block; font-size:13px; margin-bottom:4px; color:#555;">판매 상태</label>
+        <select id="editStatus" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; font-size:13px;">
+          <option value="SALE">판매중</option>
+          <option value="SUSPENSION">판매중지</option>
+          <option value="SOLDOUT">품절</option>
+          <option value="CLOSE">판매종료</option>
+        </select>
+      </div>
+      <div id="editError" style="display:none; color:#c00; font-size:13px; margin-bottom:12px;"></div>
+      <div style="display:flex; gap:10px; justify-content:flex-end;">
+        <button onclick="closeEditModal()" style="padding:7px 18px; border:1px solid #ccc; border-radius:4px; background:white; cursor:pointer;">취소</button>
+        <button onclick="submitEdit()" style="padding:7px 18px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer;">저장</button>
+      </div>
+    </div>
+  </div>
+</div>
+
 <script>
 function applyFilter(key, value) {
   const url = new URL(window.location.href);
@@ -145,6 +185,54 @@ function applyFilter(key, value) {
   else url.searchParams.delete(key);
   url.searchParams.delete('page');
   window.location.href = url.toString();
+}
+
+function openEditModal(productId) {
+  document.getElementById('editModal').style.display = 'flex';
+  document.getElementById('editLoading').style.display = 'block';
+  document.getElementById('editForm').style.display = 'none';
+  document.getElementById('editError').style.display = 'none';
+
+  fetch(`/store-products/${productId}/edit-form`)
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) { alert('오류: ' + d.error); closeEditModal(); return; }
+      document.getElementById('editProductId').value = d.product_id;
+      document.getElementById('editName').value = d.name;
+      document.getElementById('editPrice').value = d.sale_price;
+      document.getElementById('editStatus').value = d.status_type;
+      document.getElementById('editLoading').style.display = 'none';
+      document.getElementById('editForm').style.display = 'block';
+    })
+    .catch(e => { alert('불러오기 실패: ' + e); closeEditModal(); });
+}
+
+function closeEditModal() {
+  document.getElementById('editModal').style.display = 'none';
+}
+
+function submitEdit() {
+  const id = document.getElementById('editProductId').value;
+  const form = new FormData();
+  form.append('name', document.getElementById('editName').value);
+  form.append('sale_price', document.getElementById('editPrice').value);
+  form.append('status_type', document.getElementById('editStatus').value);
+
+  fetch(`/store-products/${id}/edit`, { method: 'POST', body: form })
+    .then(r => r.json())
+    .then(d => {
+      if (d.error) {
+        document.getElementById('editError').textContent = '오류: ' + d.error;
+        document.getElementById('editError').style.display = 'block';
+      } else {
+        closeEditModal();
+        location.reload();
+      }
+    })
+    .catch(e => {
+      document.getElementById('editError').textContent = '저장 실패: ' + e;
+      document.getElementById('editError').style.display = 'block';
+    });
 }
 </script>
 {% endblock %}

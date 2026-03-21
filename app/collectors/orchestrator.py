@@ -13,6 +13,9 @@ def _build_registry():
     from collectors.chingudome import ChingudomeCollector
     from collectors.zentrade import ZentraldeCollector
     from collectors.mro3 import Mro3Collector
+    from collectors.feelwoo import FeelwooCollector
+    from collectors.sikjaje import SikjajeCollector
+    from collectors.onch3 import Onch3Collector
     return {
         "ownerclan": OwnerclanCollector,
         "jtckorea": JtckoreaCollector,
@@ -22,6 +25,9 @@ def _build_registry():
         "chingudome": ChingudomeCollector,
         "zentrade": ZentraldeCollector,
         "mro3": Mro3Collector,
+        "feelwoo": FeelwooCollector,
+        "sikjaje": SikjajeCollector,
+        "onch3": Onch3Collector,
     }
 
 
@@ -45,6 +51,7 @@ def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: 
     db.session.add(run)
     db.session.commit()
 
+    master_stats = {}
     try:
         collector = collector_class()
         result = collector.run()
@@ -65,7 +72,7 @@ def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: 
                 items=result["items"]
             )
             print(f"[orchestrator] 저장 완료: {saved}건")
-            process_master_update(wholesaler.id, result["items"])
+            master_stats = process_master_update(wholesaler.id, result["items"])
             print(f"[orchestrator] 마스터 업데이트 완료")
 
     except Exception as e:
@@ -81,5 +88,7 @@ def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: 
     return {
         "success": run.status == "success",
         "run_id": run.id,
+        "total_items": run.total_items,
+        "master_stats": master_stats,
         "error": run.error_summary,
     }

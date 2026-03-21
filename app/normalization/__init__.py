@@ -1,6 +1,7 @@
 from flask import Blueprint
 from app.infrastructure import db
 from app.normalization.models import NormalizedProduct
+from app.wholesalers.models import Wholesaler
 from datetime import datetime
 
 normalization_bp = Blueprint("normalization", __name__)
@@ -10,12 +11,16 @@ BATCH_SIZE = 500
 def save_normalized_products(wholesaler_id: int, run_id: int, items: list):
     saved = 0
 
+    wholesaler = Wholesaler.query.get(wholesaler_id)
+    prefix = wholesaler.prefix or "" if wholesaler else ""
+
     for item in items:
-        code = item.get("source_product_code")
-        if not code:
+        raw_code = item.get("source_product_code")
+        if not raw_code:
             continue
 
-        unique_key = f"{wholesaler_id}_{code}"
+        code = f"{prefix}{raw_code}"
+        unique_key = f"{wholesaler_id}_{raw_code}"
         existing = NormalizedProduct.query.filter_by(unique_product_key=unique_key).first()
 
         if existing:
