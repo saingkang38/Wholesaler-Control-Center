@@ -131,14 +131,23 @@ def run_match_and_signal(flask_app, run_time: str):
         logger.error(f"[scheduler] 매칭/시그널 감지 실패: {e}")
 
 
+_flask_app = None
+
+
+def _get_flask_app():
+    global _flask_app
+    if _flask_app is None:
+        from app import create_app
+        _flask_app = create_app()
+    return _flask_app
+
+
 def run_daily_pipeline():
     """매일 새벽 2시 — 수집 → 스토어동기화 → 매칭 순차 실행"""
-    from app import create_app
-
     run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
     logger.info(f"[scheduler] 일일 파이프라인 시작 ({run_time})")
 
-    flask_app = create_app()
+    flask_app = _get_flask_app()
 
     run_all_wholesalers(flask_app, run_time)
     run_store_sync(flask_app, run_time)
@@ -148,6 +157,34 @@ def run_daily_pipeline():
 
 
 if __name__ == "__main__":
+    import tempfile
+    _lock_path = Path(tempfile.gettempdir()) / "wholesaler_scheduler.lock"
+    try:
+        _lock_file = open(_lock_path, "x")  # 배타적 생성 — 이미 있으면 예외
+        _lock_file.write(str(os.getpid()))
+        _lock_file.flush()
+    except FileExistsError:
+        # 락 파일이 남아있으면 PID 확인 후 판단
+        try:
+            old_pid = int(_lock_path.read_text().strip())
+            import psutil
+            if psutil.pid_exists(old_pid):
+                logger.error(f"[scheduler] 이미 실행 중 (PID {old_pid}). 종료합니다.")
+                sys.exit(1)
+            else:
+                _lock_path.unlink()
+                _lock_file = open(_lock_path, "x")
+                _lock_file.write(str(os.getpid()))
+                _lock_file.flush()
+        except Exception:
+            _lock_path.unlink(missing_ok=True)
+            _lock_file = open(_lock_path, "x")
+            _lock_file.write(str(os.getpid()))
+            _lock_file.flush()
+
+    import atexit
+    atexit.register(lambda: _lock_path.unlink(missing_ok=True))
+
     scheduler = BlockingScheduler(timezone=TIMEZONE)
     scheduler.add_job(
         run_daily_pipeline,
