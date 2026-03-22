@@ -3,6 +3,7 @@ import os
 import re
 import time
 from datetime import datetime
+from pathlib import Path
 
 import requests
 
@@ -126,6 +127,17 @@ class FeelwooCollector(BaseCollector):
             content_type = dl_resp.headers.get("Content-Type", "")
             print(f"[feelwoo] 다운로드 완료: {len(content)} bytes, Content-Type: {content_type}")
 
+            # 원본 파일 저장
+            try:
+                save_dir = Path.home() / "OneDrive" / "supplier_sync" / "feelwoo"
+                save_dir.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                raw_path = save_dir / f"feelwoo_{timestamp}.xlsx"
+                raw_path.write_bytes(content)
+                print(f"[feelwoo] 원본 저장: {raw_path}")
+            except Exception as e:
+                print(f"[feelwoo] 원본 저장 실패 (무시): {e}")
+
             if len(content) < 100:
                 return {
                     "success": False,
@@ -239,6 +251,8 @@ class FeelwooCollector(BaseCollector):
         if idx_code is None and idx_name is None:
             raise ValueError(f"상품코드/상품명 컬럼 없음. 헤더: {headers}")
 
+        mapped_indices = {i for i in [idx_code, idx_name, idx_price, idx_stock, idx_status, idx_image, idx_category] if i is not None}
+
         items = []
         seen = set()
 
@@ -279,6 +293,11 @@ class FeelwooCollector(BaseCollector):
             image_url = cell(idx_image) or ""
             category = cell(idx_category) or ""
 
+            extra = {}
+            for i, h in enumerate(headers):
+                if i not in mapped_indices and h:
+                    extra[h] = cell(i)
+
             items.append({
                 "source_product_code": source_code,
                 "product_name": product_name,
@@ -289,6 +308,7 @@ class FeelwooCollector(BaseCollector):
                 "detail_url": "",
                 "stock_qty": None,
                 "category_name": category or None,
+                "extra": extra,
             })
 
         return items

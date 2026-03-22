@@ -133,7 +133,11 @@ class OwnerclanCollector(BaseCollector):
                 # 브라우저 닫기 전에 프로젝트 downloads 폴더로 복사
                 import shutil
                 from datetime import datetime
-                downloads_dir = Path(os.getenv("DOWNLOADS_DIR", "/tmp/downloads")) / "ownerclan"
+                _dl_raw = os.getenv("DOWNLOADS_DIR")
+                if _dl_raw:
+                    downloads_dir = Path(_dl_raw)
+                else:
+                    downloads_dir = Path.home() / "OneDrive" / "supplier_sync" / "ownerclan"
                 downloads_dir.mkdir(parents=True, exist_ok=True)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 safe_path = str(downloads_dir / f"ownerclan_{timestamp}.zip")
@@ -212,10 +216,16 @@ class OwnerclanCollector(BaseCollector):
                 data_rows = [r for r in rows[header_row_idx + 1:] if any(r)]
                 total_rows += len(data_rows)
 
+                standard_cols = set(v for v in col.values() if v is not None)
+
                 for row in data_rows:
                     code = self._cell(row, col.get("code"))
                     if not code:
                         continue
+                    extra = {}
+                    for i, h in enumerate(headers):
+                        if i not in standard_cols and h:
+                            extra[h] = self._cell(row, i)
                     items.append({
                         "source_product_code": str(code),
                         "product_name": self._cell(row, col.get("name")),
@@ -226,6 +236,8 @@ class OwnerclanCollector(BaseCollector):
                         "detail_url": self._cell(row, col.get("detail_url")),
                         "stock_qty": self._parse_int(self._cell(row, col.get("stock_qty"))),
                         "category_name": self._cell(row, col.get("category_name")),
+                        "detail_description": self._cell(row, col.get("detail_description")),
+                        "extra": extra,
                     })
 
         print(f"[ownerclan] 전체 데이터 행: {total_rows}개 / 파싱 성공: {len(items)}개")
@@ -253,6 +265,8 @@ class OwnerclanCollector(BaseCollector):
                 mapping["detail_url"] = i
             elif ("카테고리" in h or "분류" in h) and "category_name" not in mapping:
                 mapping["category_name"] = i
+            elif "본문상세설명" in h and "detail_description" not in mapping:
+                mapping["detail_description"] = i
         return mapping
 
     def _cell(self, row, idx):

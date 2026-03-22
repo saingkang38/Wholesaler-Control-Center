@@ -31,6 +31,66 @@ def _build_registry():
     }
 
 
+def _save_desktop_xlsx(wholesaler_code: str, items: list):
+    import openpyxl
+    from pathlib import Path
+    from datetime import datetime
+
+    if not items:
+        return
+
+    try:
+        desktop = Path.home() / "Desktop" / "예시"
+        desktop.mkdir(parents=True, exist_ok=True)
+
+        all_keys = []
+        for item in items:
+            for k in item:
+                if k != "extra" and k not in all_keys:
+                    all_keys.append(k)
+            for k in (item.get("extra") or {}):
+                if k not in all_keys:
+                    all_keys.append(k)
+
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.append(all_keys)
+
+        for item in items:
+            extra = item.get("extra") or {}
+            row = []
+            for k in all_keys:
+                if k in item and k != "extra":
+                    row.append(item[k])
+                else:
+                    row.append(extra.get(k))
+            ws.append(row)
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = desktop / f"{wholesaler_code}_{timestamp}.xlsx"
+        wb.save(str(path))
+        print(f"[orchestrator] 데스크탑 저장: {path} ({len(items)}건, {len(all_keys)}컬럼)")
+    except Exception as e:
+        print(f"[orchestrator] 데스크탑 저장 실패 (무시): {e}")
+
+
+def _save_raw_json(wholesaler_code: str, items: list):
+    import json
+    from pathlib import Path
+    from datetime import datetime
+
+    save_dir = Path.home() / "OneDrive" / "supplier_sync" / wholesaler_code
+    save_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    path = save_dir / f"{wholesaler_code}_{timestamp}.json"
+    try:
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(items, f, ensure_ascii=False, indent=2)
+        print(f"[orchestrator] 원본 저장: {path} ({len(items)}건)")
+    except Exception as e:
+        print(f"[orchestrator] 원본 저장 실패 (무시): {e}")
+
+
 def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: int = None):
     wholesaler = Wholesaler.query.filter_by(code=wholesaler_code, is_active=True).first()
     if not wholesaler:
@@ -64,6 +124,8 @@ def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: 
         run.error_summary = result.get("error_summary")
 
         if result.get("success") and result.get("items"):
+            _save_raw_json(wholesaler_code, result["items"])
+            _save_desktop_xlsx(wholesaler_code, result["items"])
             from app.normalization import save_normalized_products
             from app.master import process_master_update
             saved = save_normalized_products(

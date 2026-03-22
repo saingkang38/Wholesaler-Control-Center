@@ -69,6 +69,14 @@ def create_app():
 
     with app.app_context():
         db.create_all()
+        # 신규 컬럼 마이그레이션 (기존 DB에 없으면 추가)
+        try:
+            from sqlalchemy import text
+            with db.engine.connect() as conn:
+                conn.execute(text("ALTER TABLE master_products ADD COLUMN detail_description TEXT"))
+                conn.commit()
+        except Exception:
+            pass  # 이미 존재하면 무시
         from app.auth.init_admin import create_initial_admin
         from app.wholesalers import get_or_create_ownerclan, get_or_create_jtckorea, get_or_create_metaldiy, get_or_create_ds1008, get_or_create_hitdesign, get_or_create_mro3, get_or_create_feelwoo, get_or_create_sikjaje, get_or_create_onch3
         create_initial_admin()

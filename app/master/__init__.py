@@ -53,6 +53,7 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
                 supply_price=item.get("supply_price"),
                 image_url=item.get("image_url"),
                 category_name=item.get("category_name"),
+                detail_description=item.get("detail_description"),
                 current_status="active",
                 first_seen_date=snapshot_date,
                 last_seen_date=snapshot_date,
@@ -132,6 +133,8 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
             master.supply_price = item.get("supply_price") or master.supply_price
             master.image_url = new_img or master.image_url
             master.category_name = item.get("category_name") or master.category_name
+            if item.get("detail_description"):
+                master.detail_description = item.get("detail_description")
 
     # 2. 오늘 수집에서 빠진 상품 처리 (미수집)
     missing_codes = existing_codes - set(today_map.keys())

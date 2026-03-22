@@ -5,110 +5,160 @@
 {% endmacro %}
 {% block content %}
 <style>
-  .toolbar { display:flex; gap:12px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
   .btn { padding:7px 16px; border:none; border-radius:4px; cursor:pointer; font-size:14px; }
   .btn-primary { background:#2c3e50; color:white; }
   .btn-primary:hover { background:#1a252f; }
   .btn-secondary { background:#eee; color:#333; }
+  .btn-secondary:hover { background:#ddd; }
   table { width:100%; border-collapse:collapse; font-size:13px; }
   th { background:#f0f0f0; padding:8px; text-align:left; border-bottom:2px solid #ddd; }
   td { padding:8px; border-bottom:1px solid #eee; vertical-align:middle; }
   .badge-ready { background:#d4edda; color:#155724; padding:2px 8px; border-radius:10px; font-size:12px; }
   .badge-unready { background:#eee; color:#888; padding:2px 8px; border-radius:10px; font-size:12px; }
-  #uploadResult { margin-top:12px; padding:12px; border-radius:4px; display:none; }
-  #uploadResult.success { background:#d4edda; color:#155724; }
-  #uploadResult.error { background:#f8d7da; color:#721c24; }
+  #uploadResult { margin-top:12px; border-radius:4px; display:none; }
+
+  /* 분할 레이아웃 */
+  #splitWrap {
+    display: flex;
+    gap: 12px;
+    align-items: flex-start;
+  }
+  #leftPanel {
+    flex: 1;
+    min-width: 0;
+  }
+  #rightPanel {
+    width: 520px;
+    flex-shrink: 0;
+    display: none;
+    flex-direction: column;
+    position: sticky;
+    top: 12px;
+  }
+  #rightPanel.open {
+    display: flex;
+  }
+  #namingIframe {
+    width: 100%;
+    height: calc(100vh - 80px);
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    background: white;
+  }
+  .toolbar { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
 </style>
 
-<div class="card">
-  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-    <h2 style="font-size:18px;">상품 가공 <span style="font-size:14px; color:#888;">(미가공 총 {{ total }}개 / {{ page }}/{{ total_pages }}페이지)</span></h2>
-  </div>
+<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+  <h2 style="font-size:18px; margin:0;">상품 가공 <span style="font-size:14px; color:#888;">(미가공 총 {{ total }}개 / {{ page }}/{{ total_pages }}페이지)</span></h2>
+  <button class="btn btn-secondary" onclick="toggleNaming(this)" id="namingToggleBtn">
+    🔗 네이밍팩토리 열기
+  </button>
+</div>
 
-  <div class="toolbar">
-    <select id="wholesalerSelect" onchange="changeWholesaler()" style="padding:6px 10px; border:1px solid #ccc; border-radius:4px; font-size:14px;">
-      <option value="">전체 도매처</option>
-      {% for w in wholesalers %}
-      <option value="{{ w.id }}" {% if selected_wholesaler_id == w.id %}selected{% endif %}>{{ w.name }}</option>
-      {% endfor %}
-    </select>
-    <select id="limitSelect" onchange="changeLimit()" style="padding:6px 10px; border:1px solid #ccc; border-radius:4px; font-size:14px;">
-      {% for n in [20, 50, 100, 300, 500, 1000, 2000] %}
-      <option value="{{ n }}" {% if selected_limit == n %}selected{% endif %}>{{ n }}개</option>
-      {% endfor %}
-    </select>
-    <a id="downloadBtn" href="/product-prep/download{% if selected_wholesaler_id %}?wholesaler_id={{ selected_wholesaler_id }}{% endif %}" class="btn btn-primary">CSV 다운로드</a>
-    <span style="font-size:13px; color:#666;">→ 외부 편집 후 아래에 재업로드</span>
-  </div>
+<div id="splitWrap">
+  <!-- 왼쪽: 기존 상품가공 UI -->
+  <div id="leftPanel">
+    <div class="card">
+      <div class="toolbar">
+        <select id="wholesalerSelect" onchange="changeWholesaler()" style="padding:6px 10px; border:1px solid #ccc; border-radius:4px; font-size:14px;">
+          <option value="">전체 도매처</option>
+          {% for w in wholesalers %}
+          <option value="{{ w.id }}" {% if selected_wholesaler_id == w.id %}selected{% endif %}>{{ w.name }}</option>
+          {% endfor %}
+        </select>
+        <select id="limitSelect" onchange="changeLimit()" style="padding:6px 10px; border:1px solid #ccc; border-radius:4px; font-size:14px;">
+          {% for n in [20, 50, 100, 300, 500, 1000, 2000] %}
+          <option value="{{ n }}" {% if selected_limit == n %}selected{% endif %}>{{ n }}개</option>
+          {% endfor %}
+        </select>
+        <button id="downloadBtn" class="btn btn-primary" onclick="downloadXlsx()">엑셀 다운로드</button>
+      </div>
 
-  <!-- 업로드 폼 -->
-  <div style="border:1px dashed #ccc; border-radius:6px; padding:16px; margin-bottom:20px;">
-    <p style="font-size:13px; color:#555; margin-bottom:10px;">
-      CSV에서 <strong>edited_name</strong>과 <strong>category_id</strong>를 모두 채운 행은 <strong>가공 완료</strong>로 처리됩니다.
-    </p>
-    <form id="uploadForm" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:center;">
-      <input type="file" name="file" accept=".csv" id="csvFile" style="font-size:13px;">
-      <button type="button" class="btn btn-primary" onclick="uploadCSV()">업로드</button>
-    </form>
-    <div id="uploadResult"></div>
-  </div>
+      <!-- 사용 방법 안내 -->
+      <div style="background:#f0f4ff; border:1px solid #c5d0f0; border-radius:6px; padding:14px; margin-bottom:16px; font-size:13px; color:#333; line-height:1.8;">
+        <strong>📋 사용 방법</strong>
+        <ol style="margin:8px 0 0 16px; padding:0;">
+          <li><strong>엑셀 다운로드</strong> → <code>원본 상품명*</code> / <code>상세 설명*(HTML)</code> 두 컬럼 포함</li>
+          <li>오른쪽 <strong>네이밍팩토리</strong>에서 상품명 가공 → <strong>가공된 상품명</strong> + <strong>네이버 카테고리 번호</strong> 작성</li>
+          <li>컬럼 순서: <code>상품명</code> / <code>이미지url</code> / <code>가공된상품명</code> / <code>네이버카테고리번호</code> 로 저장 후 업로드</li>
+          <li>두 항목이 모두 채워진 상품만 <strong>가공 완료</strong> 처리됩니다.</li>
+        </ol>
+      </div>
 
-  <!-- 미가공 상품 목록 -->
-  <table>
-    <thead>
-      <tr>
-        <th>코드</th>
-        <th>도매처</th>
-        <th>원래 상품명</th>
-        <th>가공명</th>
-        <th>카테고리 ID</th>
-        <th>상태</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for m in products %}
-      <tr>
-        <td style="font-size:12px; color:#888;">{{ m.supplier_product_code }}</td>
-        <td>{{ m.wholesaler.name if m.wholesaler else '-' }}</td>
-        <td>{{ m.product_name or '-' }}</td>
-        <td>{{ m.edited_name or '-' }}</td>
-        <td>{{ m.category_id or '-' }}</td>
-        <td>
-          {% if m.is_prep_ready %}
-          <span class="badge-ready">완료</span>
+      <!-- 업로드 폼 -->
+      <div style="border:1px dashed #ccc; border-radius:6px; padding:14px; margin-bottom:20px;">
+        <p style="font-size:13px; color:#555; margin-bottom:10px;">
+          업로드 컬럼 순서: <strong>상품명 / 이미지url / 가공된상품명 / 네이버카테고리번호</strong>
+        </p>
+        <form id="uploadForm" enctype="multipart/form-data" style="display:flex; gap:10px; align-items:center;">
+          <input type="file" name="file" accept=".xlsx" id="csvFile" style="font-size:13px;">
+          <button type="button" class="btn btn-primary" onclick="uploadCSV()">업로드</button>
+        </form>
+        <div id="uploadResult"></div>
+      </div>
+
+      <!-- 미가공 상품 목록 -->
+      <table>
+        <thead>
+          <tr>
+            <th>코드</th>
+            <th>도매처</th>
+            <th>원래 상품명</th>
+            <th>가공명</th>
+            <th>카테고리 ID</th>
+            <th>상태</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in products %}
+          <tr>
+            <td style="font-size:12px; color:#888;">{{ m.supplier_product_code }}</td>
+            <td>{{ m.wholesaler.name if m.wholesaler else '-' }}</td>
+            <td>{{ m.product_name or '-' }}</td>
+            <td>{{ m.edited_name or '-' }}</td>
+            <td>{{ m.category_id or '-' }}</td>
+            <td>
+              {% if m.is_prep_ready %}
+              <span class="badge-ready">완료</span>
+              {% else %}
+              <span class="badge-unready">미가공</span>
+              {% endif %}
+            </td>
+          </tr>
           {% else %}
-          <span class="badge-unready">미가공</span>
-          {% endif %}
-        </td>
-      </tr>
-      {% else %}
-      <tr><td colspan="6" style="text-align:center; color:#aaa; padding:20px;">미가공 상품이 없습니다.</td></tr>
-      {% endfor %}
-    </tbody>
-  </table>
+          <tr><td colspan="6" style="text-align:center; color:#aaa; padding:20px;">미가공 상품이 없습니다.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
 
-  <!-- 페이지네이션 (하단, 게시판 스타일) -->
-  {% if total_pages > 1 %}
-  {% set group_size = 10 %}
-  {% set group_start = ((page - 1) // group_size) * group_size + 1 %}
-  {% set group_end = [group_start + group_size - 1, total_pages] | min %}
-  {% set prev_group = group_start - group_size %}
-  {% set next_group = group_start + group_size %}
-  <div style="display:flex; justify-content:center; align-items:center; gap:4px; margin-top:20px; flex-wrap:wrap;">
-    <!-- 맨 앞 -->
-    <a href="{{ buildPageUrl(1) }}" style="padding:5px 9px; border:1px solid #ddd; border-radius:4px; font-size:13px; text-decoration:none; color:{% if page == 1 %}#bbb{% else %}#333{% endif %}; pointer-events:{% if page == 1 %}none{% else %}auto{% endif %};">◀◀</a>
-    <!-- 이전 그룹 -->
-    <a href="{{ buildPageUrl([prev_group, 1]|max) }}" style="padding:5px 9px; border:1px solid #ddd; border-radius:4px; font-size:13px; text-decoration:none; color:{% if group_start == 1 %}#bbb{% else %}#333{% endif %}; pointer-events:{% if group_start == 1 %}none{% else %}auto{% endif %};">◀</a>
-    <!-- 페이지 번호 -->
-    {% for p in range(group_start, group_end + 1) %}
-    <a href="{{ buildPageUrl(p) }}" style="padding:5px 10px; border:1px solid {% if p == page %}#2c3e50{% else %}#ddd{% endif %}; border-radius:4px; font-size:13px; text-decoration:none; background:{% if p == page %}#2c3e50{% else %}white{% endif %}; color:{% if p == page %}white{% else %}#333{% endif %};">{{ p }}</a>
-    {% endfor %}
-    <!-- 다음 그룹 -->
-    <a href="{{ buildPageUrl([next_group, total_pages]|min) }}" style="padding:5px 9px; border:1px solid #ddd; border-radius:4px; font-size:13px; text-decoration:none; color:{% if group_start + group_size > total_pages %}#bbb{% else %}#333{% endif %}; pointer-events:{% if group_start + group_size > total_pages %}none{% else %}auto{% endif %};">▶</a>
-    <!-- 맨 뒤 -->
-    <a href="{{ buildPageUrl(total_pages) }}" style="padding:5px 9px; border:1px solid #ddd; border-radius:4px; font-size:13px; text-decoration:none; color:{% if page == total_pages %}#bbb{% else %}#333{% endif %}; pointer-events:{% if page == total_pages %}none{% else %}auto{% endif %};">▶▶</a>
+      <!-- 페이지네이션 -->
+      {% if total_pages > 1 %}
+      {% set group_size = 10 %}
+      {% set group_start = ((page - 1) // group_size) * group_size + 1 %}
+      {% set group_end = [group_start + group_size - 1, total_pages] | min %}
+      {% set prev_group = group_start - group_size %}
+      {% set next_group = group_start + group_size %}
+      <div style="display:flex; justify-content:center; align-items:center; gap:4px; margin-top:20px; flex-wrap:wrap;">
+        <a href="{{ buildPageUrl(1) }}" style="padding:5px 9px; border:1px solid #ddd; border-radius:4px; font-size:13px; text-decoration:none; color:{% if page == 1 %}#bbb{% else %}#333{% endif %}; pointer-events:{% if page == 1 %}none{% else %}auto{% endif %};">◀◀</a>
+        <a href="{{ buildPageUrl([prev_group, 1]|max) }}" style="padding:5px 9px; border:1px solid #ddd; border-radius:4px; font-size:13px; text-decoration:none; color:{% if group_start == 1 %}#bbb{% else %}#333{% endif %}; pointer-events:{% if group_start == 1 %}none{% else %}auto{% endif %};">◀</a>
+        {% for p in range(group_start, group_end + 1) %}
+        <a href="{{ buildPageUrl(p) }}" style="padding:5px 10px; border:1px solid {% if p == page %}#2c3e50{% else %}#ddd{% endif %}; border-radius:4px; font-size:13px; text-decoration:none; background:{% if p == page %}#2c3e50{% else %}white{% endif %}; color:{% if p == page %}white{% else %}#333{% endif %};">{{ p }}</a>
+        {% endfor %}
+        <a href="{{ buildPageUrl([next_group, total_pages]|min) }}" style="padding:5px 9px; border:1px solid #ddd; border-radius:4px; font-size:13px; text-decoration:none; color:{% if group_start + group_size > total_pages %}#bbb{% else %}#333{% endif %}; pointer-events:{% if group_start + group_size > total_pages %}none{% else %}auto{% endif %};">▶</a>
+        <a href="{{ buildPageUrl(total_pages) }}" style="padding:5px 9px; border:1px solid #ddd; border-radius:4px; font-size:13px; text-decoration:none; color:{% if page == total_pages %}#bbb{% else %}#333{% endif %}; pointer-events:{% if page == total_pages %}none{% else %}auto{% endif %};">▶▶</a>
+      </div>
+      {% endif %}
+    </div>
   </div>
-  {% endif %}
+
+  <!-- 오른쪽: 네이밍팩토리 iframe -->
+  <div id="rightPanel">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+      <span style="font-size:13px; font-weight:bold; color:#2c3e50;">네이밍팩토리</span>
+      <a href="https://namingfactory.ai.kr" target="_blank" style="font-size:12px; color:#666; text-decoration:none;">새 탭으로 열기 ↗</a>
+    </div>
+    <iframe id="namingIframe" src="https://namingfactory.ai.kr" frameborder="0" allowfullscreen></iframe>
+  </div>
 </div>
 
 <script>
@@ -125,10 +175,52 @@ function buildUrl(page) {
 function changeWholesaler() { window.location.href = buildUrl(1); }
 function changeLimit() { window.location.href = buildUrl(1); }
 
+async function downloadXlsx() {
+  const btn = document.getElementById('downloadBtn');
+  btn.disabled = true;
+  btn.textContent = '저장 중...';
+  const wid = document.getElementById('wholesalerSelect').value;
+  const url = '/product-prep/download' + (wid ? '?wholesaler_id=' + wid : '');
+  try {
+    const resp = await fetch(url);
+    const data = await resp.json();
+    if (data.success) {
+      btn.textContent = '✅ 저장 완료';
+      btn.style.background = '#28a745';
+      setTimeout(() => {
+        btn.textContent = '엑셀 다운로드';
+        btn.style.background = '';
+        btn.disabled = false;
+      }, 3000);
+    } else {
+      alert('저장 실패: ' + (data.error || '알 수 없는 오류'));
+      btn.textContent = '엑셀 다운로드';
+      btn.disabled = false;
+    }
+  } catch (e) {
+    alert('오류 발생: ' + e);
+    btn.textContent = '엑셀 다운로드';
+    btn.disabled = false;
+  }
+}
+
+function toggleNaming(btn) {
+  const panel = document.getElementById('rightPanel');
+  const isOpen = panel.classList.toggle('open');
+  btn.textContent = isOpen ? '✕ 네이밍팩토리 닫기' : '🔗 네이밍팩토리 열기';
+  localStorage.setItem('namingOpen', isOpen ? '1' : '0');
+}
+
+// 이전 상태 복원
+if (localStorage.getItem('namingOpen') === '1') {
+  document.getElementById('rightPanel').classList.add('open');
+  document.getElementById('namingToggleBtn').textContent = '✕ 네이밍팩토리 닫기';
+}
+
 async function uploadCSV() {
   const fileInput = document.getElementById('csvFile');
   if (!fileInput.files.length) {
-    alert('CSV 파일을 선택하세요.');
+    alert('엑셀(.xlsx) 파일을 선택하세요.');
     return;
   }
   const formData = new FormData();
@@ -140,18 +232,25 @@ async function uploadCSV() {
   el.style.display = 'block';
 
   if (resp.ok) {
-    el.className = 'success';
-    let msg = `완료: ${data.updated}개 가공 처리, ${data.skipped}개 건너뜀`;
+    let msg = '';
+    if (data.updated > 0) {
+      msg += `<div style="color:#155724;background:#d4edda;padding:8px;border-radius:4px;margin-bottom:6px;">✅ 등록 완료: ${data.updated}개 가공 처리됨</div>`;
+    }
+    if (data.incomplete && data.incomplete.length) {
+      msg += `<div style="color:#856404;background:#fff3cd;padding:8px;border-radius:4px;margin-bottom:6px;">⚠️ 미완성 ${data.incomplete.length}개 — 저장 안 됨 (가공된상품명 또는 카테고리 누락)<br><small>${data.incomplete.join('<br>')}</small></div>`;
+    }
     if (data.errors && data.errors.length) {
-      msg += `<br>오류: ${data.errors.join(', ')}`;
+      msg += `<div style="color:#721c24;background:#f8d7da;padding:8px;border-radius:4px;margin-bottom:6px;">❌ 매칭 실패 ${data.errors.length}개 (DB에서 찾을 수 없음)<br><small>${data.errors.join('<br>')}</small></div>`;
+    }
+    if (!msg) {
+      msg = `<div style="color:#555;padding:8px;">처리된 항목 없음 (건너뜀: ${data.skipped}개)</div>`;
     }
     el.innerHTML = msg;
     if (data.updated > 0) {
-      setTimeout(() => location.reload(), 1500);
+      setTimeout(() => location.reload(), 2000);
     }
   } else {
-    el.className = 'error';
-    el.textContent = data.error || '업로드 실패';
+    el.innerHTML = `<div style="color:#721c24;background:#f8d7da;padding:8px;border-radius:4px;">❌ ${data.error || '업로드 실패'}</div>`;
   }
 }
 </script>

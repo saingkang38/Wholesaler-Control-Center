@@ -16,10 +16,11 @@ class MasterProduct(db.Model):
     category_name = db.Column(db.String(256))
     internal_code = db.Column(db.String(128), nullable=True)   # 내부 관리용 코드 (직접 입력)
 
-    product_url   = db.Column(db.String(1024))                    # 도매처 상품 링크
-    edited_name   = db.Column(db.String(512))                     # 가공된 상품명 (NULL = 미가공)
-    category_id   = db.Column(db.String(64))                      # 네이버 카테고리 ID (NULL = 미가공)
-    is_prep_ready = db.Column(db.Boolean, default=False)          # True = 등록 가능
+    product_url        = db.Column(db.String(1024))                # 도매처 상품 링크
+    detail_description = db.Column(db.Text)                       # 본문상세설명 (HTML)
+    edited_name        = db.Column(db.String(512))                # 가공된 상품명 (NULL = 미가공)
+    category_id        = db.Column(db.String(64))                 # 네이버 카테고리 ID (NULL = 미가공)
+    is_prep_ready      = db.Column(db.Boolean, default=False)     # True = 등록 가능
 
     # 상태: active / missing / discontinued_candidate / discontinued
     current_status = db.Column(db.String(32), default="active", nullable=False)
