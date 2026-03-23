@@ -34,6 +34,11 @@ def _sync_single_store(naver_store: NaverStore) -> dict:
     )
     stats = {"created": 0, "updated": 0, "matched": 0, "unmatched": 0}
 
+    # 루프 밖에서 한 번만 조회 (N+1 방지)
+    prefixes = [w.prefix for w in Wholesaler.query.filter(
+        Wholesaler.prefix.isnot(None)
+    ).all()]
+
     for item in raw_items:
         origin_no = item.get("originProductNo")
         channel_products = item.get("channelProducts", [])
@@ -76,11 +81,6 @@ def _sync_single_store(naver_store: NaverStore) -> dict:
 
         # 마스터 매칭 (prefix 포함/미포함 코드 모두 대응)
         if seller_code:
-            from app.wholesalers.models import Wholesaler
-            from sqlalchemy import or_
-            prefixes = [w.prefix for w in Wholesaler.query.filter(
-                Wholesaler.prefix.isnot(None)
-            ).all()]
             candidates = list({seller_code} | {f"{p}{seller_code}" for p in prefixes if p})
             master = MasterProduct.query.filter(
                 MasterProduct.supplier_product_code.in_(candidates)
