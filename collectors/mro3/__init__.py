@@ -5,6 +5,7 @@ from xml.etree import ElementTree as ET
 from app.collectors.base import BaseCollector
 
 API_URL = "https://www.3mro.co.kr/shop/api_out.php"
+PRODUCT_URL = "https://www.3mro.co.kr/shop/goods/goods_view.php?goodsno={code}"
 
 STATUS_MAP = {
     "0": "active",
@@ -16,11 +17,6 @@ class Mro3Collector(BaseCollector):
     wholesaler_code = "mro3"
 
     def run(self, mode: str = None, **kwargs) -> dict:
-        """
-        mode:
-          - "full_all" (기본): div=all 전체상품 수집
-          - "incremental": div=mod 24시간 내 변동상품 수집
-        """
         m_no = os.getenv("MRO3_M_NO")
         if not m_no:
             return self._error("MRO3_M_NO 미설정")
@@ -53,10 +49,6 @@ class Mro3Collector(BaseCollector):
             "items": items,
         }
 
-    # ──────────────────────────────────────────────
-    # API 호출 (GET, euc-kr 응답 처리)
-    # ──────────────────────────────────────────────
-
     def _call_api(self, params: dict) -> str:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         try:
@@ -79,10 +71,6 @@ class Mro3Collector(BaseCollector):
 
         return text
 
-    # ──────────────────────────────────────────────
-    # XML 파싱
-    # ──────────────────────────────────────────────
-
     def _parse_xml(self, raw_xml: str) -> list:
         try:
             root = ET.fromstring(raw_xml.encode("utf-8"))
@@ -102,27 +90,24 @@ class Mro3Collector(BaseCollector):
 
         return items
 
-    # ──────────────────────────────────────────────
-    # 정규화
-    # ──────────────────────────────────────────────
-
     def _normalize(self, product: ET.Element) -> dict:
-        # 상품번호: <product code="..."> 속성
+        # 상품번호
         code = product.get("code")
         if not code:
             return None
 
-        # 상태: <status open="1" runout="0" minor="N"> 속성
+        # 상태
         status_el = product.find("status")
         runout = status_el.get("runout", "0") if status_el is not None else "0"
         status = STATUS_MAP.get(runout, "active")
 
-        # 가격: <price buyprice="..." consumerprice="..." taxmode="..."> 속성
+        # 가격
         price_el = product.find("price")
         price = self._parse_price(price_el.get("buyprice") if price_el is not None else None)
         consumer_price = self._parse_price(price_el.get("consumerprice") if price_el is not None else None)
+        tax_mode = price_el.get("taxmode") if price_el is not None else None
 
-        # 이미지: <listimg url="..."> — 단일 url 속성
+        # 이미지
         listimg_el = product.find("listimg")
         image_url = None
         if listimg_el is not None:
@@ -130,16 +115,44 @@ class Mro3Collector(BaseCollector):
             if url:
                 image_url = url
 
-        # 카테고리명: <mrocatenm> CDATA 텍스트
+        # 카테고리명
         category_name = self._cdata_text(product, "mrocatenm")
 
-        # 상품명: <prdtname> CDATA 텍스트
+        # 상품명
         product_name = self._cdata_text(product, "prdtname")
 
-        # 옵션: <option1> (옵션명), <option1price> (옵션가격)
-        options = self._parse_options(product)
+        # 상품 상세 URL
+        detail_url = PRODUCT_URL.format(code=code)
 
-        images = [image_url] if image_url else []
+        # baseinfo: 원산지, 제조사, 브랜드, 모델명
+        origin = None
+        productcom = None
+        brand = None
+        model = None
+        baseinfo_el = product.find("baseinfo")
+        if baseinfo_el is not None:
+            origin = baseinfo_el.get("madein") or None
+            productcom = baseinfo_el.get("productcom") or None
+            brand = baseinfo_el.get("brand") or None
+            model = baseinfo_el.get("model") or None
+
+        # 상세설명
+        content_el = product.find("content")
+        detail_description = ""
+        if content_el is not None and content_el.text:
+            detail_description = content_el.text.strip()
+
+        # 키워드
+        keywords = []
+        for i in range(1, 6):
+            kw_el = product.find(f"keyword{i}")
+            if kw_el is not None and kw_el.text:
+                kw = kw_el.text.strip()
+                if kw:
+                    keywords.append(kw)
+
+        # 옵션: option1price는 절대가격 → 차액 = option_price - buyprice
+        options_text, option_prices_text = self._parse_options(product, price)
 
         return {
             "source_product_code": code,
@@ -148,23 +161,29 @@ class Mro3Collector(BaseCollector):
             "supply_price": None,
             "status": status,
             "image_url": image_url,
-            "detail_url": None,
+            "detail_url": detail_url,
             "stock_qty": None,
             "category_name": category_name,
+            "origin": origin,
+            "own_code": None,
+            "detail_description": detail_description,
+            "shipping_fee": None,
+            "shipping_condition": None,
             "extra": {
-                "consumer_price": consumer_price,
-                "options": options,
-                "images": images,
-                "opendate": status_el.get("opendate") if status_el is not None else None,
+                "소비자가": consumer_price,
+                "과세여부": tax_mode,
+                "제조사": productcom,
+                "브랜드": brand,
+                "모델명": model,
+                "키워드": " / ".join(keywords) if keywords else None,
+                "옵션": options_text,
+                "옵션가": option_prices_text,
             },
         }
 
-    # ──────────────────────────────────────────────
-    # 옵션 파싱: <option1>, <option1price> 요소
-    # ──────────────────────────────────────────────
-
-    def _parse_options(self, product: ET.Element) -> list:
-        options = []
+    def _parse_options(self, product: ET.Element, base_price: int):
+        option_names = []
+        option_diffs = []
         i = 1
         while True:
             opt_name_el = product.find(f"option{i}")
@@ -174,14 +193,22 @@ class Mro3Collector(BaseCollector):
             if not name:
                 break
             opt_price_el = product.find(f"option{i}price")
-            price = self._parse_price(opt_price_el.text if opt_price_el is not None else None)
-            options.append({"option_name": name, "price": price})
-            i += 1
-        return options
+            opt_price = self._parse_price(opt_price_el.text if opt_price_el is not None else None)
 
-    # ──────────────────────────────────────────────
-    # 공통 유틸
-    # ──────────────────────────────────────────────
+            if base_price is not None and opt_price is not None:
+                diff = opt_price - base_price
+                diff_str = f"+{diff}" if diff > 0 else str(diff)
+            else:
+                diff_str = "0"
+
+            option_names.append(name)
+            option_diffs.append(diff_str)
+            i += 1
+
+        if not option_names:
+            return None, None
+
+        return "\n".join(option_names), "\n".join(option_diffs)
 
     def _cdata_text(self, element: ET.Element, tag: str) -> str:
         node = element.find(tag)

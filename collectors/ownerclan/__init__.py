@@ -133,11 +133,7 @@ class OwnerclanCollector(BaseCollector):
                 # 브라우저 닫기 전에 프로젝트 downloads 폴더로 복사
                 import shutil
                 from datetime import datetime
-                _dl_raw = os.getenv("DOWNLOADS_DIR")
-                if _dl_raw:
-                    downloads_dir = Path(_dl_raw)
-                else:
-                    downloads_dir = Path.home() / "OneDrive" / "supplier_sync" / "ownerclan"
+                downloads_dir = Path(__file__).resolve().parents[2] / "downloads" / "ownerclan"
                 downloads_dir.mkdir(parents=True, exist_ok=True)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 safe_path = str(downloads_dir / f"ownerclan_{timestamp}.zip")

@@ -16,6 +16,7 @@ def _build_registry():
     from collectors.feelwoo import FeelwooCollector
     from collectors.sikjaje import SikjajeCollector
     from collectors.onch3 import Onch3Collector
+    from collectors.dometopia import DometopiaCollector
     return {
         "ownerclan": OwnerclanCollector,
         "jtckorea": JtckoreaCollector,
@@ -28,6 +29,7 @@ def _build_registry():
         "feelwoo": FeelwooCollector,
         "sikjaje": SikjajeCollector,
         "onch3": Onch3Collector,
+        "dometopia": DometopiaCollector,
     }
 
 
@@ -40,8 +42,25 @@ def _save_desktop_xlsx(wholesaler_code: str, items: list):
         return
 
     try:
-        desktop = Path.home() / "Desktop" / "예시"
+        desktop = Path(__file__).resolve().parents[2] / "downloads" / wholesaler_code
         desktop.mkdir(parents=True, exist_ok=True)
+
+        COLUMN_MAP = {
+            "source_product_code": "상품번호",
+            "product_name": "상품명",
+            "price": "가격",
+            "supply_price": "공급가",
+            "image_url": "대표이미지",
+            "detail_url": "상품URL",
+            "category_name": "카테고리",
+            "origin": "원산지",
+            "detail_description": "상세설명",
+            "shipping_fee": "배송비",
+            "shipping_condition": "무료배송조건",
+            "own_code": "자체코드",
+            "status": "상태",
+            "stock_qty": "재고",
+        }
 
         all_keys = []
         for item in items:
@@ -52,9 +71,11 @@ def _save_desktop_xlsx(wholesaler_code: str, items: list):
                 if k not in all_keys:
                     all_keys.append(k)
 
+        headers = [COLUMN_MAP.get(k, k) for k in all_keys]
+
         wb = openpyxl.Workbook()
         ws = wb.active
-        ws.append(all_keys)
+        ws.append(headers)
 
         for item in items:
             extra = item.get("extra") or {}

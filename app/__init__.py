@@ -47,6 +47,7 @@ def create_app():
     from app.group_products import group_products_bp
     from app.product_register import product_register_bp
     from app.product_prep import product_prep_bp
+    from app.file_viewer import file_viewer_bp
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)
@@ -66,17 +67,34 @@ def create_app():
     app.register_blueprint(group_products_bp)
     app.register_blueprint(product_register_bp)
     app.register_blueprint(product_prep_bp)
+    app.register_blueprint(file_viewer_bp)
 
     with app.app_context():
         db.create_all()
         # 신규 컬럼 마이그레이션 (기존 DB에 없으면 추가)
-        try:
-            from sqlalchemy import text
-            with db.engine.connect() as conn:
-                conn.execute(text("ALTER TABLE master_products ADD COLUMN detail_description TEXT"))
-                conn.commit()
-        except Exception:
-            pass  # 이미 존재하면 무시
+        from sqlalchemy import text
+        migrations = [
+            "ALTER TABLE master_products ADD COLUMN detail_description TEXT",
+            "ALTER TABLE master_products ADD COLUMN product_url TEXT",
+            "ALTER TABLE master_products ADD COLUMN edited_name TEXT",
+            "ALTER TABLE master_products ADD COLUMN category_id INTEGER",
+            "ALTER TABLE master_products ADD COLUMN is_prep_ready INTEGER DEFAULT 0",
+            "ALTER TABLE master_products ADD COLUMN current_status TEXT",
+            "ALTER TABLE master_products ADD COLUMN first_seen_date TEXT",
+            "ALTER TABLE master_products ADD COLUMN last_seen_date TEXT",
+            "ALTER TABLE master_products ADD COLUMN missing_days INTEGER DEFAULT 0",
+            "ALTER TABLE master_products ADD COLUMN last_status_change_date TEXT",
+            "ALTER TABLE master_products ADD COLUMN discontinued_flag INTEGER DEFAULT 0",
+            "ALTER TABLE wholesalers ADD COLUMN prefix TEXT",
+            "ALTER TABLE wholesalers ADD COLUMN notes TEXT",
+        ]
+        for sql in migrations:
+            try:
+                with db.engine.connect() as conn:
+                    conn.execute(text(sql))
+                    conn.commit()
+            except Exception:
+                pass  # 이미 존재하면 무시
         from app.auth.init_admin import create_initial_admin
         from app.wholesalers import get_or_create_ownerclan, get_or_create_jtckorea, get_or_create_metaldiy, get_or_create_ds1008, get_or_create_hitdesign, get_or_create_mro3, get_or_create_feelwoo, get_or_create_sikjaje, get_or_create_onch3
         create_initial_admin()

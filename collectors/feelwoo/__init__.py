@@ -129,7 +129,7 @@ class FeelwooCollector(BaseCollector):
 
             # 원본 파일 저장
             try:
-                save_dir = Path.home() / "OneDrive" / "supplier_sync" / "feelwoo"
+                save_dir = Path(__file__).resolve().parents[2] / "downloads" / "feelwoo"
                 save_dir.mkdir(parents=True, exist_ok=True)
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 raw_path = save_dir / f"feelwoo_{timestamp}.xlsx"

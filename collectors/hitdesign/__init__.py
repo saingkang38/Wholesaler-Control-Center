@@ -28,13 +28,11 @@ class HitdesignCollector(BaseCollector):
         if not login_id or not login_pw:
             return self._error("HITDESIGN_LOGIN_ID / HITDESIGN_LOGIN_PASSWORD 미설정")
 
-        # 1차: requests
         try:
             return self._run_requests(login_id, login_pw)
         except Exception as e:
             print(f"[hitdesign] requests 실패 → Playwright 전환: {e}")
 
-        # 2차: Playwright
         try:
             return self._run_playwright(login_id, login_pw)
         except Exception as e:
@@ -65,6 +63,19 @@ class HitdesignCollector(BaseCollector):
             except Exception as e:
                 print(f"[hitdesign] 카테고리 오류 ({cate_name}/{cate_no}): {e}")
 
+        # 상세페이지 수집
+        print(f"[hitdesign] 목록 수집 완료: {len(items)}건, 상세페이지 수집 시작...")
+        for i, item in enumerate(items):
+            try:
+                detail = self._fetch_detail(session, item["source_product_code"], item["detail_url"])
+                item.update(detail)
+            except Exception as e:
+                print(f"[hitdesign] 상세 오류 (product_no={item['source_product_code']}): {e}")
+            if (i + 1) % 100 == 0:
+                print(f"[hitdesign] 상세 수집 진행: {i + 1}/{len(items)}")
+            time.sleep(0.3)
+
+        print(f"[hitdesign] 전체 수집 완료: {len(items)}건")
         return {
             "success": True,
             "total_items": len(items),
@@ -79,7 +90,6 @@ class HitdesignCollector(BaseCollector):
         resp = self._get_with_retry(session, LOGIN_URL)
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # hidden field 전체 추출
         form = soup.find("form", {"id": re.compile(r"member_form_")})
         payload = {}
         if form:
@@ -93,9 +103,7 @@ class HitdesignCollector(BaseCollector):
         payload["member_passwd"] = login_pw
         payload["use_login_keeping"] = "T"
 
-        resp = self._post_with_retry(
-            session, LOGIN_ACTION, data=payload, allow_redirects=True
-        )
+        resp = self._post_with_retry(session, LOGIN_ACTION, data=payload, allow_redirects=True)
 
         if "로그아웃" not in resp.text and "logout" not in resp.text.lower():
             raise Exception("로그인 실패 - 계정 정보 확인 필요")
@@ -120,9 +128,7 @@ class HitdesignCollector(BaseCollector):
 
         return categories
 
-    def _collect_category_requests(
-        self, session: requests.Session, cate_no: str, cate_name: str
-    ) -> list:
+    def _collect_category_requests(self, session: requests.Session, cate_no: str, cate_name: str) -> list:
         items = []
         page_num = 1
 
@@ -131,9 +137,7 @@ class HitdesignCollector(BaseCollector):
             resp = self._get_with_retry(session, url)
             soup = BeautifulSoup(resp.text, "html.parser")
 
-            # 상품 링크 추출 (/product/{slug}/{product_no}/category/ 패턴)
             product_links = soup.select("a[href*='/product/'][href*='/category/']")
-            # 중복 제거 (같은 상품에 이미지 링크 + 텍스트 링크 2개씩 있을 수 있음)
             seen_no = set()
             products = []
             for link in product_links:
@@ -155,17 +159,12 @@ class HitdesignCollector(BaseCollector):
                     href = link.get("href", "")
                     li = link.find_parent("li")
 
-                    # 상품명: strong 태그 우선
-                    name_el = link.find("strong") or (
-                        li.find("strong") if li else None
-                    )
+                    name_el = link.find("strong") or (li.find("strong") if li else None)
                     name = name_el.get_text(strip=True) if name_el else ""
 
-                    # 가격
                     price_el = li.select_one(".price, .xans-product-price") if li else None
                     price = self._parse_price(price_el.get_text() if price_el else "")
 
-                    # 이미지
                     img_el = li.find("img") if li else link.find("img")
                     img = img_el.get("src", "") if img_el else ""
                     if img.startswith("//"):
@@ -184,6 +183,12 @@ class HitdesignCollector(BaseCollector):
                         "detail_url": href,
                         "stock_qty": None,
                         "category_name": cate_name,
+                        "origin": None,
+                        "own_code": None,
+                        "detail_description": "",
+                        "shipping_fee": None,
+                        "shipping_condition": None,
+                        "extra": {},
                     })
                 except Exception as e:
                     print(f"[hitdesign] 상품 파싱 오류: {e}")
@@ -192,6 +197,108 @@ class HitdesignCollector(BaseCollector):
             page_num += 1
 
         return items
+
+    def _fetch_detail(self, session: requests.Session, product_no: str, detail_url: str) -> dict:
+        resp = self._get_with_retry(session, detail_url)
+        resp.encoding = "utf-8"
+        soup = BeautifulSoup(resp.text, "html.parser")
+
+        # 가격: meta 태그
+        price = None
+        price_meta = soup.select_one("meta[property='product:sale_price:amount']")
+        if price_meta:
+            price = self._parse_price(price_meta.get("content", ""))
+
+        # 상품 정보 테이블: th span 텍스트로 매핑
+        own_code = None
+        origin = None
+        shipping_fee = None
+        shipping_condition = None
+
+        for tr in soup.select("table tbody tr"):
+            th = tr.select_one("th")
+            td = tr.select_one("td")
+            if not th or not td:
+                continue
+            key = th.get_text(strip=True)
+            val = td.get_text(" ", strip=True)
+
+            if key == "상품코드" and not own_code:
+                own_code = val or None
+            elif key == "원산지" and not origin:
+                origin = val or None
+            elif key == "배송비" and shipping_fee is None:
+                # "착불 1개 주문시 25,000원" 형태
+                fee_el = td.select_one(".delv_price_B strong")
+                if fee_el:
+                    shipping_fee = self._parse_price(fee_el.get_text(strip=True))
+                else:
+                    nums = re.findall(r'[\d,]+원', val)
+                    for n in nums:
+                        v = self._parse_price(n)
+                        if v and v > 0:
+                            shipping_fee = v
+                            break
+                shipping_condition = None  # 히트디자인은 무료배송 조건 없음
+
+        # 카테고리: 브레드크럼
+        category = None
+        crumb = soup.select(".xans-product-headcategory ol li a, .path ol li a")
+        if crumb:
+            parts = [a.get_text(strip=True) for a in crumb if a.get_text(strip=True) not in ("홈", "home", "Home")]
+            category = " > ".join(parts) if parts else None
+
+        # 상세설명 HTML: #prdDetail .cont 안의 실제 상세 이미지 영역
+        detail_html = ""
+        detail_el = soup.select_one("#prdDetail .cont")
+        if detail_el:
+            # 이미지 절대경로 변환
+            for img in detail_el.select("img"):
+                src = img.get("src", "")
+                if src.startswith("//"):
+                    img["src"] = "https:" + src
+                elif src.startswith("/"):
+                    img["src"] = BASE_URL + src
+            inner = detail_el.decode_contents().strip()
+            if inner:
+                detail_html = f'<div style="text-align:center;">{inner}</div>'
+
+        # 옵션: tbody.xans-product-option select option
+        options_text = None
+        option_prices_text = None
+        option_rows = soup.select("tbody.xans-product-option tr")
+        all_option_values = []
+        for tr in option_rows:
+            sel = tr.select_one("select")
+            if not sel:
+                continue
+            values = [
+                opt.get_text(strip=True)
+                for opt in sel.select("option")
+                if opt.get("value") not in ("*", "**") and opt.get_text(strip=True)
+            ]
+            all_option_values.extend(values)
+
+        if all_option_values:
+            options_text = "\n".join(all_option_values)
+            option_prices_text = "\n".join(["0"] * len(all_option_values))
+
+        result = {
+            "origin": origin,
+            "own_code": own_code,
+            "detail_description": detail_html,
+            "shipping_fee": shipping_fee,
+            "shipping_condition": shipping_condition,
+            "extra": {
+                "옵션": options_text,
+                "옵션가": option_prices_text,
+            },
+        }
+        if price is not None:
+            result["price"] = price
+        if category:
+            result["category_name"] = category
+        return result
 
     # ──────────────────────────────────────────────
     # Playwright fallback
@@ -310,6 +417,12 @@ class HitdesignCollector(BaseCollector):
                     "detail_url": prod.get("href", ""),
                     "stock_qty": None,
                     "category_name": cate_name,
+                    "origin": None,
+                    "own_code": None,
+                    "detail_description": "",
+                    "shipping_fee": None,
+                    "shipping_condition": None,
+                    "extra": {},
                 })
 
             page_num += 1
@@ -328,10 +441,9 @@ class HitdesignCollector(BaseCollector):
                 if resp.status_code == 200:
                     return resp
                 if resp.status_code in (403, 429):
-                    print(f"[hitdesign] {resp.status_code} 응답, {delay}초 후 재시도")
                     time.sleep(delay)
                     delay *= 2
-            except requests.RequestException as e:
+            except requests.RequestException:
                 if attempt == retries - 1:
                     raise
                 time.sleep(delay)
