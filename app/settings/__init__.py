@@ -1,19 +1,29 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
 from flask_login import login_required
 from app.infrastructure import db
-from app.settings.models import MarginRule
+from app.settings.models import MarginRule, PrepSetting
 from app.store.models import NaverStore
 
 settings_bp = Blueprint("settings", __name__)
 
+_margin_rules_cache = None
+
+
+def _invalidate_margin_cache():
+    global _margin_rules_cache
+    _margin_rules_cache = None
+
 
 def get_margin_rules():
-    return MarginRule.query.order_by(MarginRule.price_from).all()
+    global _margin_rules_cache
+    if _margin_rules_cache is None:
+        _margin_rules_cache = MarginRule.query.order_by(MarginRule.price_from).all()
+    return _margin_rules_cache
 
 
 def apply_margin(wholesale_price: int) -> int:
     """도매가에 마진율 적용 후 10원 단위 반올림"""
-    if not wholesale_price:
+    if not wholesale_price or wholesale_price <= 0:
         return 0
     rules = get_margin_rules()
     for rule in rules:
@@ -48,6 +58,7 @@ def add_margin_rule():
         margin_rate=margin_rate / 100,
     ))
     db.session.commit()
+    _invalidate_margin_cache()
     flash("마진 규칙이 추가됐습니다.", "success")
     return redirect(url_for("settings.margin_page"))
 
@@ -58,8 +69,92 @@ def delete_margin_rule(rule_id):
     rule = MarginRule.query.get_or_404(rule_id)
     db.session.delete(rule)
     db.session.commit()
+    _invalidate_margin_cache()
     flash("삭제됐습니다.", "success")
     return redirect(url_for("settings.margin_page"))
+
+
+@settings_bp.route("/settings/prep")
+@login_required
+def prep_setting_page():
+    try:
+        setting = PrepSetting.get()
+    except Exception as e:
+        flash(f"설정을 불러오지 못했습니다 (앱 재시작 필요): {e}", "error")
+        from types import SimpleNamespace
+        from pathlib import Path
+        base = Path.home() / "Desktop" / "상품가공"
+        setting = SimpleNamespace(
+            excel_dir=str(base), image_dir=str(base / "이미지"),
+            processed_image_dir=str(base / "가공이미지"),
+            side_panel_url="https://namingfactory.ai.kr",
+            img_inner_scale=100, img_rotation=0,
+            img_output_size=None, img_quality=100,
+        )
+    return render_template("prep_settings.html", setting=setting)
+
+
+@settings_bp.route("/settings/prep/save", methods=["POST"])
+@login_required
+def save_prep_setting():
+    try:
+        setting = PrepSetting.get()
+
+        def _val(key, current):
+            v = request.form.get(key, "").strip()
+            return v if v else current
+
+        setting.excel_dir           = _val("excel_dir", setting.excel_dir)
+        setting.image_dir           = _val("image_dir", setting.image_dir)
+        setting.processed_image_dir = _val("processed_image_dir", setting.processed_image_dir)
+        v = request.form.get("side_panel_url", "").strip()
+        if v:
+            setting.side_panel_url = v
+
+        try:
+            setting.img_inner_scale = int(request.form.get("img_inner_scale", 100))
+        except (ValueError, TypeError):
+            pass
+        try:
+            setting.img_rotation = int(request.form.get("img_rotation", 0))
+        except (ValueError, TypeError):
+            pass
+        v = request.form.get("img_output_size", "").strip()
+        setting.img_output_size = int(v) if v else None
+        try:
+            setting.img_quality = max(1, min(100, int(request.form.get("img_quality", 100))))
+        except (ValueError, TypeError):
+            pass
+
+        db.session.commit()
+        flash("저장됐습니다.", "success")
+    except Exception as e:
+        db.session.rollback()
+        flash(f"저장 실패 — 앱을 재시작해주세요: {e}", "error")
+
+    return redirect(url_for("settings.prep_setting_page"))
+
+
+@settings_bp.route("/api/pick-folder", methods=["POST"])
+@login_required
+def pick_folder():
+    """서버 측 tkinter 폴더 선택 다이얼로그"""
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+        root = tk.Tk()
+        root.withdraw()
+        root.wm_attributes("-topmost", True)
+        initial = request.get_json(silent=True) or {}
+        folder = filedialog.askdirectory(
+            parent=root,
+            initialdir=initial.get("initial_dir", ""),
+            title="폴더 선택",
+        )
+        root.destroy()
+        return jsonify({"path": folder or None})
+    except Exception as e:
+        return jsonify({"error": str(e), "path": None}), 500
 
 
 @settings_bp.route("/settings/seller-account")

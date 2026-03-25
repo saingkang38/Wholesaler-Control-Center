@@ -35,11 +35,12 @@ def create_app():
     from app.master import master_bp
     from app.master.models import MasterProduct, ProductEvent  # noqa: F401 - 테이블 생성용
     from app.store import store_bp
+    from app.store import routes as _store_routes  # noqa: F401 — blueprint에 라우트 등록
     from app.store.models import StoreProduct, NaverStore, ProductExclusion, SyncLog, BulkRegisterJob, BulkRegisterItem  # noqa: F401 - 테이블 생성용
     from app.actions import actions_bp
     from app.actions.models import ActionSignal  # noqa: F401 - 테이블 생성용
     from app.settings import settings_bp
-    from app.settings.models import MarginRule  # noqa: F401 - 테이블 생성용
+    from app.settings.models import MarginRule, PrepSetting  # noqa: F401 - 테이블 생성용
     from app.exporter import exporter_bp
     from app.orders import orders_bp
     from app.inquiries import inquiries_bp
@@ -72,7 +73,9 @@ def create_app():
     with app.app_context():
         db.create_all()
         # 신규 컬럼 마이그레이션 (기존 DB에 없으면 추가)
+        import logging as _logging
         from sqlalchemy import text
+        from sqlalchemy.exc import OperationalError as _OpError
         migrations = [
             "ALTER TABLE master_products ADD COLUMN detail_description TEXT",
             "ALTER TABLE master_products ADD COLUMN product_url TEXT",
@@ -87,25 +90,38 @@ def create_app():
             "ALTER TABLE master_products ADD COLUMN discontinued_flag INTEGER DEFAULT 0",
             "ALTER TABLE wholesalers ADD COLUMN prefix TEXT",
             "ALTER TABLE wholesalers ADD COLUMN notes TEXT",
+            "ALTER TABLE prep_settings ADD COLUMN processed_image_dir VARCHAR(512)",
+            "ALTER TABLE prep_settings ADD COLUMN img_inner_scale INTEGER DEFAULT 100",
+            "ALTER TABLE prep_settings ADD COLUMN img_rotation INTEGER DEFAULT 0",
+            "ALTER TABLE prep_settings ADD COLUMN img_output_size INTEGER",
+            "ALTER TABLE prep_settings ADD COLUMN img_quality INTEGER DEFAULT 100",
+            "ALTER TABLE prep_settings ADD COLUMN side_panel_url VARCHAR(1024)",
         ]
         for sql in migrations:
             try:
                 with db.engine.connect() as conn:
                     conn.execute(text(sql))
                     conn.commit()
-            except Exception:
-                pass  # 이미 존재하면 무시
+            except _OpError:
+                pass  # column already exists — 정상적으로 무시
+            except Exception as _e:
+                _logging.getLogger(__name__).warning(f"마이그레이션 실패: {_e}")
         from app.auth.init_admin import create_initial_admin
-        from app.wholesalers import get_or_create_ownerclan, get_or_create_jtckorea, get_or_create_metaldiy, get_or_create_ds1008, get_or_create_hitdesign, get_or_create_mro3, get_or_create_feelwoo, get_or_create_sikjaje, get_or_create_onch3
+        from app.wholesalers import (
+            get_or_create_ownerclan, get_or_create_jtckorea, get_or_create_metaldiy,
+            get_or_create_ds1008, get_or_create_hitdesign, get_or_create_mro3,
+            get_or_create_feelwoo, get_or_create_sikjaje, get_or_create_onch3,
+        )
         create_initial_admin()
-        get_or_create_ownerclan()
-        get_or_create_jtckorea()
-        get_or_create_metaldiy()
-        get_or_create_ds1008()
-        get_or_create_hitdesign()
-        get_or_create_mro3()
-        get_or_create_feelwoo()
-        get_or_create_sikjaje()
-        get_or_create_onch3()
+        for init_fn in [
+            get_or_create_ownerclan, get_or_create_jtckorea, get_or_create_metaldiy,
+            get_or_create_ds1008, get_or_create_hitdesign, get_or_create_mro3,
+            get_or_create_feelwoo, get_or_create_sikjaje, get_or_create_onch3,
+        ]:
+            try:
+                init_fn()
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).warning(f"도매처 초기화 실패: {e}")
 
     return app

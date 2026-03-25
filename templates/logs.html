@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% block title %}동기화 로그{% endblock %}
+{% block title %}로그{% endblock %}
 {% block content %}
 <style>
     table { width: 100%; border-collapse: collapse; font-size: 13px; }
@@ -8,12 +8,74 @@
     tr:hover td { background: #fafafa; }
     .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; }
     .badge-success { background: #e6f4ea; color: #2e7d32; }
-    .badge-error { background: #fce8e8; color: #c62828; }
-    .badge-sync { background: #e3f2fd; color: #1565c0; }
+    .badge-failed  { background: #fce8e8; color: #c62828; }
+    .badge-running { background: #fff8e1; color: #f57f17; }
+    .badge-error   { background: #fce8e8; color: #c62828; }
+    .badge-sync    { background: #e3f2fd; color: #1565c0; }
     .badge-rematch { background: #fff3e0; color: #e65100; }
     .mono { font-family: monospace; font-size: 12px; color: #555; }
 </style>
 
+<!-- 수집 실행 이력 -->
+<div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <h2 style="font-size:18px; font-weight:bold;">수집 실행 이력</h2>
+        <span style="font-size:13px; color:#999;">최근 100건</span>
+    </div>
+
+    {% if collection_runs %}
+    <table>
+        <thead>
+            <tr>
+                <th style="width:160px;">시각</th>
+                <th>도매처</th>
+                <th style="width:80px;">상태</th>
+                <th style="width:80px;">트리거</th>
+                <th style="width:80px;">수집건수</th>
+                <th style="width:120px;">소요시간</th>
+                <th>오류</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for run in collection_runs %}
+            <tr>
+                <td class="mono">{{ run.started_at.strftime('%Y-%m-%d %H:%M:%S') if run.started_at else '-' }}</td>
+                <td>{{ run.wholesaler.name }}</td>
+                <td>
+                    {% if run.status == 'success' %}
+                    <span class="badge badge-success">성공</span>
+                    {% elif run.status == 'running' %}
+                    <span class="badge badge-running">수집중</span>
+                    {% else %}
+                    <span class="badge badge-failed">실패</span>
+                    {% endif %}
+                </td>
+                <td>
+                    <span class="mono">{{ '스케줄' if run.trigger_type == 'scheduled' else '수동' }}</span>
+                </td>
+                <td class="mono">{{ "{:,}".format(run.total_items) if run.total_items else '-' }}</td>
+                <td class="mono">
+                    {% if run.started_at and run.finished_at %}
+                        {% set secs = (run.finished_at - run.started_at).seconds %}
+                        {% if secs >= 60 %}{{ secs // 60 }}분 {{ secs % 60 }}초
+                        {% else %}{{ secs }}초{% endif %}
+                    {% elif run.status == 'running' %}
+                        진행 중...
+                    {% else %}-{% endif %}
+                </td>
+                <td class="mono" style="color:#c62828; max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                    {{ run.error_summary or '' }}
+                </td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    {% else %}
+    <p style="color:#999; padding:20px 0;">수집 이력이 없습니다.</p>
+    {% endif %}
+</div>
+
+<!-- 동기화 / 재매칭 로그 -->
 <div class="card">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
         <h2 style="font-size:18px; font-weight:bold;">동기화 / 재매칭 로그</h2>
@@ -57,4 +119,5 @@
     <p style="color:#999; padding:20px 0;">아직 로그가 없습니다. 동기화 또는 재매칭을 실행하면 여기에 기록됩니다.</p>
     {% endif %}
 </div>
+
 {% endblock %}

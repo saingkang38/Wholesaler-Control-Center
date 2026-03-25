@@ -1,0 +1,146 @@
+{% extends "base.html" %}
+{% block title %}{{ filename }} 미리보기{% endblock %}
+{% block content %}
+<style>
+  .preview-wrapper {
+    overflow: auto;
+    max-height: 75vh;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+    position: relative;
+  }
+  .preview-table {
+    border-collapse: collapse;
+    font-size: 12px;
+    white-space: nowrap;
+    table-layout: auto;
+    width: max-content;
+    min-width: 100%;
+  }
+  .preview-table thead th {
+    padding: 0;
+    background: #2c3e50;
+    color: white;
+    border-right: 1px solid #3d5166;
+    border-bottom: 2px solid #1a252f;
+    position: sticky;
+    top: 0;
+    z-index: 2;
+    user-select: none;
+  }
+  .th-inner {
+    display: inline-block;
+    padding: 6px 8px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    width: 100%;
+    box-sizing: border-box;
+  }
+  .resize-handle {
+    display: inline-block;
+    width: 5px;
+    cursor: col-resize;
+    background: transparent;
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+  }
+  .resize-handle:hover {
+    background: rgba(255,255,255,0.3);
+  }
+  .preview-table tbody td {
+    padding: 5px 8px;
+    border-right: 1px solid #eee;
+    border-bottom: 1px solid #eee;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 300px;
+  }
+  .preview-table tbody tr:hover {
+    background: #f0f7ff;
+  }
+</style>
+
+<div style="max-width:100%;margin:24px auto;padding:0 16px;">
+  <div style="margin-bottom:12px;">
+    <a href="/downloads/{{ code }}" style="color:#2980b9;">← {{ wholesaler_name }} 파일 목록</a>
+  </div>
+  <h2 style="margin-bottom:16px;font-size:16px;">🔍 {{ filename }}</h2>
+
+  {% if error %}
+  <div style="background:#ffe0e0;padding:16px;border-radius:8px;color:#c0392b;">
+    오류: {{ error }}
+  </div>
+  {% else %}
+    {% for table in tables %}
+    <div style="margin-bottom:32px;">
+      <div style="margin-bottom:8px;font-size:13px;color:#555;font-weight:bold;">{{ table.title }}</div>
+
+      <div class="preview-wrapper">
+        <table class="preview-table" id="table_{{ loop.index }}">
+          {% for row in table.rows %}
+          {% if loop.index == 1 %}
+          <thead>
+            <tr>
+              {% for cell in row %}
+              <th style="min-width:80px;width:120px;position:relative;" title="{{ cell }}">
+                <span class="th-inner">{{ cell }}</span>
+                <span class="resize-handle" data-col="{{ loop.index0 }}"></span>
+              </th>
+              {% endfor %}
+            </tr>
+          </thead>
+          <tbody>
+          {% else %}
+            <tr>
+              {% for cell in row %}
+              <td title="{{ cell }}">{{ cell }}</td>
+              {% endfor %}
+            </tr>
+          {% endif %}
+          {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top:6px;font-size:12px;color:#999;">
+        총 {{ table.rows|length - 1 }}행 · 헤더 우측 경계선 드래그로 칸 너비 조절
+      </div>
+    </div>
+    {% endfor %}
+  {% endif %}
+</div>
+
+<script>
+(function() {
+  document.querySelectorAll('.resize-handle').forEach(function(handle) {
+    var startX, startWidth, th;
+
+    handle.addEventListener('mousedown', function(e) {
+      th = handle.parentElement;
+      startX = e.pageX;
+      startWidth = th.offsetWidth;
+      document.body.style.cursor = 'col-resize';
+      e.preventDefault();
+
+      function onMouseMove(e) {
+        var newWidth = Math.max(40, startWidth + (e.pageX - startX));
+        th.style.width = newWidth + 'px';
+        th.style.minWidth = newWidth + 'px';
+      }
+
+      function onMouseUp() {
+        document.body.style.cursor = '';
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+      }
+
+      document.addEventListener('mousemove', onMouseMove);
+      document.addEventListener('mouseup', onMouseUp);
+    });
+  });
+})();
+</script>
+{% endblock %}

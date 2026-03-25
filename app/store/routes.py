@@ -94,7 +94,7 @@ def store_overview_sync():
     store_id = request.form.get("store_id", type=int)
     store = NaverStore.query.get_or_404(store_id)
     try:
-        stats = _sync_single_store(store, 0)
+        stats = _sync_single_store(store)
         flash(
             f"동기화 완료 — 신규 {stats['created']}건 / 갱신 {stats['updated']}건 / "
             f"매칭 {stats['matched']}건 / 미매칭 {stats['unmatched']}건",
@@ -230,8 +230,10 @@ def stores_list_json():
 @store_bp.route("/logs")
 @login_required
 def logs_page():
+    from app.execution_logs.models import CollectionRun
     logs = SyncLog.query.order_by(SyncLog.created_at.desc()).limit(200).all()
-    return render_template("logs.html", logs=logs)
+    collection_runs = CollectionRun.query.order_by(CollectionRun.started_at.desc()).limit(100).all()
+    return render_template("logs.html", logs=logs, collection_runs=collection_runs)
 
 
 @store_bp.route("/store-products/<int:product_id>/edit-form")
@@ -319,9 +321,13 @@ def store_products_page():
         base_query = base_query.filter_by(naver_store_id=naver_store_id)
 
     total = base_query.count()
-    counts = {}
-    for code in STATUS_LABELS:
-        counts[code] = base_query.filter_by(store_status=code).count()
+    count_rows = base_query.with_entities(
+        StoreProduct.store_status, func.count(StoreProduct.id)
+    ).group_by(StoreProduct.store_status).all()
+    counts = {code: 0 for code in STATUS_LABELS}
+    for status, cnt in count_rows:
+        if status in counts:
+            counts[status] = cnt
 
     pagination = query.order_by(StoreProduct.id.desc()).paginate(page=page, per_page=per_page, error_out=False)
 

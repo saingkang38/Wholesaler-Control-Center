@@ -3,6 +3,19 @@
 
 {% block content %}
 
+<!-- 수집 중 상태 배너 -->
+<div id="collection-banner" style="display:none; margin-bottom:16px; padding:12px 16px;
+    background:#fff8e1; border:1px solid #ffe082; border-radius:8px;
+    display:flex; align-items:center; gap:10px;">
+    <span style="display:inline-block; width:10px; height:10px; background:#f39c12;
+        border-radius:50%; animation:blink 1s infinite;"></span>
+    <span id="collection-banner-text" style="font-size:13px; color:#7d5a00; font-weight:bold;"></span>
+    <span style="font-size:12px; color:#999; margin-left:auto;">10초마다 자동 갱신</span>
+</div>
+<style>
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+</style>
+
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
     <div>
         <h2 style="font-size:20px; font-weight:bold;">대시보드</h2>
@@ -256,18 +269,51 @@ function triggerCollect(code) {
     const btn = event.target;
     const result = document.getElementById("collect-result");
     btn.disabled = true;
+    result.style.color = "#999";
     result.textContent = "수집 요청 중...";
     fetch("/api/collect/" + code, { method: "POST" })
-        .then(r => r.json())
-        .then(data => {
-            result.textContent = data.success ? "수집 요청 완료" : "실패: " + (data.error || "알 수 없는 오류");
+        .then(r => r.json().then(data => ({ status: r.status, data })))
+        .then(({ status, data }) => {
+            if (status === 409) {
+                result.style.color = "#e67e22";
+                result.textContent = "⚠ " + (data.error || "이미 수집 중");
+            } else if (data.success) {
+                result.style.color = "#27ae60";
+                result.textContent = "수집 요청 완료";
+                updateCollectionBanner();
+            } else {
+                result.style.color = "#e74c3c";
+                result.textContent = "실패: " + (data.error || "알 수 없는 오류");
+            }
             btn.disabled = false;
         })
         .catch(() => {
+            result.style.color = "#e74c3c";
             result.textContent = "요청 실패";
             btn.disabled = false;
         });
 }
+
+function updateCollectionBanner() {
+    fetch("/api/collection-status")
+        .then(r => r.json())
+        .then(data => {
+            const banner = document.getElementById("collection-banner");
+            const text = document.getElementById("collection-banner-text");
+            if (data.running && data.running.length > 0) {
+                const names = data.running.map(r => r.wholesaler_name + " (" + r.started_at + " 시작)").join("  /  ");
+                text.textContent = "수집 진행 중: " + names;
+                banner.style.display = "flex";
+            } else {
+                banner.style.display = "none";
+            }
+        })
+        .catch(() => {});
+}
+
+// 페이지 로드 즉시 + 10초마다 갱신
+updateCollectionBanner();
+setInterval(updateCollectionBanner, 10000);
 </script>
 
 {% endblock %}

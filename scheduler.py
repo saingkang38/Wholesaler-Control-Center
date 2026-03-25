@@ -68,35 +68,23 @@ def _collect_wholesaler(wholesaler_code: str, name: str, flask_app, run_time: st
 
 
 def run_all_wholesalers(flask_app, run_time: str):
-    """전체 도매처 순차 수집"""
+    """전체 도매처 순차 수집 — DB 활성 도매처 기준 (하드코딩 목록 제거)"""
     logger.info(f"[scheduler] 전체 도매처 수집 시작 ({run_time})")
 
-    ownerclan_ok = _collect_wholesaler("ownerclan",  "오너클랜",    flask_app, run_time)
-    jtc_ok       = _collect_wholesaler("jtckorea",   "JTC코리아",   flask_app, run_time)
-    metal_ok     = _collect_wholesaler("metaldiy",   "철물박사",    flask_app, run_time)
-    ds_ok        = _collect_wholesaler("ds1008",     "DS도매",      flask_app, run_time)
-    hit_ok       = _collect_wholesaler("hitdesign",  "히트가구",    flask_app, run_time)
-    feelwoo_ok   = _collect_wholesaler("feelwoo",    "필우커머스",  flask_app, run_time)
-    sikjaje_ok   = _collect_wholesaler("sikjaje",    "식자재코리아", flask_app, run_time)
-    onch3_ok     = _collect_wholesaler("onch3",      "온채널",      flask_app, run_time)
-    mro3_ok      = _collect_wholesaler("mro3",       "3MRO",        flask_app, run_time)
+    with flask_app.app_context():
+        from app.wholesalers.models import Wholesaler
+        wholesalers = [(w.code, w.name) for w in Wholesaler.query.filter_by(is_active=True).all()]
+
+    results = {}
+    for code, name in wholesalers:
+        results[code] = _collect_wholesaler(code, name, flask_app, run_time)
 
     # 실패한 도매처 1회 재시도
-    retry_targets = []
-    if not ownerclan_ok: retry_targets.append(("ownerclan",  "오너클랜"))
-    if not jtc_ok:       retry_targets.append(("jtckorea",   "JTC코리아"))
-    if not metal_ok:     retry_targets.append(("metaldiy",   "철물박사"))
-    if not ds_ok:        retry_targets.append(("ds1008",     "DS도매"))
-    if not hit_ok:       retry_targets.append(("hitdesign",  "히트가구"))
-    if not feelwoo_ok:   retry_targets.append(("feelwoo",    "필우커머스"))
-    if not sikjaje_ok:   retry_targets.append(("sikjaje",    "식자재코리아"))
-    if not onch3_ok:     retry_targets.append(("onch3",      "온채널"))
-    if not mro3_ok:      retry_targets.append(("mro3",       "3MRO"))
-
+    retry_targets = [(code, name) for code, name in wholesalers if not results.get(code)]
     if retry_targets:
         logger.info(f"[scheduler] 재시도 대상: {[n for _, n in retry_targets]}")
         for code, name in retry_targets:
-            _collect_wholesaler(code, f"{name}(재시도)", flask_app, run_time)
+            results[code] = _collect_wholesaler(code, f"{name}(재시도)", flask_app, run_time)
 
     logger.info(f"[scheduler] 전체 도매처 수집 완료")
 
@@ -131,23 +119,14 @@ def run_match_and_signal(flask_app, run_time: str):
         logger.error(f"[scheduler] 매칭/시그널 감지 실패: {e}")
 
 
-_flask_app = None
-
-
-def _get_flask_app():
-    global _flask_app
-    if _flask_app is None:
-        from app import create_app
-        _flask_app = create_app()
-    return _flask_app
-
-
 def run_daily_pipeline():
-    """매일 새벽 2시 — 수집 → 스토어동기화 → 매칭 순차 실행"""
+    """매일 새벽 — 수집 → 스토어동기화 → 매칭 순차 실행"""
     run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
     logger.info(f"[scheduler] 일일 파이프라인 시작 ({run_time})")
 
-    flask_app = _get_flask_app()
+    # 매 실행마다 새 앱 인스턴스 생성 — 전날 DB 세션 오염 방지
+    from app import create_app
+    flask_app = create_app()
 
     run_all_wholesalers(flask_app, run_time)
     run_store_sync(flask_app, run_time)
@@ -159,10 +138,12 @@ def run_daily_pipeline():
 if __name__ == "__main__":
     import tempfile
     _lock_path = Path(tempfile.gettempdir()) / "wholesaler_scheduler.lock"
+    def _write_lock(path):
+        with open(path, "x") as f:
+            f.write(str(os.getpid()))
+
     try:
-        _lock_file = open(_lock_path, "x")  # 배타적 생성 — 이미 있으면 예외
-        _lock_file.write(str(os.getpid()))
-        _lock_file.flush()
+        _write_lock(_lock_path)
     except FileExistsError:
         # 락 파일이 남아있으면 PID 확인 후 판단
         try:
@@ -173,14 +154,10 @@ if __name__ == "__main__":
                 sys.exit(1)
             else:
                 _lock_path.unlink()
-                _lock_file = open(_lock_path, "x")
-                _lock_file.write(str(os.getpid()))
-                _lock_file.flush()
-        except Exception:
+                _write_lock(_lock_path)
+        except (FileNotFoundError, ValueError):
             _lock_path.unlink(missing_ok=True)
-            _lock_file = open(_lock_path, "x")
-            _lock_file.write(str(os.getpid()))
-            _lock_file.flush()
+            _write_lock(_lock_path)
 
     import atexit
     atexit.register(lambda: _lock_path.unlink(missing_ok=True))

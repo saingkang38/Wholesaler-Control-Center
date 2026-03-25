@@ -70,8 +70,13 @@
           {% for n in [20, 50, 100, 300, 500, 1000, 2000] %}
           <option value="{{ n }}" {% if selected_limit == n %}selected{% endif %}>{{ n }}개</option>
           {% endfor %}
+          <option value="0" {% if selected_limit == 0 %}selected{% endif %}>전체</option>
         </select>
-        <button id="downloadBtn" class="btn btn-primary" onclick="downloadXlsx()">엑셀 다운로드</button>
+        <button id="downloadBtn" class="btn btn-primary" onclick="downloadXlsx()">엑셀/이미지 다운로드</button>
+        <span id="selCount" style="font-size:13px; color:#2c3e50; font-weight:bold; display:none;">
+          선택 <span id="selNum">0</span>개
+          <button type="button" onclick="clearSelection()" style="margin-left:6px; padding:2px 8px; font-size:12px; background:#eee; border:1px solid #ccc; border-radius:4px; cursor:pointer;">선택 해제</button>
+        </span>
       </div>
 
       <!-- 사용 방법 안내 -->
@@ -101,9 +106,11 @@
       <table>
         <thead>
           <tr>
+            <th style="width:36px;"><input type="checkbox" id="checkAll" title="이 페이지 전체선택"></th>
             <th>코드</th>
             <th>도매처</th>
             <th>원래 상품명</th>
+            <th>이미지</th>
             <th>가공명</th>
             <th>카테고리 ID</th>
             <th>상태</th>
@@ -112,9 +119,21 @@
         <tbody>
           {% for m in products %}
           <tr>
+            <td><input type="checkbox" class="row-check" data-id="{{ m.id }}"></td>
             <td style="font-size:12px; color:#888;">{{ m.supplier_product_code }}</td>
             <td>{{ m.wholesaler.name if m.wholesaler else '-' }}</td>
             <td>{{ m.product_name or '-' }}</td>
+            <td>
+              {% if m.image_url %}
+              <a href="{{ m.image_url }}" target="_blank">
+                <img src="{{ m.image_url }}" style="width:40px; height:40px; object-fit:cover; border-radius:4px; border:1px solid #eee;"
+                     onerror="this.style.display='none'; this.nextElementSibling.style.display='inline';">
+                <span style="display:none; font-size:11px; color:#aaa;">오류</span>
+              </a>
+              {% else %}
+              <span style="font-size:11px; color:#ccc;">-</span>
+              {% endif %}
+            </td>
             <td>{{ m.edited_name or '-' }}</td>
             <td>{{ m.category_id or '-' }}</td>
             <td>
@@ -126,7 +145,7 @@
             </td>
           </tr>
           {% else %}
-          <tr><td colspan="6" style="text-align:center; color:#aaa; padding:20px;">미가공 상품이 없습니다.</td></tr>
+          <tr><td colspan="8" style="text-align:center; color:#aaa; padding:20px;">미가공 상품이 없습니다.</td></tr>
           {% endfor %}
         </tbody>
       </table>
@@ -162,12 +181,75 @@
 </div>
 
 <script>
+// ── 선택 항목 localStorage 관리 ─────────────────────────
+const SEL_KEY = 'prepSelectedIds';
+
+function getSelected() {
+  try { return new Set(JSON.parse(localStorage.getItem(SEL_KEY) || '[]')); }
+  catch { return new Set(); }
+}
+
+function saveSelected(set) {
+  localStorage.setItem(SEL_KEY, JSON.stringify([...set]));
+  updateSelUI(set);
+}
+
+function updateSelUI(set) {
+  const n = set.size;
+  document.getElementById('selNum').textContent = n;
+  document.getElementById('selCount').style.display = n > 0 ? '' : 'none';
+}
+
+function clearSelection() {
+  saveSelected(new Set());
+  document.querySelectorAll('.row-check').forEach(c => c.checked = false);
+  document.getElementById('checkAll').checked = false;
+}
+
+// 페이지 로드 시 체크 상태 복원
+(function restoreChecks() {
+  const sel = getSelected();
+  updateSelUI(sel);
+  document.querySelectorAll('.row-check').forEach(cb => {
+    if (sel.has(cb.dataset.id)) cb.checked = true;
+  });
+  // checkAll 상태
+  const allBoxes = document.querySelectorAll('.row-check');
+  if (allBoxes.length > 0 && [...allBoxes].every(c => c.checked)) {
+    document.getElementById('checkAll').checked = true;
+  }
+})();
+
+// 개별 체크박스 변경
+document.querySelectorAll('.row-check').forEach(cb => {
+  cb.addEventListener('change', function() {
+    const sel = getSelected();
+    if (this.checked) sel.add(this.dataset.id);
+    else sel.delete(this.dataset.id);
+    saveSelected(sel);
+    const allBoxes = document.querySelectorAll('.row-check');
+    document.getElementById('checkAll').checked = [...allBoxes].every(c => c.checked);
+  });
+});
+
+// 전체선택 체크박스
+document.getElementById('checkAll').addEventListener('change', function() {
+  const sel = getSelected();
+  document.querySelectorAll('.row-check').forEach(cb => {
+    cb.checked = this.checked;
+    if (this.checked) sel.add(cb.dataset.id);
+    else sel.delete(cb.dataset.id);
+  });
+  saveSelected(sel);
+});
+
+// ── 네비게이션 ────────────────────────────────────────────
 function buildUrl(page) {
   const wid = document.getElementById('wholesalerSelect').value;
   const lim = document.getElementById('limitSelect').value;
   const params = new URLSearchParams();
   if (wid) params.set('wholesaler_id', wid);
-  if (lim) params.set('limit', lim);
+  params.set('limit', lim || 1000);
   params.set('page', page || 1);
   return '/product-prep?' + params.toString();
 }
@@ -175,31 +257,40 @@ function buildUrl(page) {
 function changeWholesaler() { window.location.href = buildUrl(1); }
 function changeLimit() { window.location.href = buildUrl(1); }
 
+// ── 다운로드 ──────────────────────────────────────────────
 async function downloadXlsx() {
   const btn = document.getElementById('downloadBtn');
   btn.disabled = true;
   btn.textContent = '저장 중...';
+
+  const sel = getSelected();
   const wid = document.getElementById('wholesalerSelect').value;
-  const url = '/product-prep/download' + (wid ? '?wholesaler_id=' + wid : '');
+  const body = { ids: sel.size > 0 ? [...sel] : null };
+  if (wid && !body.ids) body.wholesaler_id = parseInt(wid);
+
   try {
-    const resp = await fetch(url);
+    const resp = await fetch('/product-prep/download', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body),
+    });
     const data = await resp.json();
     if (data.success) {
-      btn.textContent = '✅ 저장 완료';
+      btn.textContent = `✅ 저장 완료 (이미지 ${data.image_count || 0}개 다운로드 중...)`;
       btn.style.background = '#28a745';
       setTimeout(() => {
-        btn.textContent = '엑셀 다운로드';
+        btn.textContent = '엑셀/이미지 다운로드';
         btn.style.background = '';
         btn.disabled = false;
-      }, 3000);
+      }, 4000);
     } else {
       alert('저장 실패: ' + (data.error || '알 수 없는 오류'));
-      btn.textContent = '엑셀 다운로드';
+      btn.textContent = '엑셀/이미지 다운로드';
       btn.disabled = false;
     }
   } catch (e) {
     alert('오류 발생: ' + e);
-    btn.textContent = '엑셀 다운로드';
+    btn.textContent = '엑셀/이미지 다운로드';
     btn.disabled = false;
   }
 }

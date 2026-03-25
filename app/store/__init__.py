@@ -1,3 +1,4 @@
+import logging
 from flask import Blueprint, render_template, request, redirect, url_for, flash
 from flask_login import login_required
 from datetime import datetime
@@ -7,8 +8,43 @@ from app.master.models import MasterProduct
 from app.wholesalers.models import Wholesaler
 
 store_bp = Blueprint("store", __name__)
+logger = logging.getLogger(__name__)
 
-from app.store import routes  # noqa: F401, E402
+
+def _get_prefixes() -> list:
+    """도매처 prefix 목록 — 여러 함수에서 공통 사용"""
+    return [w.prefix for w in Wholesaler.query.filter(Wholesaler.prefix.isnot(None)).all()]
+
+
+def _build_master_map(seller_codes: set, prefixes: list) -> dict:
+    """seller_code → MasterProduct 매핑 딕셔너리 — 배치 IN 쿼리로 N+1 + SQLite 변수 제한 방지"""
+    if not seller_codes:
+        return {}
+    all_candidates = set(seller_codes)
+    for code in seller_codes:
+        for p in prefixes:
+            if p:
+                all_candidates.add(f"{p}{code}")
+    candidates_list = list(all_candidates)
+    masters = []
+    for i in range(0, len(candidates_list), 500):
+        chunk = candidates_list[i:i + 500]
+        masters.extend(
+            MasterProduct.query.filter(
+                MasterProduct.supplier_product_code.in_(chunk)
+            ).all()
+        )
+    return {m.supplier_product_code: m for m in masters}
+
+
+def _lookup_master(seller_code: str, master_map: dict, prefixes: list):
+    """master_map에서 seller_code 또는 prefix+code 로 마스터 조회"""
+    if master_map.get(seller_code):
+        return master_map[seller_code]
+    for p in prefixes:
+        if p and master_map.get(f"{p}{seller_code}"):
+            return master_map[f"{p}{seller_code}"]
+    return None
 
 
 def sync_store_products() -> dict:
@@ -21,7 +57,7 @@ def sync_store_products() -> dict:
         for k in total_stats:
             total_stats[k] += stats[k]
 
-    print(f"[store] 전체 동기화 완료: {total_stats}")
+    logger.info(f"[store] 전체 동기화 완료: {total_stats}")
     return total_stats
 
 
@@ -34,33 +70,51 @@ def _sync_single_store(naver_store: NaverStore) -> dict:
     )
     stats = {"created": 0, "updated": 0, "matched": 0, "unmatched": 0}
 
-    # 루프 밖에서 한 번만 조회 (N+1 방지)
-    prefixes = [w.prefix for w in Wholesaler.query.filter(
-        Wholesaler.prefix.isnot(None)
-    ).all()]
+    prefixes = _get_prefixes()
 
+    # 배치 준비: 전체 원본번호 / seller_code 수집
+    parsed = []
     for item in raw_items:
         origin_no = item.get("originProductNo")
-        channel_products = item.get("channelProducts", [])
-        channel = channel_products[0] if channel_products else {}
-        channel_no = channel.get("channelProductNo")
-        seller_code = (channel.get("sellerManagementCode") or "").strip()
-        name = channel.get("name", "")
-        status = channel.get("statusType", "")
-        price = channel.get("salePrice")
-
-        if not origin_no:
+        if origin_no is None or origin_no == "":
             continue
+        channel_products = item.get("channelProducts") or []
+        channel = channel_products[0] if channel_products else None
+        parsed.append({
+            "origin_no": origin_no,
+            "channel_no": channel.get("channelProductNo") if channel else None,
+            "seller_code": (channel.get("sellerManagementCode") or "").strip() if channel else "",
+            "name": channel.get("name", "") if channel else "",
+            "status": channel.get("statusType", "") if channel else "",
+            "price": channel.get("salePrice") if channel else None,
+        })
 
-        store = StoreProduct.query.filter_by(
-            naver_store_id=naver_store.id,
-            origin_product_no=origin_no,
-        ).first()
+    # 기존 StoreProduct 배치 로드 (SQLite 변수 제한 방지)
+    all_origin_nos = [p["origin_no"] for p in parsed]
+    existing_list = []
+    for i in range(0, len(all_origin_nos), 500):
+        chunk = all_origin_nos[i:i + 500]
+        existing_list.extend(
+            StoreProduct.query.filter(
+                StoreProduct.naver_store_id == naver_store.id,
+                StoreProduct.origin_product_no.in_(chunk),
+            ).all()
+        )
+    existing_stores = {s.origin_product_no: s for s in existing_list}
 
+    # MasterProduct 한 번에 로드 (N+1 방지)
+    all_seller_codes = {p["seller_code"] for p in parsed if p["seller_code"]}
+    master_map = _build_master_map(all_seller_codes, prefixes)
+
+    for p in parsed:
+        origin_no = p["origin_no"]
+        seller_code = p["seller_code"]
+
+        store = existing_stores.get(origin_no)
         if store:
-            store.store_status = status
-            store.sale_price = price
-            store.product_name = name
+            store.store_status = p["status"]
+            store.sale_price = p["price"]
+            store.product_name = p["name"]
             store.seller_management_code = seller_code
             store.last_synced_at = datetime.utcnow()
             stats["updated"] += 1
@@ -68,23 +122,19 @@ def _sync_single_store(naver_store: NaverStore) -> dict:
             store = StoreProduct(
                 naver_store_id=naver_store.id,
                 origin_product_no=origin_no,
-                channel_product_no=channel_no,
+                channel_product_no=p["channel_no"],
                 seller_management_code=seller_code,
-                product_name=name,
-                store_status=status,
-                sale_price=price,
+                product_name=p["name"],
+                store_status=p["status"],
+                sale_price=p["price"],
                 last_synced_at=datetime.utcnow(),
             )
             db.session.add(store)
             db.session.flush()
             stats["created"] += 1
 
-        # 마스터 매칭 (prefix 포함/미포함 코드 모두 대응)
         if seller_code:
-            candidates = list({seller_code} | {f"{p}{seller_code}" for p in prefixes if p})
-            master = MasterProduct.query.filter(
-                MasterProduct.supplier_product_code.in_(candidates)
-            ).first()
+            master = _lookup_master(seller_code, master_map, prefixes)
             if master:
                 store.master_product_id = master.id
                 stats["matched"] += 1
@@ -92,49 +142,38 @@ def _sync_single_store(naver_store: NaverStore) -> dict:
                 stats["unmatched"] += 1
 
     db.session.commit()
-    print(f"[store] {naver_store.store_name} 동기화: {stats}")
+    logger.info(f"[store] {naver_store.store_name} 동기화: {stats}")
     return stats
 
 
 def _rematch_by_codes(naver_store_id: int, codes: list) -> dict:
     """네이버 API 호출 없이 입력한 판매자관리코드만 재매칭"""
-    from app.wholesalers.models import Wholesaler
-    prefixes = [w.prefix for w in Wholesaler.query.filter(
-        Wholesaler.prefix.isnot(None)
-    ).all()]
+    prefixes = _get_prefixes()
+    clean_codes = {c.strip() for c in codes if c.strip()}
+    master_map = _build_master_map(clean_codes, prefixes)
     stats = {"matched": 0, "unmatched": 0, "not_found": 0}
 
-    for code in codes:
-        code = code.strip()
-        if not code:
-            continue
-        store = StoreProduct.query.filter_by(
-            naver_store_id=naver_store_id,
-            seller_management_code=code,
-        ).first()
-        if not store:
-            stats["not_found"] += 1
-            continue
-        candidates = list({code} | {f"{p}{code}" for p in prefixes if p})
-        master = MasterProduct.query.filter(
-            MasterProduct.supplier_product_code.in_(candidates)
-        ).first()
-        if master:
-            store.master_product_id = master.id
-            stats["matched"] += 1
-        else:
-            stats["unmatched"] += 1
+    try:
+        for code in clean_codes:
+            store = StoreProduct.query.filter_by(
+                naver_store_id=naver_store_id,
+                seller_management_code=code,
+            ).first()
+            if not store:
+                stats["not_found"] += 1
+                continue
+            master = _lookup_master(code, master_map, prefixes)
+            if master:
+                store.master_product_id = master.id
+                stats["matched"] += 1
+            else:
+                stats["unmatched"] += 1
 
-    db.session.commit()
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        raise
     return stats
-
-
-def _name_similarity(a: str, b: str) -> float:
-    tokens_a = set(a.split())
-    tokens_b = set(b.split())
-    if not tokens_a or not tokens_b:
-        return 0.0
-    return len(tokens_a & tokens_b) / len(tokens_a | tokens_b)
 
 
 def propose_code_matches(naver_store_id: int, wholesaler_id: int = None, limit: int = 500) -> list:
@@ -149,21 +188,18 @@ def propose_code_matches(naver_store_id: int, wholesaler_id: int = None, limit: 
     if not unmatched:
         return []
 
-    prefixes = [w.prefix for w in Wholesaler.query.filter(
-        Wholesaler.prefix.isnot(None)
-    ).all()]
+    prefixes = _get_prefixes()
+    all_codes = {sp.seller_management_code.strip() for sp in unmatched if sp.seller_management_code}
+    master_map = _build_master_map(all_codes, prefixes)
+
+    # wholesaler_id 필터가 있으면 map에서 해당 도매처 상품만 남김
+    if wholesaler_id:
+        master_map = {k: v for k, v in master_map.items() if v.wholesaler_id == wholesaler_id}
 
     results = []
     for sp in unmatched:
         code = sp.seller_management_code.strip()
-        candidates = list({code} | {f"{p}{code}" for p in prefixes if p})
-
-        master_q = MasterProduct.query.filter(
-            MasterProduct.supplier_product_code.in_(candidates)
-        )
-        if wholesaler_id:
-            master_q = master_q.filter_by(wholesaler_id=wholesaler_id)
-        master = master_q.first()
+        master = _lookup_master(code, master_map, prefixes)
 
         if master:
             results.append({
@@ -187,6 +223,7 @@ def push_seller_management_codes(naver_store: object, pairs: list) -> dict:
 
     success_count = 0
     fail_count = 0
+    success_codes = []  # API 호출 성공한 코드만 추적
 
     for pair in pairs:
         origin_no = pair.get("origin_product_no")
@@ -207,17 +244,22 @@ def push_seller_management_codes(naver_store: object, pairs: list) -> dict:
             ).first()
             if sp:
                 sp.seller_management_code = code
+            success_codes.append(code)
             success_count += 1
         except Exception as e:
-            print(f"[push_codes] origin={origin_no} 실패: {e}")
+            logger.warning(f"[push_codes] origin={origin_no} 실패: {e}")
             fail_count += 1
 
-    db.session.commit()
+    try:
+        db.session.commit()
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"[push_codes] 커밋 실패: {e}")
+        raise
 
-    # 업데이트된 코드들로 재매칭
-    updated_codes = [p["supplier_product_code"] for p in pairs if p.get("supplier_product_code")]
-    if updated_codes:
-        _rematch_by_codes(naver_store.id, updated_codes)
+    # API 호출 성공한 코드만 재매칭
+    if success_codes:
+        _rematch_by_codes(naver_store.id, success_codes)
 
     return {"success_count": success_count, "fail_count": fail_count}
 
