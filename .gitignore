@@ -6,6 +6,10 @@ __pycache__/
 *.pyo
 downloads/
 instance/
+# 상품가공 저장 파일
+*.xlsx
+*.zip
+scheduler.log
 .pytest_cache/
 # 디버그/임시 파일
 debug_*.py
