@@ -1,7 +1,10 @@
+import logging
 from datetime import datetime
 from app.infrastructure import db
 from app.execution_logs.models import CollectionRun
 from app.wholesalers.models import Wholesaler
+
+logger = logging.getLogger(__name__)
 
 
 def _build_registry():
@@ -36,7 +39,6 @@ def _build_registry():
 def _save_desktop_xlsx(wholesaler_code: str, items: list):
     import openpyxl
     from pathlib import Path
-    from datetime import datetime
 
     if not items:
         return
@@ -77,28 +79,35 @@ def _save_desktop_xlsx(wholesaler_code: str, items: list):
         ws = wb.active
         ws.append(headers)
 
+        def to_cell(v):
+            if v is None:
+                return ""
+            if isinstance(v, (list, dict)):
+                import json
+                return json.dumps(v, ensure_ascii=False)
+            return v
+
         for item in items:
             extra = item.get("extra") or {}
             row = []
             for k in all_keys:
                 if k in item and k != "extra":
-                    row.append(item[k])
+                    row.append(to_cell(item[k]))
                 else:
-                    row.append(extra.get(k))
+                    row.append(to_cell(extra.get(k)))
             ws.append(row)
 
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         path = desktop / f"{wholesaler_code}_{timestamp}.xlsx"
         wb.save(str(path))
-        print(f"[orchestrator] 데스크탑 저장: {path} ({len(items)}건, {len(all_keys)}컬럼)")
+        logger.info(f"[orchestrator] 데스크탑 저장: {path} ({len(items)}건, {len(all_keys)}컬럼)")
     except Exception as e:
-        print(f"[orchestrator] 데스크탑 저장 실패 (무시): {e}")
+        logger.warning(f"[orchestrator] 데스크탑 저장 실패 (무시): {e}")
 
 
 def _save_raw_json(wholesaler_code: str, items: list):
     import json
     from pathlib import Path
-    from datetime import datetime
 
     save_dir = Path.home() / "OneDrive" / "supplier_sync" / wholesaler_code
     save_dir.mkdir(parents=True, exist_ok=True)
@@ -107,9 +116,9 @@ def _save_raw_json(wholesaler_code: str, items: list):
     try:
         with open(path, "w", encoding="utf-8") as f:
             json.dump(items, f, ensure_ascii=False, indent=2)
-        print(f"[orchestrator] 원본 저장: {path} ({len(items)}건)")
+        logger.info(f"[orchestrator] 원본 저장: {path} ({len(items)}건)")
     except Exception as e:
-        print(f"[orchestrator] 원본 저장 실패 (무시): {e}")
+        logger.warning(f"[orchestrator] 원본 저장 실패 (무시): {e}")
 
 
 def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: int = None):
@@ -122,6 +131,9 @@ def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: 
     if not collector_class:
         return {"success": False, "error": f"{wholesaler_code} collector 미등록"}
 
+    # 설정 미완료 여부를 미리 확인 (CollectionRun 생성 전)
+    _CONFIG_KEYWORDS = ("미설정", "환경변수 없음", "환경변수없음", "not configured", "LOGIN_ID", "LOGIN_PASSWORD")
+
     run = CollectionRun(
         wholesaler_id=wholesaler.id,
         trigger_type=trigger_type,
@@ -132,10 +144,20 @@ def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: 
     db.session.add(run)
     db.session.commit()
 
-    master_stats = {}
+    master_stats = {}  # try 블록 외부 선언 — 예외 발생 시에도 반환값 안전
     try:
         collector = collector_class()
         result = collector.run()
+
+        # 설정 미완료로 수집 자체를 건너뛴 경우 — 알림 없이 로그만
+        error_msg = result.get("error_summary") or result.get("error") or ""
+        if not result.get("success") and any(kw in error_msg for kw in _CONFIG_KEYWORDS):
+            run.status = "skipped"
+            run.error_summary = error_msg
+            run.finished_at = datetime.now()
+            db.session.commit()
+            logger.info(f"[orchestrator] {wholesaler_code} 설정 미완료 — 수집 건너뜀: {error_msg}")
+            return {"success": False, "not_configured": True, "error": error_msg}
 
         run.status = "success" if result.get("success") else "failed"
         run.total_items = result.get("total_items", 0)
@@ -154,12 +176,12 @@ def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: 
                 run_id=run.id,
                 items=result["items"]
             )
-            print(f"[orchestrator] 저장 완료: {saved}건")
+            logger.info(f"[orchestrator] 저장 완료: {saved}건")
             master_stats = process_master_update(wholesaler.id, result["items"])
-            print(f"[orchestrator] 마스터 업데이트 완료")
+            logger.info(f"[orchestrator] 마스터 업데이트 완료")
 
     except Exception as e:
-        print(f"[orchestrator] 오류 발생: {e}")
+        logger.error(f"[orchestrator] 오류 발생: {e}")
         run.status = "failed"
         run.error_summary = str(e)
         result = {"success": False, "error": str(e)}

@@ -55,6 +55,10 @@ def _collect_wholesaler(wholesaler_code: str, name: str, flask_app, run_time: st
             )
             logger.info(f"[scheduler] {name} 수집 완료 ({result.get('total_items', 0)}건)")
             return True
+        elif result.get("not_configured"):
+            # 환경변수 미설정 — 수집 시도 안 함, 알림 없음
+            logger.info(f"[scheduler] {name} 설정 미완료 — 건너뜀 (알림 없음)")
+            return False
         else:
             error = result.get("error") or "알 수 없는 오류"
             logger.error(f"[scheduler] {name} 수집 실패: {error}")
@@ -62,8 +66,13 @@ def _collect_wholesaler(wholesaler_code: str, name: str, flask_app, run_time: st
             return False
 
     except Exception as e:
-        logger.error(f"[scheduler] {name} 수집 예외: {e}")
-        notify_failure(name, str(e)[:300], run_time)
+        err_str = str(e)
+        _config_kw = ("미설정", "환경변수 없음", "환경변수없음", "LOGIN_ID", "LOGIN_PASSWORD")
+        if any(kw in err_str for kw in _config_kw):
+            logger.info(f"[scheduler] {name} 설정 미완료 — 건너뜀 (알림 없음): {err_str}")
+        else:
+            logger.error(f"[scheduler] {name} 수집 예외: {e}")
+            notify_failure(name, err_str[:300], run_time)
         return False
 
 
