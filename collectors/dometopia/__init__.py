@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import io
 import time
@@ -47,7 +49,7 @@ class DometopiaCollector(BaseCollector):
         try:
             items = self._collect(login_id, login_pw, shopon_id, shopon_pw)
         except Exception as e:
-            print(f"[dometopia] 오류: {e}")
+            logger.warning(f"[dometopia] 오류: {e}")
             return {
                 "success": False,
                 "total_items": len(items),
@@ -58,7 +60,7 @@ class DometopiaCollector(BaseCollector):
                 "items": items,
             }
 
-        print(f"[dometopia] 전체 수집 완료: {len(items)}건")
+        logger.info(f"[dometopia] 전체 수집 완료: {len(items)}건")
         return {
             "success": True,
             "total_items": len(items),
@@ -82,49 +84,49 @@ class DometopiaCollector(BaseCollector):
             page.set_default_timeout(30000)
 
             # 1. dometopia 로그인
-            print("[dometopia] dometopia 로그인 중...")
+            logger.info("[dometopia] dometopia 로그인 중...")
             page.goto(LOGIN_URL, wait_until="domcontentloaded")
             page.fill("input#userid", login_id)
             page.fill("input#password", login_pw)
             page.click("input[type='submit']")
             page.wait_for_load_state("networkidle")
             time.sleep(1)
-            print("[dometopia] dometopia 로그인 완료")
+            logger.info("[dometopia] dometopia 로그인 완료")
 
             # 2. 셀러관리자 이동
-            print("[dometopia] 셀러관리자 이동...")
+            logger.info("[dometopia] 셀러관리자 이동...")
             page.goto("https://dometopia.com/selleradmin/main/seller_doto_login", wait_until="domcontentloaded")
             time.sleep(2)
-            print(f"[dometopia] 셀러관리자 URL: {page.url}")
+            logger.info(f"[dometopia] 셀러관리자 URL: {page.url}")
 
             # 3. 샵온 로그인 링크 클릭 → 새 탭으로 SHOP-ON 세션 생성
-            print("[dometopia] 샵온 로그인 링크 클릭 (새 탭)...")
+            logger.info("[dometopia] 샵온 로그인 링크 클릭 (새 탭)...")
             with context.expect_page(timeout=15000) as shopon_page_info:
                 page.click("a[href*='shopon_login']")
             shopon_page = shopon_page_info.value
             # 자동 리다이렉트 기다리기
             shopon_page.wait_for_load_state("networkidle")
             time.sleep(3)
-            print(f"[dometopia] SHOP-ON 탭 URL: {shopon_page.url}")
+            logger.info(f"[dometopia] SHOP-ON 탭 URL: {shopon_page.url}")
 
             # 4. 아직 로그인 페이지면 수동 로그인
             if "shopon_login" in shopon_page.url or "login" in shopon_page.url.lower() and "shopon.biz" not in shopon_page.url:
-                print("[dometopia] SHOP-ON 로그인 페이지 감지, 로그인 시도...")
+                logger.info("[dometopia] SHOP-ON 로그인 페이지 감지, 로그인 시도...")
                 try:
                     shopon_page.fill("input[name='id']", shopon_id)
                     shopon_page.fill("input[name='pw']", shopon_pw)
                     shopon_page.click("button[type='submit'], input[type='submit']")
                     shopon_page.wait_for_load_state("networkidle")
                     time.sleep(2)
-                    print(f"[dometopia] SHOP-ON 로그인 후 URL: {shopon_page.url}")
+                    logger.info(f"[dometopia] SHOP-ON 로그인 후 URL: {shopon_page.url}")
                 except Exception as e:
-                    print(f"[dometopia] SHOP-ON 로그인 오류: {e}")
+                    logger.warning(f"[dometopia] SHOP-ON 로그인 오류: {e}")
 
             # 5. 상품연동 페이지로 이동
-            print("[dometopia] 상품연동 페이지 이동...")
+            logger.info("[dometopia] 상품연동 페이지 이동...")
             shopon_page.goto(SHOPON_GOODS_URL, wait_until="networkidle")
             time.sleep(3)
-            print(f"[dometopia] 상품연동 URL: {shopon_page.url}")
+            logger.info(f"[dometopia] 상품연동 URL: {shopon_page.url}")
 
             # 이후 page 변수를 shopon_page로 교체
             page = shopon_page
@@ -134,21 +136,21 @@ class DometopiaCollector(BaseCollector):
                 page.select_option("select[name='limit'], select", label="500개(이미지생략)")
                 page.wait_for_load_state("networkidle")
                 time.sleep(1)
-                print("[dometopia] 페이지 크기 500개 설정 완료")
+                logger.info("[dometopia] 페이지 크기 500개 설정 완료")
             except Exception:
-                print("[dometopia] 페이지 크기 설정 스킵")
+                logger.info("[dometopia] 페이지 크기 설정 스킵")
 
             # 엑셀다운로드 버튼 대기
             try:
                 page.wait_for_selector("text=엑셀다운로드", timeout=15000)
-                print("[dometopia] 엑셀다운로드 버튼 확인")
+                logger.info("[dometopia] 엑셀다운로드 버튼 확인")
             except Exception as e:
-                print(f"[dometopia] 엑셀다운로드 버튼 없음: {e}")
+                logger.info(f"[dometopia] 엑셀다운로드 버튼 없음: {e}")
 
             # 6. 전체 페이지 순회
             page_num = 1
             while True:
-                print(f"[dometopia] 페이지 {page_num} 수집 중...")
+                logger.info(f"[dometopia] 페이지 {page_num} 수집 중...")
                 try:
                     # 엑셀다운로드 클릭 → 새 팝업창 오픈
                     with context.expect_page(timeout=15000) as popup_info:
@@ -156,16 +158,16 @@ class DometopiaCollector(BaseCollector):
                     popup = popup_info.value
                     popup.wait_for_load_state("networkidle")
                     time.sleep(2)
-                    print(f"[dometopia] 팝업 URL: {popup.url}")
+                    logger.info(f"[dometopia] 팝업 URL: {popup.url}")
 
                     # 팝업에서 #solution select 로딩 대기 후 이셀러스 선택
                     popup.wait_for_selector("#solution", timeout=10000)
                     popup.select_option("#solution", label="이셀러스")
                     time.sleep(0.5)
-                    print("[dometopia] 이셀러스 선택 완료, 다운로드 시도...")
+                    logger.info("[dometopia] 이셀러스 선택 완료, 다운로드 시도...")
 
                     # 팝업 내부에서 브라우저 fetch()로 직접 POST → base64 반환
-                    print("[dometopia] 브라우저 fetch로 다운로드 시도...")
+                    logger.info("[dometopia] 브라우저 fetch로 다운로드 시도...")
                     b64 = popup.evaluate("""
                         async () => {
                             const form = document.forms['frm'];
@@ -187,27 +189,27 @@ class DometopiaCollector(BaseCollector):
                     """)
                     import json as _json, base64 as _b64
                     result = _json.loads(b64)
-                    print(f"[dometopia] fetch 결과: status={result['status']}, ct={result['ct']}")
+                    logger.info(f"[dometopia] fetch 결과: status={result['status']}, ct={result['ct']}")
                     data = _b64.b64decode(result['b64'])
-                    print(f"[dometopia] 다운로드 완료: {len(data)} bytes")
+                    logger.info(f"[dometopia] 다운로드 완료: {len(data)} bytes")
                     popup.close()
 
                     batch = self._parse_xlsx(data)
                     all_items.extend(batch)
-                    print(f"[dometopia] 페이지 {page_num}: {len(batch)}건")
+                    logger.info(f"[dometopia] 페이지 {page_num}: {len(batch)}건")
 
                     if not batch:
                         break
 
                 except Exception as e:
-                    print(f"[dometopia] 페이지 {page_num} 다운로드 오류: {e}")
+                    logger.warning(f"[dometopia] 페이지 {page_num} 다운로드 오류: {e}")
                     break
 
                 # 다음 페이지
                 try:
                     next_btn = page.query_selector(f"a:has-text('{page_num + 1}')")
                     if not next_btn:
-                        print("[dometopia] 다음 페이지 없음, 종료")
+                        logger.info("[dometopia] 다음 페이지 없음, 종료")
                         break
                     next_btn.click()
                     page.wait_for_load_state("networkidle")
@@ -227,7 +229,7 @@ class DometopiaCollector(BaseCollector):
             rows = list(ws.iter_rows(values_only=True))
             wb.close()
         except Exception as e:
-            print(f"[dometopia] 엑셀 파싱 오류: {e}")
+            logger.warning(f"[dometopia] 엑셀 파싱 오류: {e}")
             return []
 
         if not rows:

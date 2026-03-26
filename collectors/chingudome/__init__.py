@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import re
 import requests
@@ -48,14 +50,14 @@ class ChingudomeCollector(BaseCollector):
             yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
             params["modidate_s"] = kwargs.get("modidate_s", yesterday)
             params["modidate_e"] = kwargs.get("modidate_e", yesterday)
-            print(f"[chingudome] 증분수집: {params['modidate_s']} ~ {params['modidate_e']}")
+            logger.info(f"[chingudome] 증분수집: {params['modidate_s']} ~ {params['modidate_e']}")
 
         elif mode == "single":
             goodsno = kwargs.get("goodsno")
             if not goodsno:
                 return self._error("single 모드: goodsno 필요")
             params["goodsno"] = goodsno
-            print(f"[chingudome] 단건조회: goodsno={goodsno}")
+            logger.info(f"[chingudome] 단건조회: goodsno={goodsno}")
 
         elif mode == "daterange":
             modidate_s = kwargs.get("modidate_s")
@@ -64,7 +66,7 @@ class ChingudomeCollector(BaseCollector):
                 return self._error("daterange 모드: modidate_s, modidate_e 필요")
             params["modidate_s"] = modidate_s
             params["modidate_e"] = modidate_e
-            print(f"[chingudome] 날짜범위 수집: {modidate_s} ~ {modidate_e}")
+            logger.info(f"[chingudome] 날짜범위 수집: {modidate_s} ~ {modidate_e}")
 
         else:
             return self._error(f"알 수 없는 mode: {mode}")
@@ -75,7 +77,7 @@ class ChingudomeCollector(BaseCollector):
         except Exception as e:
             return self._error(str(e)[:300])
 
-        print(f"[chingudome] 수집 완료: {len(items)}건")
+        logger.info(f"[chingudome] 수집 완료: {len(items)}건")
         return {
             "success": True,
             "total_items": len(items),
@@ -93,15 +95,15 @@ class ChingudomeCollector(BaseCollector):
 
         for runout_val, label in [("0", "정상"), ("1", "품절")]:
             params = {**base_params, "runout": runout_val}
-            print(f"[chingudome] 전체수집 - {label}상품 (runout={runout_val})")
+            logger.info(f"[chingudome] 전체수집 - {label}상품 (runout={runout_val})")
             try:
                 raw_xml = self._call_api(params)
                 items = self._parse_xml(raw_xml)
-                print(f"[chingudome] {label}상품: {len(items)}건")
+                logger.info(f"[chingudome] {label}상품: {len(items)}건")
                 all_items.extend(items)
             except Exception as e:
                 msg = f"{label}상품 수집 실패: {str(e)[:200]}"
-                print(f"[chingudome] {msg}")
+                logger.info(f"[chingudome] {msg}")
                 errors.append(msg)
 
         # goodsno 기준 중복 제거
@@ -114,7 +116,7 @@ class ChingudomeCollector(BaseCollector):
                 deduped.append(item)
 
         success = len(deduped) > 0
-        print(f"[chingudome] 전체수집 완료: {len(deduped)}건 (오류: {len(errors)}건)")
+        logger.info(f"[chingudome] 전체수집 완료: {len(deduped)}건 (오류: {len(errors)}건)")
 
         return {
             "success": success,
@@ -165,7 +167,7 @@ class ChingudomeCollector(BaseCollector):
                     items.append(item)
             except Exception as e:
                 goodsno = product.findtext("goodsno", "unknown")
-                print(f"[chingudome] 상품 파싱 오류 (goodsno={goodsno}): {e}")
+                logger.warning(f"[chingudome] 상품 파싱 오류 (goodsno={goodsno}): {e}")
 
         return items
 
@@ -192,6 +194,21 @@ class ChingudomeCollector(BaseCollector):
         # 옵션 파싱
         options = self._parse_options(self._text(product, "options"))
 
+        # XML 전체 필드 extra에 저장
+        extra = {}
+        extra["옵션"] = options
+        extra["이미지목록"] = self._collect_images(product)
+        for child in product:
+            tag = child.tag
+            if tag in ("img_l",):
+                continue
+            val = (child.text or "").strip()
+            if val:
+                extra[tag] = val
+        for attr, val in product.attrib.items():
+            if attr != "goodsno":
+                extra[f"attr_{attr}"] = val
+
         return {
             "source_product_code": goodsno,
             "product_name": self._text(product, "goodsnm"),
@@ -202,16 +219,10 @@ class ChingudomeCollector(BaseCollector):
             "detail_url": None,
             "stock_qty": None,
             "category_name": self._text(product, "category"),
-            # 확장 필드 (normalization 모듈은 무시하지만 향후 활용 가능)
-            "extra": {
-                "goodscd": self._text(product, "goodscd"),
-                "consumer_price": self._parse_price(self._text(product, "goods_consumer")),
-                "options": options,
-                "option_value": self._text(product, "option_value"),
-                "regdate": self._text(product, "regdate"),
-                "lastmodidate": self._text(product, "lastmodidate"),
-                "images": self._collect_images(product),
-            },
+            "origin": None,
+            "shipping_fee": None,
+            "shipping_condition": None,
+            "extra": extra,
         }
 
     # ──────────────────────────────────────────────

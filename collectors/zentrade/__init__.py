@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import re
 import requests
@@ -41,7 +43,7 @@ class ZentraldeCollector(BaseCollector):
             if not goodsno:
                 return self._error("single 모드: goodsno 필요")
             params["goodsno"] = goodsno
-            print(f"[zentrade] 단건조회: goodsno={goodsno}")
+            logger.info(f"[zentrade] 단건조회: goodsno={goodsno}")
 
         elif mode == "opendate":
             opendate_s = kwargs.get("opendate_s")
@@ -50,7 +52,7 @@ class ZentraldeCollector(BaseCollector):
                 return self._error("opendate 모드: opendate_s, opendate_e 필요")
             params["opendate_s"] = opendate_s
             params["opendate_e"] = opendate_e
-            print(f"[zentrade] 신상품 오픈일 수집: {opendate_s} ~ {opendate_e}")
+            logger.info(f"[zentrade] 신상품 오픈일 수집: {opendate_s} ~ {opendate_e}")
 
         else:
             return self._error(f"알 수 없는 mode: {mode}")
@@ -61,7 +63,7 @@ class ZentraldeCollector(BaseCollector):
         except Exception as e:
             return self._error(str(e)[:300])
 
-        print(f"[zentrade] 수집 완료: {len(items)}건")
+        logger.info(f"[zentrade] 수집 완료: {len(items)}건")
         return {
             "success": True,
             "total_items": len(items),
@@ -78,15 +80,15 @@ class ZentraldeCollector(BaseCollector):
 
         for runout_val, label in [("0", "정상"), ("1", "품절")]:
             params = {**base_params, "runout": runout_val}
-            print(f"[zentrade] 전체수집 - {label}상품 (runout={runout_val})")
+            logger.info(f"[zentrade] 전체수집 - {label}상품 (runout={runout_val})")
             try:
                 raw_xml = self._call_api(params)
                 items = self._parse_xml(raw_xml)
-                print(f"[zentrade] {label}상품: {len(items)}건")
+                logger.info(f"[zentrade] {label}상품: {len(items)}건")
                 all_items.extend(items)
             except Exception as e:
                 msg = f"{label}상품 수집 실패: {str(e)[:200]}"
-                print(f"[zentrade] {msg}")
+                logger.info(f"[zentrade] {msg}")
                 errors.append(msg)
 
         seen = set()
@@ -98,7 +100,7 @@ class ZentraldeCollector(BaseCollector):
                 deduped.append(item)
 
         success = len(deduped) > 0
-        print(f"[zentrade] 전체수집 완료: {len(deduped)}건 (오류: {len(errors)}건)")
+        logger.info(f"[zentrade] 전체수집 완료: {len(deduped)}건 (오류: {len(errors)}건)")
 
         return {
             "success": success,
@@ -156,7 +158,7 @@ class ZentraldeCollector(BaseCollector):
                     items.append(item)
             except Exception as e:
                 code = product.get("code", "unknown")
-                print(f"[zentrade] 상품 파싱 오류 (code={code}): {e}")
+                logger.warning(f"[zentrade] 상품 파싱 오류 (code={code}): {e}")
 
         return items
 
@@ -183,12 +185,14 @@ class ZentraldeCollector(BaseCollector):
         # 이미지: <listimg url1="..." url2="..." ...>
         listimg_el = product.find("listimg")
         image_url = None
+        images = []
         if listimg_el is not None:
             for i in range(1, 6):
                 url = (listimg_el.get(f"url{i}") or "").strip()
                 if url:
-                    image_url = url
-                    break
+                    images.append(url)
+                    if image_url is None:
+                        image_url = url
 
         # 카테고리: <dome_category> CDATA 텍스트
         category_name = self._cdata_text(product, "dome_category")
@@ -200,13 +204,23 @@ class ZentraldeCollector(BaseCollector):
         option_el = product.find("option")
         options = self._parse_options(option_el.text if option_el is not None else None)
 
-        # 이미지 목록
-        images = []
-        if listimg_el is not None:
-            for i in range(1, 6):
-                url = (listimg_el.get(f"url{i}") or "").strip()
-                if url:
-                    images.append(url)
+        # XML 전체 필드 extra에 저장
+        extra = {}
+        extra["소비자가"] = consumer_price
+        extra["옵션"] = options
+        extra["이미지목록"] = images
+        extra["오픈일"] = status_el.get("opendate") if status_el is not None else None
+        for child in product:
+            tag = child.tag
+            if tag in ("listimg", "option", "status", "price"):
+                continue
+            val = (child.text or "").strip()
+            if val:
+                extra[tag] = val
+        # product 속성도 저장
+        for attr, val in product.attrib.items():
+            if attr != "code":
+                extra[f"attr_{attr}"] = val
 
         return {
             "source_product_code": code,
@@ -218,12 +232,10 @@ class ZentraldeCollector(BaseCollector):
             "detail_url": None,
             "stock_qty": None,
             "category_name": category_name,
-            "extra": {
-                "consumer_price": consumer_price,
-                "options": options,
-                "images": images,
-                "opendate": status_el.get("opendate") if status_el is not None else None,
-            },
+            "origin": None,
+            "shipping_fee": None,
+            "shipping_condition": None,
+            "extra": extra,
         }
 
     # ──────────────────────────────────────────────

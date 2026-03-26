@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import re
 import time
@@ -26,7 +28,7 @@ class Onch3Collector(BaseCollector):
         login_id = os.getenv("ONCH3_LOGIN_ID")
         login_pw = os.getenv("ONCH3_LOGIN_PASSWORD")
         if not login_id or not login_pw:
-            return self._err("ONCH3_LOGIN_ID / ONCH3_LOGIN_PASSWORD 환경변수 없음")
+            return self._error("ONCH3_LOGIN_ID / ONCH3_LOGIN_PASSWORD 환경변수 없음")
 
         # 1. 로그인
         try:
@@ -48,16 +50,16 @@ class Onch3Collector(BaseCollector):
                 allow_redirects=True,
             )
             if "로그아웃" not in resp.text:
-                return self._err(f"로그인 실패 (status={resp.status_code})")
-            print("[onch3] 로그인 완료")
+                return self._error(f"로그인 실패 (status={resp.status_code})")
+            logger.info("[onch3] 로그인 완료")
         except Exception as e:
-            return self._err(f"로그인 오류: {e}")
+            return self._error(f"로그인 오류: {e}")
 
         # 2. 페이지 순회
         items, seen, page = [], set(), 1
         try:
             while True:
-                print(f"[onch3] 페이지 {page} 수집 중...")
+                logger.info(f"[onch3] 페이지 {page} 수집 중...")
                 resp = session.get(
                     LIST_URL,
                     params={"pageSize": 100, "page": page},
@@ -65,18 +67,18 @@ class Onch3Collector(BaseCollector):
                     timeout=60,
                 )
                 if not resp.ok:
-                    print(f"[onch3] 요청 실패: {resp.status_code}")
+                    logger.warning(f"[onch3] 요청 실패: {resp.status_code}")
                     break
 
                 soup = BeautifulSoup(resp.text, "html.parser")
                 batch = self._parse_page(soup, seen)
 
                 if not batch:
-                    print(f"[onch3] 페이지 {page}: 상품 없음, 종료")
+                    logger.info(f"[onch3] 페이지 {page}: 상품 없음, 종료")
                     break
 
                 items.extend(batch)
-                print(f"[onch3] 페이지 {page}: {len(batch)}건 (누계 {len(items)}건)")
+                logger.info(f"[onch3] 페이지 {page}: {len(batch)}건 (누계 {len(items)}건)")
 
                 if not self._has_next_page(soup, page):
                     break
@@ -85,7 +87,7 @@ class Onch3Collector(BaseCollector):
                 time.sleep(1)
 
         except Exception as e:
-            print(f"[onch3] 수집 오류: {e}")
+            logger.warning(f"[onch3] 수집 오류: {e}")
             return {
                 "success": False,
                 "total_items": len(items),
@@ -96,7 +98,7 @@ class Onch3Collector(BaseCollector):
                 "items": items,
             }
 
-        print(f"[onch3] 수집 완료: {len(items)}건")
+        logger.info(f"[onch3] 수집 완료: {len(items)}건")
         return {
             "success": True,
             "total_items": len(items),
@@ -205,7 +207,7 @@ class Onch3Collector(BaseCollector):
             return None
         return val
 
-    def _err(self, msg: str) -> dict:
+    def _error(self, msg: str) -> dict:
         return {
             "success": False,
             "total_items": 0,

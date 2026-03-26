@@ -1,7 +1,7 @@
 from flask import Blueprint, render_template, request, jsonify
 from flask_login import login_required
 from app.store.models import NaverStore
-from datetime import date
+from datetime import date, timedelta
 
 settlement_bp = Blueprint("settlement", __name__)
 
@@ -97,7 +97,7 @@ def settlement_vat_page():
     store_id = request.args.get("store_id", type=int)
     today = date.today()
     first_of_month = today.replace(day=1)
-    prev_month = (first_of_month - __import__('datetime').timedelta(days=1))
+    prev_month = (first_of_month - timedelta(days=1))
     default_ym = prev_month.strftime("%Y-%m")
     year_month = request.args.get("year_month", default_ym)
 
@@ -123,7 +123,11 @@ def settlement_vat_page():
         except Exception as e:
             error = str(e)
 
-    totals = {k: sum(r.get(k, 0) or 0 for r in rows) for k in ["totalSalesAmount", "creditCardAmount", "cashInComeDeductionAmount", "cashOutGoingEvidenceAmount", "otherAmount"]} if rows else {}
+    totals = {}
+    if rows:
+        for k in ["totalSalesAmount", "creditCardAmount", "cashInComeDeductionAmount",
+                  "cashOutGoingEvidenceAmount", "otherAmount"]:
+            totals[k] = sum(r.get(k) or 0 for r in rows)
 
     return render_template(
         "settlement.html",

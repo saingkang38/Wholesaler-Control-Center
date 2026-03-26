@@ -1,6 +1,8 @@
 from flask import Blueprint, render_template
 from flask_login import login_required
 from datetime import datetime, date
+from sqlalchemy import func
+from app.infrastructure import db
 from app.execution_logs.models import CollectionRun
 from app.master.models import MasterProduct, ProductEvent
 
@@ -18,17 +20,20 @@ def index():
     discontinued_candidate = MasterProduct.query.filter_by(current_status="discontinued_candidate").count()
     discontinued = MasterProduct.query.filter_by(current_status="discontinued").count()
 
-    # 오늘 이벤트 수
-    def count_event(event_type):
-        return ProductEvent.query.filter_by(event_type=event_type, event_date=today).count()
-
-    today_new = count_event("NEW")
-    today_restocked = count_event("RESTOCKED")
-    today_price_change = count_event("PRICE_CHANGE")
-    today_image_change = count_event("IMAGE_CHANGE")
-    today_name_change = count_event("NAME_CHANGE")
-    today_missing = count_event("MISSING")
-    today_discontinued_candidate = count_event("DISCONTINUED_CANDIDATE")
+    # 오늘 이벤트 수 — GROUP BY 한 번으로 조회
+    event_counts = dict(
+        db.session.query(ProductEvent.event_type, func.count(ProductEvent.id))
+        .filter(ProductEvent.event_date == today)
+        .group_by(ProductEvent.event_type)
+        .all()
+    )
+    today_new = event_counts.get("NEW", 0)
+    today_restocked = event_counts.get("RESTOCKED", 0)
+    today_price_change = event_counts.get("PRICE_CHANGE", 0)
+    today_image_change = event_counts.get("IMAGE_CHANGE", 0)
+    today_name_change = event_counts.get("NAME_CHANGE", 0)
+    today_missing = event_counts.get("MISSING", 0)
+    today_discontinued_candidate = event_counts.get("DISCONTINUED_CANDIDATE", 0)
 
     # 오늘 이벤트 목록 (최근 50건)
     recent_events = (

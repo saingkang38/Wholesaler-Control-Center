@@ -1,6 +1,8 @@
 import os
+import logging
 import requests
 
+logger = logging.getLogger(__name__)
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -8,7 +10,7 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 def send_message(text: str) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("[telegram] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 미설정 - 알림 스킵")
+        logger.warning("[telegram] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID 미설정 - 알림 스킵")
         return False
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -17,7 +19,7 @@ def send_message(text: str) -> bool:
         resp.raise_for_status()
         return True
     except Exception as e:
-        print(f"[telegram] 전송 실패: {e}")
+        logger.warning(f"[telegram] 전송 실패: {e}")
         return False
 
 

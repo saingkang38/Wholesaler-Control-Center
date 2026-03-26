@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import io
 import os
 import time
@@ -28,7 +30,7 @@ class SikjajeCollector(BaseCollector):
         login_id = os.getenv("SIKJAJE_LOGIN_ID", "").strip()
         login_pw = os.getenv("SIKJAJE_LOGIN_PASSWORD", "").strip()
         if not login_id or not login_pw:
-            return self._err("SIKJAJE_LOGIN_ID / SIKJAJE_LOGIN_PASSWORD 환경변수 없음")
+            return self._error("SIKJAJE_LOGIN_ID / SIKJAJE_LOGIN_PASSWORD 환경변수 없음")
 
         session = requests.Session()
 
@@ -43,14 +45,14 @@ class SikjajeCollector(BaseCollector):
                 allow_redirects=True,
             )
             if "회원정보" not in resp.text and "로그아웃" not in resp.text:
-                return self._err(f"로그인 실패 (status={resp.status_code})")
-            print("[sikjaje] 로그인 완료")
+                return self._error(f"로그인 실패 (status={resp.status_code})")
+            logger.info("[sikjaje] 로그인 완료")
         except Exception as e:
-            return self._err(f"로그인 오류: {e}")
+            return self._error(f"로그인 오류: {e}")
 
         # 2. 엑셀 다운로드
         try:
-            print("[sikjaje] 상세 정보 엑셀 다운로드 중...")
+            logger.info("[sikjaje] 상세 정보 엑셀 다운로드 중...")
             resp = session.post(
                 DOWNLOAD_URL,
                 data={"mode": "DownloadFullInfo", "prdtQuery": PRDT_QUERY, "pgPrdt": ""},
@@ -58,17 +60,17 @@ class SikjajeCollector(BaseCollector):
                 timeout=120,
             )
             if not resp.ok or len(resp.content) < 1000:
-                return self._err(f"엑셀 다운로드 실패 (status={resp.status_code})")
-            print(f"[sikjaje] 다운로드 완료: {len(resp.content):,} bytes")
+                return self._error(f"엑셀 다운로드 실패 (status={resp.status_code})")
+            logger.info(f"[sikjaje] 다운로드 완료: {len(resp.content):,} bytes")
         except Exception as e:
-            return self._err(f"엑셀 다운로드 오류: {e}")
+            return self._error(f"엑셀 다운로드 오류: {e}")
 
         # 3. 파싱
         try:
             items = self._parse_xlsx(resp.content)
-            print(f"[sikjaje] 파싱 완료: {len(items)}건")
+            logger.info(f"[sikjaje] 파싱 완료: {len(items)}건")
         except Exception as e:
-            return self._err(f"엑셀 파싱 오류: {e}")
+            return self._error(f"엑셀 파싱 오류: {e}")
 
         return {
             "success": True,
@@ -147,7 +149,7 @@ class SikjajeCollector(BaseCollector):
         cleaned = "".join(c for c in str(text) if c.isdigit())
         return int(cleaned) if cleaned else None
 
-    def _err(self, msg: str) -> dict:
+    def _error(self, msg: str) -> dict:
         return {
             "success": False,
             "total_items": 0,

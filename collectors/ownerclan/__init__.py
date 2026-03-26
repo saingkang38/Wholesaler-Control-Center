@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import time
 import zipfile
@@ -51,7 +53,7 @@ class OwnerclanCollector(BaseCollector):
                     browser.close()
                     return self._error("로그인 실패 - 계정 정보 확인 필요")
 
-                print("[ownerclan] 로그인 성공")
+                logger.info("[ownerclan] 로그인 성공")
 
                 # 2. DB 다운로드 폼 페이지 이동
                 page.goto(DOWNLOAD_FORM_URL)
@@ -69,7 +71,7 @@ class OwnerclanCollector(BaseCollector):
                 time.sleep(0.5)
 
                 # 5. 다운로드 세트 만들기 클릭 (팝업 2회 자동 수락)
-                page.on("dialog", lambda d: (print(f"[ownerclan] 팝업: {d.message[:80]}"), d.accept()))
+                page.on("dialog", lambda d: (logger.info(f"[ownerclan] 팝업: {d.message[:80]}"), d.accept()))
                 page.click("button#btn_submit2")
                 page.wait_for_load_state("networkidle")
                 time.sleep(2)
@@ -99,11 +101,11 @@ class OwnerclanCollector(BaseCollector):
                     browser.close()
                     return self._error("다운로드 세트 idx 확인 실패")
 
-                print(f"[ownerclan] 다운로드 세트 생성 / idx={idx}")
+                logger.info(f"[ownerclan] 다운로드 세트 생성 / idx={idx}")
 
                 # 7. 1시간 대기 후 다운로드 (작업 완료에 시간이 많이 걸림)
                 wait_seconds = int(os.getenv("OWNERCLAN_WAIT_SECONDS", "3600"))
-                print(f"[ownerclan] {wait_seconds}초 대기 후 다운로드 시작...")
+                logger.info(f"[ownerclan] {wait_seconds}초 대기 후 다운로드 시작...")
                 time.sleep(wait_seconds)
 
                 # 8. showDownloadList 호출 → 하위 행(tr#downloadTr) 표시
@@ -128,7 +130,7 @@ class OwnerclanCollector(BaseCollector):
 
                 download = dl_info.value
                 tmp_path = download.path()
-                print(f"[ownerclan] ZIP 다운로드 완료: {tmp_path}")
+                logger.info(f"[ownerclan] ZIP 다운로드 완료: {tmp_path}")
 
                 # 브라우저 닫기 전에 프로젝트 downloads 폴더로 복사
                 import shutil
@@ -138,13 +140,13 @@ class OwnerclanCollector(BaseCollector):
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 safe_path = str(downloads_dir / f"ownerclan_{timestamp}.zip")
                 shutil.copy2(tmp_path, safe_path)
-                print(f"[ownerclan] 파일 저장 위치: {safe_path}")
+                logger.info(f"[ownerclan] 파일 저장 위치: {safe_path}")
 
                 browser.close()
 
                 # 10. ZIP 해제 + xlsx 파싱
                 items, total_rows = self._parse_zip(safe_path)
-                print(f"[ownerclan] 파싱 완료: {total_rows}건")
+                logger.info(f"[ownerclan] 파싱 완료: {total_rows}건")
 
         except PlaywrightTimeout as e:
             return {
@@ -155,7 +157,7 @@ class OwnerclanCollector(BaseCollector):
                 "items": items,
             }
         except Exception as e:
-            print(f"[ownerclan] 오류 발생: {e}")
+            logger.warning(f"[ownerclan] 오류 발생: {e}")
             return {
                 "success": False,
                 "total_items": len(items), "total_pages": 0,
@@ -187,7 +189,7 @@ class OwnerclanCollector(BaseCollector):
             if not xlsx_files:
                 raise Exception("ZIP 내 xlsx 파일 없음")
 
-            print(f"[ownerclan] xlsx 파일 수: {len(xlsx_files)}개")
+            logger.info(f"[ownerclan] xlsx 파일 수: {len(xlsx_files)}개")
 
             for xlsx_file in xlsx_files:
                 wb = openpyxl.load_workbook(str(xlsx_file), read_only=True, data_only=True)
@@ -236,7 +238,7 @@ class OwnerclanCollector(BaseCollector):
                         "extra": extra,
                     })
 
-        print(f"[ownerclan] 전체 데이터 행: {total_rows}개 / 파싱 성공: {len(items)}개")
+        logger.info(f"[ownerclan] 전체 데이터 행: {total_rows}개 / 파싱 성공: {len(items)}개")
         return items, total_rows
 
     def _map_columns(self, headers) -> dict:

@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 from flask import Blueprint
 from app.wholesalers.models import Wholesaler
 from app.infrastructure import db
@@ -16,7 +18,7 @@ def get_or_create_dometopia():
         )
         db.session.add(w)
         db.session.commit()
-        print("[초기화] 도매토피아 도매처 등록 완료")
+        logger.info("[초기화] 도매토피아 도매처 등록 완료")
     return w
 
 
@@ -31,7 +33,7 @@ def get_or_create_ownerclan():
         )
         db.session.add(w)
         db.session.commit()
-        print("[초기화] 오너클랜 도매처 등록 완료")
+        logger.info("[초기화] 오너클랜 도매처 등록 완료")
     return w
 
 
@@ -46,7 +48,7 @@ def get_or_create_jtckorea():
         )
         db.session.add(w)
         db.session.commit()
-        print("[초기화] JTC코리아 도매처 등록 완료")
+        logger.info("[초기화] JTC코리아 도매처 등록 완료")
     return w
 
 
@@ -62,7 +64,7 @@ def get_or_create_hitdesign():
         )
         db.session.add(w)
         db.session.commit()
-        print("[초기화] 히트가구 도매처 등록 완료")
+        logger.info("[초기화] 히트가구 도매처 등록 완료")
     return w
 
 
@@ -78,7 +80,7 @@ def get_or_create_ds1008():
         )
         db.session.add(w)
         db.session.commit()
-        print("[초기화] DS도매 도매처 등록 완료")
+        logger.info("[초기화] DS도매 도매처 등록 완료")
     return w
 
 
@@ -95,7 +97,7 @@ def get_or_create_metaldiy():
         )
         db.session.add(w)
         db.session.commit()
-        print("[초기화] 철물박사 도매처 등록 완료")
+        logger.info("[초기화] 철물박사 도매처 등록 완료")
     return w
 
 
@@ -110,7 +112,7 @@ def get_or_create_mro3():
         )
         db.session.add(w)
         db.session.commit()
-        print("[초기화] 3MRO 도매처 등록 완료")
+        logger.info("[초기화] 3MRO 도매처 등록 완료")
     return w
 
 
@@ -125,7 +127,7 @@ def get_or_create_zentrade():
         )
         db.session.add(w)
         db.session.commit()
-        print("[초기화] 젠트레이드 도매처 등록 완료")
+        logger.info("[초기화] 젠트레이드 도매처 등록 완료")
     return w
 
 
@@ -140,7 +142,7 @@ def get_or_create_chingudome():
         )
         db.session.add(w)
         db.session.commit()
-        print("[초기화] 친구도매 도매처 등록 완료")
+        logger.info("[초기화] 친구도매 도매처 등록 완료")
     return w
 
 
@@ -156,7 +158,7 @@ def get_or_create_sikjaje():
         )
         db.session.add(w)
         db.session.commit()
-        print("[초기화] 식자재코리아 도매처 등록 완료")
+        logger.info("[초기화] 식자재코리아 도매처 등록 완료")
     return w
 
 
@@ -172,7 +174,7 @@ def get_or_create_feelwoo():
         )
         db.session.add(w)
         db.session.commit()
-        print("[초기화] 필우커머스 도매처 등록 완료")
+        logger.info("[초기화] 필우커머스 도매처 등록 완료")
     return w
 
 
@@ -188,5 +190,5 @@ def get_or_create_onch3():
         )
         db.session.add(w)
         db.session.commit()
-        print("[초기화] 온채널 도매처 등록 완료")
+        logger.info("[초기화] 온채널 도매처 등록 완료")
     return w

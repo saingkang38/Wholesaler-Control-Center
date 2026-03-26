@@ -1,3 +1,4 @@
+import os
 import threading
 from flask import Blueprint, render_template, request, flash, redirect, url_for, jsonify, current_app
 from flask_login import login_required
@@ -140,8 +141,8 @@ def submit_register():
             "deliveryInfo": delivery_info,
             "detailAttribute": {
                 "afterServiceInfo": {
-                    "afterServiceTelephoneNumber": after_service_tel or "010-0000-0000",
-                    "afterServiceGuideContent": "고객센터로 문의해주세요.",
+                    "afterServiceTelephoneNumber": after_service_tel or os.getenv("DEFAULT_AS_TEL", "010-0000-0000"),
+                    "afterServiceGuideContent": os.getenv("DEFAULT_AS_GUIDE", "고객센터로 문의해주세요."),
                 },
                 "originAreaInfo": {
                     "originAreaCode": "0200037",  # 국내산 기본값
@@ -328,106 +329,120 @@ def bulk_register_status(job_id):
 
 
 def _run_bulk_job(job_id, app, preset_id, margin_rate, after_service_tel):
+    import logging
+    _logger = logging.getLogger(__name__)
     from store.naver.products import upload_image_from_url, register_product
 
-    with app.app_context():
-        job = BulkRegisterJob.query.get(job_id)
-        if not job:
-            return
+    try:
+        with app.app_context():
+            job = BulkRegisterJob.query.get(job_id)
+            if not job:
+                return
 
-        store = NaverStore.query.get(job.naver_store_id)
-        preset = DeliveryPreset.query.get(preset_id) if preset_id else None
+            store = NaverStore.query.get(job.naver_store_id)
+            preset = DeliveryPreset.query.get(preset_id) if preset_id else None
 
-        job.status = "running"
-        db.session.commit()
-
-        if preset:
-            delivery_info = {
-                "deliveryType": "DELIVERY",
-                "deliveryAttributeType": "NORMAL",
-                "deliveryFeeType": preset.delivery_fee_type,
-                "baseFee": preset.base_fee,
-                "freeConditionalAmount": preset.free_condition_amount if preset.delivery_fee_type == "CONDITIONAL_FREE" else 0,
-                "deliveryFeePayType": preset.delivery_fee_pay_type,
-            }
-        else:
-            delivery_info = {
-                "deliveryType": "DELIVERY",
-                "deliveryAttributeType": "NORMAL",
-                "deliveryFeeType": "FREE",
-                "baseFee": 0,
-                "deliveryFeePayType": "PREPAID",
-            }
-
-        items = BulkRegisterItem.query.filter_by(job_id=job_id).all()
-        for item in items:
-            master = item.master
-            try:
-                naver_image_url = upload_image_from_url(
-                    master.image_url, store.client_id, store.client_secret
-                )
-                sale_price = round(master.supply_price * (1 + margin_rate / 100))
-
-                item_category_id = master.category_id or ""
-                item_name = master.edited_name or master.product_name
-
-                origin_product = {
-                    "statusType": "SALE",
-                    "saleType": "NEW",
-                    "leafCategoryId": str(item_category_id),
-                    "name": item_name,
-                    "detailContent": item_name,
-                    "images": {
-                        "representativeImage": {"url": naver_image_url},
-                    },
-                    "salePrice": sale_price,
-                    "stockQuantity": 100,
-                    "deliveryInfo": delivery_info,
-                    "detailAttribute": {
-                        "afterServiceInfo": {
-                            "afterServiceTelephoneNumber": after_service_tel,
-                            "afterServiceGuideContent": "고객센터로 문의해주세요.",
-                        },
-                        "originAreaInfo": {
-                            "originAreaCode": "0200037",
-                            "importer": "",
-                        },
-                    },
-                    "sellerManagementCode": master.supplier_product_code or "",
-                }
-
-                payload = {
-                    "originProduct": origin_product,
-                    "smartstoreChannelProduct": {
-                        "naverShoppingRegistration": True,
-                        "channelProductDisplayStatusType": "ON",
-                    },
-                }
-
-                result = register_product(payload, store.client_id, store.client_secret)
-                origin_no = result.get("originProductNo") or result.get("data", {}).get("originProductNo")
-
-                sp = StoreProduct(
-                    naver_store_id=store.id,
-                    master_product_id=master.id,
-                    origin_product_no=origin_no,
-                    seller_management_code=master.supplier_product_code,
-                    product_name=item_name,
-                    sale_price=sale_price,
-                    store_status="SALE",
-                )
-                db.session.add(sp)
-
-                item.status = "success"
-                item.origin_product_no = origin_no
-                job.completed += 1
-
-            except Exception as e:
-                item.status = "error"
-                item.error_msg = str(e)[:500]
-                job.failed += 1
-
+            job.status = "running"
             db.session.commit()
 
-        job.status = "done"
-        db.session.commit()
+            if preset:
+                delivery_info = {
+                    "deliveryType": "DELIVERY",
+                    "deliveryAttributeType": "NORMAL",
+                    "deliveryFeeType": preset.delivery_fee_type,
+                    "baseFee": preset.base_fee,
+                    "freeConditionalAmount": preset.free_condition_amount if preset.delivery_fee_type == "CONDITIONAL_FREE" else 0,
+                    "deliveryFeePayType": preset.delivery_fee_pay_type,
+                }
+            else:
+                delivery_info = {
+                    "deliveryType": "DELIVERY",
+                    "deliveryAttributeType": "NORMAL",
+                    "deliveryFeeType": "FREE",
+                    "baseFee": 0,
+                    "deliveryFeePayType": "PREPAID",
+                }
+
+            items = BulkRegisterItem.query.filter_by(job_id=job_id).all()
+            for item in items:
+                master = item.master
+                try:
+                    naver_image_url = upload_image_from_url(
+                        master.image_url, store.client_id, store.client_secret
+                    )
+                    sale_price = round(master.supply_price * (1 + margin_rate / 100))
+
+                    item_category_id = master.category_id or ""
+                    item_name = master.edited_name or master.product_name
+
+                    origin_product = {
+                        "statusType": "SALE",
+                        "saleType": "NEW",
+                        "leafCategoryId": str(item_category_id),
+                        "name": item_name,
+                        "detailContent": item_name,
+                        "images": {
+                            "representativeImage": {"url": naver_image_url},
+                        },
+                        "salePrice": sale_price,
+                        "stockQuantity": 100,
+                        "deliveryInfo": delivery_info,
+                        "detailAttribute": {
+                            "afterServiceInfo": {
+                                "afterServiceTelephoneNumber": after_service_tel,
+                                "afterServiceGuideContent": "고객센터로 문의해주세요.",
+                            },
+                            "originAreaInfo": {
+                                "originAreaCode": "0200037",
+                                "importer": "",
+                            },
+                        },
+                        "sellerManagementCode": master.supplier_product_code or "",
+                    }
+
+                    payload = {
+                        "originProduct": origin_product,
+                        "smartstoreChannelProduct": {
+                            "naverShoppingRegistration": True,
+                            "channelProductDisplayStatusType": "ON",
+                        },
+                    }
+
+                    result = register_product(payload, store.client_id, store.client_secret)
+                    origin_no = result.get("originProductNo") or result.get("data", {}).get("originProductNo")
+
+                    sp = StoreProduct(
+                        naver_store_id=store.id,
+                        master_product_id=master.id,
+                        origin_product_no=origin_no,
+                        seller_management_code=master.supplier_product_code,
+                        product_name=item_name,
+                        sale_price=sale_price,
+                        store_status="SALE",
+                    )
+                    db.session.add(sp)
+
+                    item.status = "success"
+                    item.origin_product_no = origin_no
+                    job.completed += 1
+
+                except Exception as e:
+                    item.status = "error"
+                    item.error_msg = str(e)[:500]
+                    job.failed += 1
+
+                db.session.commit()
+
+            job.status = "done"
+            db.session.commit()
+
+    except Exception as e:
+        _logger.error(f"[bulk_register] 작업 {job_id} 예상치 못한 오류: {e}")
+        try:
+            with app.app_context():
+                job = BulkRegisterJob.query.get(job_id)
+                if job and job.status in ("pending", "running"):
+                    job.status = "failed"
+                    db.session.commit()
+        except Exception:
+            pass

@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import io
 import os
 import re
@@ -74,7 +76,7 @@ class FeelwooCollector(BaseCollector):
                     "error_summary": f"로그인 실패 (status={resp.status_code})",
                     "items": [],
                 }
-            print("[feelwoo] 로그인 완료")
+            logger.info("[feelwoo] 로그인 완료")
         except Exception as e:
             return {
                 "success": False,
@@ -104,7 +106,7 @@ class FeelwooCollector(BaseCollector):
         }
 
         try:
-            print("[feelwoo] Excel 다운로드 시작...")
+            logger.info("[feelwoo] Excel 다운로드 시작...")
             dl_resp = session.get(
                 DOWNLOAD_URL,
                 params=params,
@@ -125,7 +127,7 @@ class FeelwooCollector(BaseCollector):
 
             content = dl_resp.content
             content_type = dl_resp.headers.get("Content-Type", "")
-            print(f"[feelwoo] 다운로드 완료: {len(content)} bytes, Content-Type: {content_type}")
+            logger.info(f"[feelwoo] 다운로드 완료: {len(content)} bytes, Content-Type: {content_type}")
 
             # 원본 파일 저장
             try:
@@ -134,9 +136,9 @@ class FeelwooCollector(BaseCollector):
                 timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                 raw_path = save_dir / f"feelwoo_{timestamp}.xlsx"
                 raw_path.write_bytes(content)
-                print(f"[feelwoo] 원본 저장: {raw_path}")
+                logger.info(f"[feelwoo] 원본 저장: {raw_path}")
             except Exception as e:
-                print(f"[feelwoo] 원본 저장 실패 (무시): {e}")
+                logger.warning(f"[feelwoo] 원본 저장 실패 (무시): {e}")
 
             if len(content) < 100:
                 return {
@@ -174,7 +176,7 @@ class FeelwooCollector(BaseCollector):
                 "items": [],
             }
 
-        print(f"[feelwoo] 수집 완료: {len(items)}건")
+        logger.info(f"[feelwoo] 수집 완료: {len(items)}건")
         return {
             "success": True,
             "total_items": len(items),
@@ -237,21 +239,26 @@ class FeelwooCollector(BaseCollector):
         if not headers:
             headers = all_rows[0]
 
-        print(f"[feelwoo] 헤더: {headers}")
+        logger.info(f"[feelwoo] 헤더: {headers}")
 
         col = self._find_col
         idx_code = col(headers, ["상품코드", "품번", "코드", "code"])
         idx_name = col(headers, ["상품명", "품명", "제품명", "name"])
-        idx_price = col(headers, ["판매가", "공급가", "가격", "price", "금액"])
+        idx_price = col(headers, ["판매가", "가격", "price", "금액"])
+        idx_supply = col(headers, ["공급가", "원가", "매입가"])
         idx_stock = col(headers, ["재고", "수량", "stock"])
         idx_status = col(headers, ["상태", "판매여부", "사용여부"])
         idx_image = col(headers, ["이미지", "썸네일", "image", "img"])
         idx_category = col(headers, ["카테고리", "분류"])
+        idx_detail_url = col(headers, ["상세url", "상품url", "상세주소", "링크", "url"])
+        idx_origin = col(headers, ["원산지"])
+        idx_shipping_fee = col(headers, ["배송비"])
+        idx_shipping_cond = col(headers, ["배송조건", "무료배송"])
+        idx_option = col(headers, ["옵션명", "옵션"])
+        idx_option_price = col(headers, ["옵션가"])
 
         if idx_code is None and idx_name is None:
             raise ValueError(f"상품코드/상품명 컬럼 없음. 헤더: {headers}")
-
-        mapped_indices = {i for i in [idx_code, idx_name, idx_price, idx_stock, idx_status, idx_image, idx_category] if i is not None}
 
         items = []
         seen = set()
@@ -275,6 +282,7 @@ class FeelwooCollector(BaseCollector):
             seen.add(source_code)
 
             price = self._parse_price(cell(idx_price))
+            supply_price = self._parse_price(cell(idx_supply))
 
             status = "active"
             if idx_status is not None:
@@ -290,24 +298,22 @@ class FeelwooCollector(BaseCollector):
                 except (ValueError, TypeError):
                     pass
 
-            image_url = cell(idx_image) or ""
-            category = cell(idx_category) or ""
-
-            extra = {}
-            for i, h in enumerate(headers):
-                if i not in mapped_indices and h:
-                    extra[h] = cell(i)
+            # 전체 컬럼 extra에 저장
+            extra = {h: cell(i) for i, h in enumerate(headers) if h}
 
             items.append({
                 "source_product_code": source_code,
                 "product_name": product_name,
                 "price": price,
-                "supply_price": None,
+                "supply_price": supply_price,
                 "status": status,
-                "image_url": image_url,
-                "detail_url": "",
-                "stock_qty": None,
-                "category_name": category or None,
+                "image_url": cell(idx_image) or "",
+                "detail_url": cell(idx_detail_url) or "",
+                "stock_qty": self._parse_price(cell(idx_stock)),
+                "category_name": cell(idx_category) or None,
+                "origin": cell(idx_origin),
+                "shipping_fee": self._parse_price(cell(idx_shipping_fee)),
+                "shipping_condition": cell(idx_shipping_cond),
                 "extra": extra,
             })
 

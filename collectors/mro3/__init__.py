@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import re
 import requests
@@ -31,14 +33,14 @@ class Mro3Collector(BaseCollector):
             return self._error(f"알 수 없는 mode: {mode}")
 
     def _collect(self, m_no: str, div: str, label: str) -> dict:
-        print(f"[mro3] {label}상품 수집 (div={div})")
+        logger.info(f"[mro3] {label}상품 수집 (div={div})")
         try:
             raw_xml = self._call_api({"div": div, "m_no": m_no})
             items = self._parse_xml(raw_xml)
         except Exception as e:
             return self._error(str(e)[:300])
 
-        print(f"[mro3] {label}상품 수집 완료: {len(items)}건")
+        logger.info(f"[mro3] {label}상품 수집 완료: {len(items)}건")
         return {
             "success": True,
             "total_items": len(items),
@@ -49,7 +51,7 @@ class Mro3Collector(BaseCollector):
             "items": items,
         }
 
-    def _call_api(self, params: dict) -> str:
+    def _call_api(self, params: dict) -> bytes:
         headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         try:
             resp = requests.get(API_URL, params=params, headers=headers, timeout=60)
@@ -59,23 +61,20 @@ class Mro3Collector(BaseCollector):
         except requests.RequestException as e:
             raise Exception(f"요청 오류: {e}")
 
-        try:
-            text = resp.content.decode("euc-kr", errors="replace")
-        except Exception:
-            text = resp.text
-
-        text = re.sub(r'<\?xml[^>]*\?>', '<?xml version="1.0" encoding="utf-8"?>', text)
-
-        if not text.strip():
+        if not resp.content.strip():
             raise Exception("응답이 비어있음")
 
-        return text
+        return resp.content
 
-    def _parse_xml(self, raw_xml: str) -> list:
+    def _parse_xml(self, raw_bytes: bytes) -> list:
+        # ET.fromstring(bytes)는 XML 선언의 encoding 속성을 자동으로 처리함
         try:
-            root = ET.fromstring(raw_xml.encode("utf-8"))
+            root = ET.fromstring(raw_bytes)
         except ET.ParseError:
-            sanitized = re.sub(r"<!\[CDATA\[(.*?)\]\]>", lambda m: m.group(1), raw_xml, flags=re.DOTALL)
+            # CDATA 제거 후 재시도: cp949로 디코딩 → CDATA 제거 → utf-8로 재인코딩
+            text = raw_bytes.decode("cp949", errors="replace")
+            sanitized = re.sub(r"<!\[CDATA\[(.*?)\]\]>", lambda m: m.group(1), text, flags=re.DOTALL)
+            sanitized = re.sub(r'<\?xml[^>]*\?>', '<?xml version="1.0" encoding="utf-8"?>', sanitized)
             root = ET.fromstring(sanitized.encode("utf-8"))
 
         items = []
@@ -86,7 +85,7 @@ class Mro3Collector(BaseCollector):
                     items.append(item)
             except Exception as e:
                 code = product.get("code", "unknown")
-                print(f"[mro3] 상품 파싱 오류 (code={code}): {e}")
+                logger.warning(f"[mro3] 상품 파싱 오류 (code={code}): {e}")
 
         return items
 
@@ -154,6 +153,29 @@ class Mro3Collector(BaseCollector):
         # 옵션: option1price는 절대가격 → 차액 = option_price - buyprice
         options_text, option_prices_text = self._parse_options(product, price)
 
+        # XML 전체 필드 extra에 저장
+        extra = {}
+        extra["소비자가"] = consumer_price
+        extra["과세여부"] = tax_mode
+        extra["제조사"] = productcom
+        extra["브랜드"] = brand
+        extra["모델명"] = model
+        extra["키워드"] = " / ".join(keywords) if keywords else None
+        extra["옵션"] = options_text
+        extra["옵션가"] = option_prices_text
+        for child in product:
+            tag = child.tag
+            if tag in ("status", "price", "listimg", "baseinfo", "content"):
+                continue
+            if tag.startswith("keyword") or tag.startswith("option"):
+                continue
+            val = (child.text or "").strip()
+            if val:
+                extra[tag] = val
+        for attr, val in product.attrib.items():
+            if attr != "code":
+                extra[f"attr_{attr}"] = val
+
         return {
             "source_product_code": code,
             "product_name": product_name,
@@ -169,46 +191,49 @@ class Mro3Collector(BaseCollector):
             "detail_description": detail_description,
             "shipping_fee": None,
             "shipping_condition": None,
-            "extra": {
-                "소비자가": consumer_price,
-                "과세여부": tax_mode,
-                "제조사": productcom,
-                "브랜드": brand,
-                "모델명": model,
-                "키워드": " / ".join(keywords) if keywords else None,
-                "옵션": options_text,
-                "옵션가": option_prices_text,
-            },
+            "extra": extra,
         }
 
     def _parse_options(self, product: ET.Element, base_price: int):
-        option_names = []
-        option_diffs = []
+        """
+        option{i} = "옵션명,값1,값2,..." (첫 번째가 옵션명, 나머지가 옵션값)
+        option{i}price = "가격1,가격2,..." (각 옵션값에 대응하는 절대가격, 0이면 차액 없음)
+        """
+        all_names = []
+        all_diffs = []
         i = 1
         while True:
-            opt_name_el = product.find(f"option{i}")
-            if opt_name_el is None:
+            opt_el = product.find(f"option{i}")
+            if opt_el is None:
                 break
-            name = (opt_name_el.text or "").strip()
-            if not name:
+            raw = (opt_el.text or "").strip()
+            if not raw:
                 break
+
+            parts = [p.strip() for p in raw.split(",")]
+            # 첫 번째는 옵션명(키워드), 나머지가 실제 옵션값
+            values = parts[1:] if len(parts) > 1 else parts
+
             opt_price_el = product.find(f"option{i}price")
-            opt_price = self._parse_price(opt_price_el.text if opt_price_el is not None else None)
+            raw_prices = (opt_price_el.text or "").strip() if opt_price_el is not None else ""
+            price_parts = [p.strip() for p in raw_prices.split(",") if p.strip()] if raw_prices else []
 
-            if base_price is not None and opt_price is not None:
-                diff = opt_price - base_price
-                diff_str = f"+{diff}" if diff > 0 else str(diff)
-            else:
-                diff_str = "0"
+            for j, val in enumerate(values):
+                abs_price = self._parse_price(price_parts[j]) if j < len(price_parts) else None
+                if abs_price is None or abs_price == 0:
+                    diff_str = "0"
+                else:
+                    diff = abs_price - (base_price or 0)
+                    diff_str = f"+{diff}" if diff > 0 else str(diff)
+                all_names.append(val)
+                all_diffs.append(diff_str)
 
-            option_names.append(name)
-            option_diffs.append(diff_str)
             i += 1
 
-        if not option_names:
+        if not all_names:
             return None, None
 
-        return "\n".join(option_names), "\n".join(option_diffs)
+        return "\n".join(all_names), "\n".join(all_diffs)
 
     def _cdata_text(self, element: ET.Element, tag: str) -> str:
         node = element.find(tag)

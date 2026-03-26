@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import re
 import time
 import requests
@@ -53,7 +55,7 @@ class JtckoreaCollector(BaseCollector):
 
         try:
             for cate_cd, cate_name in CATEGORIES:
-                print(f"[jtckorea] 카테고리 수집: {cate_name} (cateCd={cate_cd})")
+                logger.info(f"[jtckorea] 카테고리 수집: {cate_name} (cateCd={cate_cd})")
                 page = 1
                 while True:
                     resp = requests.get(
@@ -76,7 +78,7 @@ class JtckoreaCollector(BaseCollector):
                     time.sleep(0.3)
 
         except Exception as e:
-            print(f"[jtckorea] 목록 수집 오류: {e}")
+            logger.warning(f"[jtckorea] 목록 수집 오류: {e}")
             return {
                 "success": False,
                 "total_items": len(items), "total_pages": 0,
@@ -84,19 +86,19 @@ class JtckoreaCollector(BaseCollector):
                 "error_summary": str(e)[:500], "items": items,
             }
 
-        print(f"[jtckorea] 목록 수집 완료: {len(items)}건, 상세페이지 수집 시작...")
+        logger.info(f"[jtckorea] 목록 수집 완료: {len(items)}건, 상세페이지 수집 시작...")
 
         for i, item in enumerate(items):
             try:
                 detail = self._fetch_detail(item["source_product_code"])
                 item.update(detail)
             except Exception as e:
-                print(f"[jtckorea] 상세 오류 (goodsNo={item['source_product_code']}): {e}")
+                logger.warning(f"[jtckorea] 상세 오류 (goodsNo={item['source_product_code']}): {e}")
             if (i + 1) % 100 == 0:
-                print(f"[jtckorea] 상세 수집 진행: {i + 1}/{len(items)}")
+                logger.info(f"[jtckorea] 상세 수집 진행: {i + 1}/{len(items)}")
             time.sleep(0.3)
 
-        print(f"[jtckorea] 전체 수집 완료: {len(items)}건")
+        logger.info(f"[jtckorea] 전체 수집 완료: {len(items)}건")
         return {
             "success": True,
             "total_items": len(items), "total_pages": 0,

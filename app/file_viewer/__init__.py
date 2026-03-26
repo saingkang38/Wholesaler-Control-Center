@@ -1,5 +1,6 @@
 import io
 import zipfile
+import datetime
 from pathlib import Path
 from flask import Blueprint, render_template, abort
 from flask_login import login_required
@@ -24,7 +25,6 @@ WHOLESALER_NAMES = {
 @file_viewer_bp.route("/downloads")
 @login_required
 def index():
-    import datetime
     from app.wholesalers.models import Wholesaler
 
     wholesalers = Wholesaler.query.order_by(Wholesaler.name).all()
@@ -46,10 +46,9 @@ def index():
 @file_viewer_bp.route("/downloads/<code>")
 @login_required
 def file_list(code):
-    folder = DOWNLOADS_ROOT / code
-    if not folder.exists() or not folder.is_dir():
+    folder = (DOWNLOADS_ROOT / code).resolve()
+    if not folder.is_relative_to(DOWNLOADS_ROOT) or not folder.exists() or not folder.is_dir():
         abort(404)
-    import datetime
     files = []
     for f in sorted(folder.iterdir(), reverse=True):
         if f.is_file():
@@ -67,8 +66,8 @@ def file_list(code):
 @file_viewer_bp.route("/downloads/<code>/<filename>/preview")
 @login_required
 def preview(code, filename):
-    filepath = DOWNLOADS_ROOT / code / filename
-    if not filepath.exists():
+    filepath = (DOWNLOADS_ROOT / code / filename).resolve()
+    if not filepath.is_relative_to(DOWNLOADS_ROOT) or not filepath.exists():
         abort(404)
 
     ext = filepath.suffix.lower()

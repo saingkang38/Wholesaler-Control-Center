@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import re
 import time
@@ -32,13 +34,13 @@ class Ds1008Collector(BaseCollector):
         try:
             return self._run_requests(login_id, login_pw)
         except Exception as e:
-            print(f"[ds1008] requests 실패 → Playwright 전환: {e}")
+            logger.warning(f"[ds1008] requests 실패 → Playwright 전환: {e}")
 
         # 2차: Playwright
         try:
             return self._run_playwright(login_id, login_pw)
         except Exception as e:
-            print(f"[ds1008] Playwright 실패: {e}")
+            logger.warning(f"[ds1008] Playwright 실패: {e}")
             return self._error(f"모든 수집 방식 실패: {str(e)[:200]}")
 
     # ──────────────────────────────────────────────
@@ -50,10 +52,10 @@ class Ds1008Collector(BaseCollector):
         session.headers.update(HEADERS)
 
         self._login_requests(session, login_id, login_pw)
-        print("[ds1008] 로그인 성공 (requests)")
+        logger.info("[ds1008] 로그인 성공 (requests)")
 
         categories = self._get_categories(session)
-        print(f"[ds1008] 카테고리 수: {len(categories)}")
+        logger.info(f"[ds1008] 카테고리 수: {len(categories)}")
 
         items = []
         for cate_no, cate_name in categories:
@@ -61,9 +63,9 @@ class Ds1008Collector(BaseCollector):
                 cat_items = self._collect_category_requests(session, cate_no, cate_name)
                 if cat_items:
                     items.extend(cat_items)
-                    print(f"[ds1008] [{cate_name}] {len(cat_items)}개")
+                    logger.info(f"[ds1008] [{cate_name}] {len(cat_items)}개")
             except Exception as e:
-                print(f"[ds1008] 카테고리 오류 ({cate_name}/{cate_no}): {e}")
+                logger.warning(f"[ds1008] 카테고리 오류 ({cate_name}/{cate_no}): {e}")
 
         return {
             "success": True,
@@ -172,7 +174,7 @@ class Ds1008Collector(BaseCollector):
                         "category_name": cate_name,
                     })
                 except Exception as e:
-                    print(f"[ds1008] 상품 파싱 오류: {e}")
+                    logger.warning(f"[ds1008] 상품 파싱 오류: {e}")
 
             time.sleep(0.8)
 
@@ -213,7 +215,7 @@ class Ds1008Collector(BaseCollector):
                 browser.close()
                 raise Exception("Playwright 로그인 실패")
 
-            print("[ds1008] 로그인 성공 (Playwright)")
+            logger.info("[ds1008] 로그인 성공 (Playwright)")
 
             # 카테고리 추출
             page.goto(f"{BASE_URL}/index.html", wait_until="domcontentloaded")
@@ -237,9 +239,9 @@ class Ds1008Collector(BaseCollector):
                     cat_items = self._collect_category_playwright(page, cate_no, cate_name)
                     if cat_items:
                         items.extend(cat_items)
-                        print(f"[ds1008][PW] [{cate_name}] {len(cat_items)}개")
+                        logger.info(f"[ds1008][PW] [{cate_name}] {len(cat_items)}개")
                 except Exception as e:
-                    print(f"[ds1008][PW] 카테고리 오류 ({cate_name}): {e}")
+                    logger.warning(f"[ds1008][PW] 카테고리 오류 ({cate_name}): {e}")
 
             browser.close()
 
@@ -330,7 +332,7 @@ class Ds1008Collector(BaseCollector):
                 if resp.status_code == 200:
                     return resp
                 if resp.status_code in (403, 429):
-                    print(f"[ds1008] {resp.status_code} 응답, {delay}초 대기 후 재시도")
+                    logger.info(f"[ds1008] {resp.status_code} 응답, {delay}초 대기 후 재시도")
                     time.sleep(delay)
                     delay *= 2
             except requests.RequestException as e:

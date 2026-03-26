@@ -1,13 +1,16 @@
 import json
+import logging
 from flask import Blueprint, render_template, request, jsonify
 from flask_login import login_required
 from datetime import datetime
+from sqlalchemy.orm import joinedload
 from app.infrastructure import db
 from app.actions.models import ActionSignal
 from app.master.models import MasterProduct
 from app.store.models import StoreProduct
 
 actions_bp = Blueprint("actions", __name__)
+logger = logging.getLogger(__name__)
 
 
 SIGNAL_LABELS = {
@@ -50,15 +53,26 @@ def actions_page():
         signals = pagination.items
         total = pagination.total
 
-    from app.settings import apply_margin
+    from app.settings import apply_margin, get_margin_rules
+    margin_rules = get_margin_rules()
+
+    def _apply_margin_cached(price):
+        if not price or price <= 0:
+            return 0
+        for rule in margin_rules:
+            if price >= rule.price_from:
+                if rule.price_to is None or price <= rule.price_to:
+                    return round(price * (1 + rule.margin_rate) / 10) * 10
+        return price
 
     rows = []
     for s in signals:
         current = json.loads(s.current_value) if s.current_value else {}
         suggested = json.loads(s.suggested_value) if s.suggested_value else {}
-        wholesale_price = suggested.get("sale_price") or current.get("sale_price")
+        s_price = suggested.get("sale_price")
+        wholesale_price = s_price if s_price is not None else current.get("sale_price")
         sale_price = current.get("sale_price")
-        margin_price = apply_margin(wholesale_price) if wholesale_price else None
+        margin_price = _apply_margin_cached(wholesale_price) if wholesale_price else None
         rows.append({
             "id": s.id,
             "store_product_id": s.store_product_id,
@@ -196,7 +210,7 @@ def _execute_signal(signal: ActionSignal):
 
         if signal.signal_type in ("PRICE_UP_NEEDED", "PRICE_DOWN_POSSIBLE"):
             wholesale_price = suggested.get("sale_price")
-            if wholesale_price:
+            if wholesale_price and wholesale_price > 0:
                 from app.settings import apply_margin
                 new_price = apply_margin(wholesale_price)
                 update_price(store.origin_product_no, new_price, client_id=client_id, client_secret=client_secret)
@@ -212,9 +226,9 @@ def _execute_signal(signal: ActionSignal):
         signal.resolved_at = datetime.utcnow()
         db.session.commit()
 
-    except Exception as e:
+    except Exception:
         db.session.rollback()
-        raise e
+        raise
 
 
 def detect_action_signals(wholesaler_id: int) -> dict:
@@ -230,45 +244,53 @@ def detect_action_signals(wholesaler_id: int) -> dict:
         "DISCONTINUE_NEEDED": 0,
     }
 
-    # 매칭된 스토어 상품만 처리
+    # 해당 도매처의 매칭된 스토어 상품만 조회 — 전체 로드 방지, 관계 미리 로드
     stores = (
         StoreProduct.query
         .filter(StoreProduct.master_product_id.isnot(None))
+        .join(MasterProduct, StoreProduct.master_product_id == MasterProduct.id)
+        .filter(MasterProduct.wholesaler_id == wholesaler_id)
+        .options(joinedload(StoreProduct.master), joinedload(StoreProduct.exclusion))
         .all()
     )
+
+    # 기존 pending 시그널을 한 번에 로드 — _already_pending N+1 방지
+    store_ids = [s.id for s in stores]
+    existing_pending = set()
+    if store_ids:
+        pending_rows = ActionSignal.query.filter(
+            ActionSignal.store_product_id.in_(store_ids),
+            ActionSignal.status == "pending",
+        ).with_entities(
+            ActionSignal.master_product_id,
+            ActionSignal.store_product_id,
+            ActionSignal.signal_type,
+        ).all()
+        existing_pending = {(r.master_product_id, r.store_product_id, r.signal_type) for r in pending_rows}
 
     for store in stores:
         master = store.master
 
-        if not master or master.wholesaler_id != wholesaler_id:
+        if not master:
             continue
 
         if store.exclusion:
             continue
 
-        _check_price_signals(master, store, stats)
-        _check_status_signals(master, store, stats)
+        _check_price_signals(master, store, stats, existing_pending)
+        _check_status_signals(master, store, stats, existing_pending)
 
     db.session.commit()
-    print(f"[actions] 시그널 감지 완료: {stats}")
+    logger.info(f"[actions] 시그널 감지 완료: {stats}")
     return stats
 
 
-def _already_pending(master_id, store_id, signal_type) -> bool:
-    return ActionSignal.query.filter_by(
-        master_product_id=master_id,
-        store_product_id=store_id,
-        signal_type=signal_type,
-        status="pending",
-    ).first() is not None
-
-
-def _check_price_signals(master: MasterProduct, store: StoreProduct, stats: dict):
+def _check_price_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set):
     if not master.price or not store.sale_price:
         return
 
     if master.price > store.sale_price:
-        if not _already_pending(master.id, store.id, "PRICE_UP_NEEDED"):
+        if (master.id, store.id, "PRICE_UP_NEEDED") not in pending:
             db.session.add(ActionSignal(
                 master_product_id=master.id,
                 store_product_id=store.id,
@@ -276,10 +298,11 @@ def _check_price_signals(master: MasterProduct, store: StoreProduct, stats: dict
                 current_value=json.dumps({"sale_price": store.sale_price}),
                 suggested_value=json.dumps({"sale_price": master.price}),
             ))
+            pending.add((master.id, store.id, "PRICE_UP_NEEDED"))
             stats["PRICE_UP_NEEDED"] += 1
 
     elif master.price < store.sale_price:
-        if not _already_pending(master.id, store.id, "PRICE_DOWN_POSSIBLE"):
+        if (master.id, store.id, "PRICE_DOWN_POSSIBLE") not in pending:
             db.session.add(ActionSignal(
                 master_product_id=master.id,
                 store_product_id=store.id,
@@ -287,15 +310,16 @@ def _check_price_signals(master: MasterProduct, store: StoreProduct, stats: dict
                 current_value=json.dumps({"sale_price": store.sale_price}),
                 suggested_value=json.dumps({"sale_price": master.price}),
             ))
+            pending.add((master.id, store.id, "PRICE_DOWN_POSSIBLE"))
             stats["PRICE_DOWN_POSSIBLE"] += 1
 
 
-def _check_status_signals(master: MasterProduct, store: StoreProduct, stats: dict):
+def _check_status_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set):
     store_active = store.store_status == "SALE"
     master_status = master.current_status
 
     if master_status == "discontinued":
-        if store_active and not _already_pending(master.id, store.id, "DISCONTINUE_NEEDED"):
+        if store_active and (master.id, store.id, "DISCONTINUE_NEEDED") not in pending:
             db.session.add(ActionSignal(
                 master_product_id=master.id,
                 store_product_id=store.id,
@@ -303,10 +327,11 @@ def _check_status_signals(master: MasterProduct, store: StoreProduct, stats: dic
                 current_value=json.dumps({"store_status": store.store_status}),
                 suggested_value=json.dumps({"store_status": "CLOSE"}),
             ))
+            pending.add((master.id, store.id, "DISCONTINUE_NEEDED"))
             stats["DISCONTINUE_NEEDED"] += 1
 
     elif master_status in ("missing", "discontinued_candidate"):
-        if store_active and not _already_pending(master.id, store.id, "SUSPEND_NEEDED"):
+        if store_active and (master.id, store.id, "SUSPEND_NEEDED") not in pending:
             db.session.add(ActionSignal(
                 master_product_id=master.id,
                 store_product_id=store.id,
@@ -314,10 +339,11 @@ def _check_status_signals(master: MasterProduct, store: StoreProduct, stats: dic
                 current_value=json.dumps({"store_status": store.store_status}),
                 suggested_value=json.dumps({"store_status": "SUSPENSION"}),
             ))
+            pending.add((master.id, store.id, "SUSPEND_NEEDED"))
             stats["SUSPEND_NEEDED"] += 1
 
     elif master_status == "active":
-        if not store_active and not _already_pending(master.id, store.id, "RESUME_POSSIBLE"):
+        if not store_active and (master.id, store.id, "RESUME_POSSIBLE") not in pending:
             db.session.add(ActionSignal(
                 master_product_id=master.id,
                 store_product_id=store.id,
@@ -325,4 +351,5 @@ def _check_status_signals(master: MasterProduct, store: StoreProduct, stats: dic
                 current_value=json.dumps({"store_status": store.store_status}),
                 suggested_value=json.dumps({"store_status": "SALE"}),
             ))
+            pending.add((master.id, store.id, "RESUME_POSSIBLE"))
             stats["RESUME_POSSIBLE"] += 1

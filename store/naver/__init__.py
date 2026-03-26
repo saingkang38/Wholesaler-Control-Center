@@ -55,6 +55,9 @@ def get_all_products(client_id: str = None, client_secret: str = None) -> list:
     page = 1
     size = 100
 
+    import logging
+    _logger = logging.getLogger(__name__)
+
     token = _get_access_token(client_id, client_secret)
 
     while True:
@@ -64,12 +67,21 @@ def get_all_products(client_id: str = None, client_secret: str = None) -> list:
                 data = get_products(page=page, size=size, token=token, client_id=client_id, client_secret=client_secret)
                 break
             except Exception as e:
+                # 401: 토큰 만료 → 즉시 재발급 후 재시도
+                if "401" in str(e):
+                    _logger.warning(f"[naver] 페이지 {page} 토큰 만료, 재발급 후 재시도")
+                    try:
+                        token = _get_access_token(client_id, client_secret)
+                    except Exception as te:
+                        _logger.error(f"[naver] 토큰 재발급 실패: {te}")
+                        retries = 5  # 재발급 불가 → 즉시 포기
+                        break
                 retries += 1
                 wait = 10 * retries
-                print(f"[naver] 페이지 {page} 오류({e}), {wait}초 후 재시도 ({retries}/5)")
+                _logger.warning(f"[naver] 페이지 {page} 오류({e}), {wait}초 후 재시도 ({retries}/5)")
                 time.sleep(wait)
         else:
-            print(f"[naver] 페이지 {page} 5회 재시도 실패, 건너뜀")
+            _logger.error(f"[naver] 페이지 {page} 5회 재시도 실패, 건너뜀")
             break
 
         items = data.get("contents", [])
