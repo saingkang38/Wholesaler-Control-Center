@@ -191,12 +191,14 @@ class MetaldiyCollector(BaseCollector):
             detail_html = f'<div style="text-align:center;">{inner}</div>'
 
         # 옵션: tbody.optionArea tr.itemOptionTr
+        # 옵션가 = 옵션 실제가 - 기본 판매가 (차액)
+        # 예) 기본가 29700, 옵션 29700 → 0 / 옵션 30000 → +300 / 옵션 29400 → -300
         options_text = None
         option_prices_text = None
         option_rows = soup.select("tbody.optionArea tr.itemOptionTr")
         if option_rows:
             option_names = []
-            option_prices = []
+            option_diffs = []
             for tr in option_rows:
                 name_el = tr.select_one("td.op_name")
                 if not name_el:
@@ -205,11 +207,16 @@ class MetaldiyCollector(BaseCollector):
                 if not name:
                     continue
                 opt_price = self._parse_price(tr.get("price", ""))
+                if price is not None and opt_price is not None:
+                    diff = opt_price - price
+                    diff_str = f"+{diff}" if diff > 0 else str(diff)
+                else:
+                    diff_str = ""
                 option_names.append(name)
-                option_prices.append(str(opt_price) if opt_price is not None else "")
+                option_diffs.append(diff_str)
             if option_names:
                 options_text = "\n".join(option_names)
-                option_prices_text = "\n".join(option_prices)
+                option_prices_text = "\n".join(option_diffs)
 
         return {
             "origin": origin,
