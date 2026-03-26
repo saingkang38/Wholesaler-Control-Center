@@ -193,11 +193,10 @@ class MetaldiyCollector(BaseCollector):
         # 옵션: tbody.optionArea tr.itemOptionTr
         options_text = None
         option_prices_text = None
-        base_price = price  # 기본 판매가 기준으로 차액 계산
         option_rows = soup.select("tbody.optionArea tr.itemOptionTr")
         if option_rows:
             option_names = []
-            option_diffs = []
+            option_prices = []
             for tr in option_rows:
                 name_el = tr.select_one("td.op_name")
                 if not name_el:
@@ -206,16 +205,11 @@ class MetaldiyCollector(BaseCollector):
                 if not name:
                     continue
                 opt_price = self._parse_price(tr.get("price", ""))
-                if base_price is not None and opt_price is not None:
-                    diff = opt_price - base_price
-                    diff_str = f"+{diff}" if diff > 0 else str(diff)
-                else:
-                    diff_str = "0"
                 option_names.append(name)
-                option_diffs.append(diff_str)
+                option_prices.append(str(opt_price) if opt_price is not None else "")
             if option_names:
                 options_text = "\n".join(option_names)
-                option_prices_text = "\n".join(option_diffs)
+                option_prices_text = "\n".join(option_prices)
 
         return {
             "origin": origin,
@@ -336,8 +330,11 @@ class MetaldiyCollector(BaseCollector):
     def _parse_price(self, text) -> int:
         if not text:
             return None
-        cleaned = "".join(c for c in str(text) if c.isdigit())
-        return int(cleaned) if cleaned else None
+        try:
+            return int(float(str(text).replace(",", "").strip()))
+        except (ValueError, TypeError):
+            cleaned = "".join(c for c in str(text) if c.isdigit())
+            return int(cleaned) if cleaned else None
 
     def _error(self, msg: str) -> dict:
         return {
