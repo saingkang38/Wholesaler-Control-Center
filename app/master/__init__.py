@@ -1,10 +1,12 @@
 import json
+import logging
 from datetime import date, datetime
 from flask import Blueprint
 from app.infrastructure import db
 from app.master.models import MasterProduct, ProductEvent
 
 master_bp = Blueprint("master", __name__)
+logger = logging.getLogger(__name__)
 
 # 연속 미수집 N일 이상 → 상태 전환 기준
 MISSING_DAYS_CANDIDATE = 3    # missing_candidate
@@ -54,6 +56,10 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
                 image_url=item.get("image_url"),
                 category_name=item.get("category_name"),
                 detail_description=item.get("detail_description"),
+                product_url=item.get("product_url") or item.get("detail_url"),
+                origin=item.get("origin"),
+                shipping_fee=item.get("shipping_fee"),
+                shipping_condition=item.get("shipping_condition"),
                 current_status="active",
                 first_seen_date=snapshot_date,
                 last_seen_date=snapshot_date,
@@ -128,13 +134,29 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
             if master.current_status != "active":
                 master.last_status_change_date = snapshot_date
             master.current_status = "active"
-            master.product_name = new_name or master.product_name
-            master.price = new_price or master.price
-            master.supply_price = item.get("supply_price") or master.supply_price
-            master.image_url = new_img or master.image_url
-            master.category_name = item.get("category_name") or master.category_name
+            if new_name:
+                master.product_name = new_name
+            if new_price is not None:
+                master.price = new_price
+            new_supply = item.get("supply_price")
+            if new_supply is not None:
+                master.supply_price = new_supply
+            if new_img:
+                master.image_url = new_img
+            new_cat = item.get("category_name")
+            if new_cat:
+                master.category_name = new_cat
             if item.get("detail_description"):
                 master.detail_description = item.get("detail_description")
+            new_url = item.get("product_url") or item.get("detail_url")
+            if new_url:
+                master.product_url = new_url
+            if item.get("origin"):
+                master.origin = item.get("origin")
+            if item.get("shipping_fee") is not None:
+                master.shipping_fee = item.get("shipping_fee")
+            if item.get("shipping_condition"):
+                master.shipping_condition = item.get("shipping_condition")
 
     # 2. 오늘 수집에서 빠진 상품 처리 (미수집)
     missing_codes = existing_codes - set(today_map.keys())
@@ -174,5 +196,5 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
         db.session.add(event)
 
     db.session.commit()
-    print(f"[master] 업데이트 완료: {stats}")
+    logger.info(f"[master] 업데이트 완료: {stats}")
     return stats

@@ -96,6 +96,9 @@ def create_app():
             "ALTER TABLE prep_settings ADD COLUMN img_output_size INTEGER",
             "ALTER TABLE prep_settings ADD COLUMN img_quality INTEGER DEFAULT 100",
             "ALTER TABLE prep_settings ADD COLUMN side_panel_url VARCHAR(1024)",
+            "ALTER TABLE master_products ADD COLUMN origin VARCHAR(128)",
+            "ALTER TABLE master_products ADD COLUMN shipping_fee INTEGER",
+            "ALTER TABLE master_products ADD COLUMN shipping_condition VARCHAR(256)",
         ]
         for sql in migrations:
             try:

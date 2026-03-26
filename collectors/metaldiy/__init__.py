@@ -1,3 +1,5 @@
+import logging
+logger = logging.getLogger(__name__)
 import os
 import re
 import time
@@ -51,7 +53,7 @@ class MetaldiyCollector(BaseCollector):
                 popup_page = popup_info.value
                 popup_page.wait_for_load_state("networkidle")
                 time.sleep(1)
-                print("[metaldiy] 로그인 팝업 창 열림")
+                logger.info("[metaldiy] 로그인 팝업 창 열림")
 
                 popup_page.fill("input[name='loginId']", login_id)
                 popup_page.fill("input[name='loginPw']", login_pw)
@@ -65,22 +67,22 @@ class MetaldiyCollector(BaseCollector):
                     browser.close()
                     return self._error("로그인 실패 - 계정 정보 확인 필요")
 
-                print("[metaldiy] 로그인 성공 (기업회원)")
+                logger.info("[metaldiy] 로그인 성공 (기업회원)")
 
                 categories = self._get_categories(page)
                 if not categories:
                     browser.close()
                     return self._error("카테고리 목록 추출 실패")
 
-                print(f"[metaldiy] 카테고리 수: {len(categories)}")
+                logger.info(f"[metaldiy] 카테고리 수: {len(categories)}")
 
                 for cat_id, cat_name in categories:
                     try:
                         cat_items = self._collect_category(page, cat_id, cat_name)
                         items.extend(cat_items)
-                        print(f"[metaldiy] [{cat_name}] {len(cat_items)}개 수집")
+                        logger.info(f"[metaldiy] [{cat_name}] {len(cat_items)}개 수집")
                     except Exception as e:
-                        print(f"[metaldiy] 카테고리 오류 ({cat_name}/{cat_id}): {e}")
+                        logger.warning(f"[metaldiy] 카테고리 오류 ({cat_name}/{cat_id}): {e}")
 
                 browser.close()
 
@@ -93,7 +95,7 @@ class MetaldiyCollector(BaseCollector):
                 "items": items,
             }
         except Exception as e:
-            print(f"[metaldiy] 오류 발생: {e}")
+            logger.warning(f"[metaldiy] 오류 발생: {e}")
             return {
                 "success": False,
                 "total_items": len(items), "total_pages": 0,
@@ -103,18 +105,18 @@ class MetaldiyCollector(BaseCollector):
             }
 
         # 상세페이지 수집 (requests, 로그인 불필요)
-        print(f"[metaldiy] 목록 수집 완료: {len(items)}건, 상세페이지 수집 시작...")
+        logger.info(f"[metaldiy] 목록 수집 완료: {len(items)}건, 상세페이지 수집 시작...")
         for i, item in enumerate(items):
             try:
-                detail = self._fetch_detail(item["source_product_code"])
+                detail = self._fetch_detail(item["source_product_code"], item.get("price"))
                 item.update(detail)
             except Exception as e:
-                print(f"[metaldiy] 상세 오류 (itemId={item['source_product_code']}): {e}")
+                logger.warning(f"[metaldiy] 상세 오류 (itemId={item['source_product_code']}): {e}")
             if (i + 1) % 100 == 0:
-                print(f"[metaldiy] 상세 수집 진행: {i + 1}/{len(items)}")
+                logger.info(f"[metaldiy] 상세 수집 진행: {i + 1}/{len(items)}")
             time.sleep(0.3)
 
-        print(f"[metaldiy] 전체 수집 완료: {len(items)}건")
+        logger.info(f"[metaldiy] 전체 수집 완료: {len(items)}건")
         return {
             "success": True,
             "total_items": len(items),
@@ -125,7 +127,7 @@ class MetaldiyCollector(BaseCollector):
             "items": items,
         }
 
-    def _fetch_detail(self, item_id: str) -> dict:
+    def _fetch_detail(self, item_id: str, price: int = None) -> dict:
         url = f"{BASE_URL}/item/itemView.do?itemId={item_id}"
         resp = requests.get(url, headers=HEADERS, timeout=15)
         resp.encoding = "utf-8"
@@ -222,6 +224,7 @@ class MetaldiyCollector(BaseCollector):
             "detail_description": detail_html,
             "shipping_fee": shipping_fee,
             "shipping_condition": shipping_condition,
+            "product_url": f"{BASE_URL}/item/itemView.do?itemId={item_id}",
             "extra": {
                 "옵션": options_text,
                 "옵션가": option_prices_text,

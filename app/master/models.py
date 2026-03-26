@@ -18,6 +18,9 @@ class MasterProduct(db.Model):
 
     product_url        = db.Column(db.String(1024))                # 도매처 상품 링크
     detail_description = db.Column(db.Text)                       # 본문상세설명 (HTML)
+    origin             = db.Column(db.String(128))                # 원산지
+    shipping_fee       = db.Column(db.Integer)                    # 배송비
+    shipping_condition = db.Column(db.String(256))                # 무료배송조건
     edited_name        = db.Column(db.String(512))                # 가공된 상품명 (NULL = 미가공)
     category_id        = db.Column(db.String(64))                 # 네이버 카테고리 ID (NULL = 미가공)
     is_prep_ready      = db.Column(db.Boolean, default=False)     # True = 등록 가능
