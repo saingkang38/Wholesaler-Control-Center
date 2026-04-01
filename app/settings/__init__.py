@@ -1,12 +1,13 @@
 from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify
 from flask_login import login_required
 from app.infrastructure import db
-from app.settings.models import MarginRule, PrepSetting
+from app.settings.models import MarginRule, PrepSetting, SmartStoreSetting
 from app.store.models import NaverStore
 
 settings_bp = Blueprint("settings", __name__)
 
-_margin_rules_cache = None
+# 세션 분리 오류 방지: ORM 객체 대신 튜플 (price_from, price_to, margin_rate) 캐시
+_margin_rules_cache = None  # List[tuple] or None
 
 
 def _invalidate_margin_cache():
@@ -15,9 +16,16 @@ def _invalidate_margin_cache():
 
 
 def get_margin_rules():
+    """마진 설정 페이지 표시용 — 항상 현재 세션에서 신선하게 조회"""
+    return MarginRule.query.order_by(MarginRule.price_from).all()
+
+
+def _get_margin_tuples():
+    """apply_margin 내부용 — 세션 분리 위험 없는 튜플 캐시"""
     global _margin_rules_cache
     if _margin_rules_cache is None:
-        _margin_rules_cache = MarginRule.query.order_by(MarginRule.price_from).all()
+        rules = MarginRule.query.order_by(MarginRule.price_from).all()
+        _margin_rules_cache = [(r.price_from, r.price_to, r.margin_rate) for r in rules]
     return _margin_rules_cache
 
 
@@ -25,11 +33,10 @@ def apply_margin(wholesale_price: int) -> int:
     """도매가에 마진율 적용 후 10원 단위 반올림"""
     if not wholesale_price or wholesale_price <= 0:
         return 0
-    rules = get_margin_rules()
-    for rule in rules:
-        if wholesale_price >= rule.price_from:
-            if rule.price_to is None or wholesale_price <= rule.price_to:
-                applied = wholesale_price * (1 + rule.margin_rate)
+    for price_from, price_to, margin_rate in _get_margin_tuples():
+        if wholesale_price >= price_from:
+            if price_to is None or wholesale_price <= price_to:
+                applied = wholesale_price * (1 + margin_rate)
                 return round(applied / 10) * 10
     return wholesale_price
 
@@ -155,6 +162,88 @@ def pick_folder():
         return jsonify({"path": folder or None})
     except Exception as e:
         return jsonify({"error": str(e), "path": None}), 500
+
+
+@settings_bp.route("/settings/smartstore")
+@login_required
+def smartstore_setting_page():
+    setting = SmartStoreSetting.get()
+    stores = NaverStore.query.filter_by(is_active=True).all()
+    return render_template("smartstore_settings.html", setting=setting, stores=stores)
+
+
+@settings_bp.route("/settings/smartstore/save", methods=["POST"])
+@login_required
+def save_smartstore_setting():
+    s = SmartStoreSetting.get()
+    def _int(key, default):
+        try:
+            return int(request.form.get(key, default))
+        except (ValueError, TypeError):
+            return default
+
+    s.delivery_method        = request.form.get("delivery_method", s.delivery_method)
+    s.delivery_fee_type      = request.form.get("delivery_fee_type", s.delivery_fee_type)
+    s.delivery_fee           = _int("delivery_fee", s.delivery_fee)
+    s.free_condition_amount  = _int("free_condition_amount", s.free_condition_amount)
+    s.delivery_fee_pay_type  = request.form.get("delivery_fee_pay_type", s.delivery_fee_pay_type)
+    s.return_fee             = _int("return_fee", s.return_fee)
+    s.exchange_fee           = _int("exchange_fee", s.exchange_fee)
+    s.dispatch_days          = _int("dispatch_days", s.dispatch_days)
+    s.return_location_name   = request.form.get("return_location_name", "")
+    s.return_zip             = request.form.get("return_zip", "")
+    s.return_address         = request.form.get("return_address", "")
+    s.return_address_detail  = request.form.get("return_address_detail", "")
+    s.departure_location_name  = request.form.get("departure_location_name", "")
+    s.departure_zip            = request.form.get("departure_zip", "")
+    s.departure_address        = request.form.get("departure_address", "")
+    s.departure_address_detail = request.form.get("departure_address_detail", "")
+    s.delivery_template_code = request.form.get("delivery_template_code", "") or None
+    s.delivery_template_name = request.form.get("delivery_template_name", "") or None
+    s.as_phone = request.form.get("as_phone", "")
+    s.as_guide = request.form.get("as_guide", "")
+    db.session.commit()
+    flash("저장됐습니다.", "success")
+    return redirect(url_for("settings.smartstore_setting_page"))
+
+
+@settings_bp.route("/api/naver/return-locations")
+@login_required
+def api_return_locations():
+    store_id = request.args.get("store_id", type=int)
+    store = NaverStore.query.get_or_404(store_id)
+    try:
+        from store.naver.seller import get_return_locations
+        data = get_return_locations(client_id=store.client_id, client_secret=store.client_secret)
+        return jsonify({"ok": True, "locations": data})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@settings_bp.route("/api/naver/departure-locations")
+@login_required
+def api_departure_locations():
+    store_id = request.args.get("store_id", type=int)
+    store = NaverStore.query.get_or_404(store_id)
+    try:
+        from store.naver.seller import get_departure_locations
+        data = get_departure_locations(client_id=store.client_id, client_secret=store.client_secret)
+        return jsonify({"ok": True, "locations": data})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@settings_bp.route("/api/naver/delivery-templates")
+@login_required
+def api_delivery_templates():
+    store_id = request.args.get("store_id", type=int)
+    store = NaverStore.query.get_or_404(store_id)
+    try:
+        from store.naver.seller import get_delivery_templates
+        data = get_delivery_templates(client_id=store.client_id, client_secret=store.client_secret)
+        return jsonify({"ok": True, "templates": data})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @settings_bp.route("/settings/seller-account")

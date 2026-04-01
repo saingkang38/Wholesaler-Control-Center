@@ -86,6 +86,51 @@
         </tfoot>
     </table>
 
+    {% set total_signals = signal_counts.SUSPEND_NEEDED + signal_counts.DISCONTINUE_NEEDED + signal_counts.PRICE_UP_NEEDED + signal_counts.PRICE_DOWN_POSSIBLE + signal_counts.RESUME_POSSIBLE %}
+    {% if total_signals > 0 %}
+    <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:16px;">
+        {% if signal_counts.SUSPEND_NEEDED > 0 %}
+        <a href="/actions?status=pending&store_id={{ selected_store.id }}&signal_type=SUSPEND_NEEDED" style="text-decoration:none;">
+            <div style="background:#fef3c7; border:1px solid #fcd34d; border-radius:8px; padding:12px 18px; text-align:center; min-width:100px;">
+                <div style="font-size:22px; font-weight:bold; color:#d97706;">{{ signal_counts.SUSPEND_NEEDED }}</div>
+                <div style="font-size:12px; color:#92400e; margin-top:3px;">품절 처리 필요</div>
+            </div>
+        </a>
+        {% endif %}
+        {% if signal_counts.DISCONTINUE_NEEDED > 0 %}
+        <a href="/actions?status=pending&store_id={{ selected_store.id }}&signal_type=DISCONTINUE_NEEDED" style="text-decoration:none;">
+            <div style="background:#f3f4f6; border:1px solid #d1d5db; border-radius:8px; padding:12px 18px; text-align:center; min-width:100px;">
+                <div style="font-size:22px; font-weight:bold; color:#374151;">{{ signal_counts.DISCONTINUE_NEEDED }}</div>
+                <div style="font-size:12px; color:#6b7280; margin-top:3px;">단종 처리 필요</div>
+            </div>
+        </a>
+        {% endif %}
+        {% set price_total = signal_counts.PRICE_UP_NEEDED + signal_counts.PRICE_DOWN_POSSIBLE %}
+        {% if price_total > 0 %}
+        <a href="/actions?status=pending&store_id={{ selected_store.id }}&signal_type=PRICE" style="text-decoration:none;">
+            <div style="background:#fee2e2; border:1px solid #fca5a5; border-radius:8px; padding:12px 18px; text-align:center; min-width:100px;">
+                <div style="font-size:22px; font-weight:bold; color:#dc2626;">{{ price_total }}</div>
+                <div style="font-size:12px; color:#991b1b; margin-top:3px;">가격 변동</div>
+            </div>
+        </a>
+        {% endif %}
+        {% if signal_counts.RESUME_POSSIBLE > 0 %}
+        <a href="/actions?status=pending&store_id={{ selected_store.id }}&signal_type=RESUME_POSSIBLE" style="text-decoration:none;">
+            <div style="background:#d1fae5; border:1px solid #6ee7b7; border-radius:8px; padding:12px 18px; text-align:center; min-width:100px;">
+                <div style="font-size:22px; font-weight:bold; color:#059669;">{{ signal_counts.RESUME_POSSIBLE }}</div>
+                <div style="font-size:12px; color:#065f46; margin-top:3px;">판매 재개 가능</div>
+            </div>
+        </a>
+        {% endif %}
+        <a href="/actions?status=pending&store_id={{ selected_store.id }}" style="text-decoration:none; display:flex; align-items:center;">
+            <div style="background:#eff6ff; border:1px solid #bfdbfe; border-radius:8px; padding:12px 18px; text-align:center; min-width:100px;">
+                <div style="font-size:22px; font-weight:bold; color:#2563eb;">{{ total_signals }}</div>
+                <div style="font-size:12px; color:#1e40af; margin-top:3px;">전체 변동사항 보기</div>
+            </div>
+        </a>
+    </div>
+    {% endif %}
+
     {% if unmatched > 0 %}
     <div class="unmatched-box">
         ⚠ 도매처 미매칭 상품 <strong>{{ unmatched }}건</strong> — 판매자관리코드가 없거나 prefix가 맞지 않는 상품입니다.

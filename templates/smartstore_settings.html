@@ -1,0 +1,227 @@
+{% extends "base.html" %}
+{% block title %}스마트스토어 등록 설정{% endblock %}
+{% block content %}
+<style>
+  .section-title { font-size:15px; font-weight:bold; margin-bottom:14px; padding-bottom:8px; border-bottom:2px solid #eee; }
+  .field-group { margin-bottom:16px; }
+  .field-group label { display:block; font-size:13px; font-weight:bold; margin-bottom:5px; color:#333; }
+  .field-group input, .field-group select, .field-group textarea {
+    width:100%; padding:8px 10px; border:1px solid #ccc; border-radius:4px; font-size:13px; box-sizing:border-box;
+  }
+  .field-group textarea { height:70px; resize:vertical; }
+  .field-group .hint { font-size:11px; color:#999; margin-top:3px; }
+  .row-2 { display:grid; grid-template-columns:1fr 1fr; gap:16px; }
+  .row-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:16px; }
+  .btn-primary { padding:9px 24px; background:#2c3e50; color:white; border:none; border-radius:4px; font-size:14px; cursor:pointer; }
+  .btn-primary:hover { background:#1a252f; }
+  .btn-naver { padding:7px 14px; background:#03C75A; color:white; border:none; border-radius:4px; font-size:13px; cursor:pointer; margin-bottom:10px; }
+  .btn-naver:hover { background:#02a84c; }
+  .location-list { border:1px solid #ddd; border-radius:4px; max-height:180px; overflow-y:auto; margin-bottom:10px; display:none; }
+  .location-item { padding:10px 14px; cursor:pointer; font-size:13px; border-bottom:1px solid #f0f0f0; }
+  .location-item:last-child { border-bottom:none; }
+  .location-item:hover { background:#f5f5f5; }
+  .location-item .loc-name { font-weight:bold; }
+  .location-item .loc-addr { color:#666; font-size:12px; margin-top:2px; }
+  .store-select { margin-bottom:12px; }
+  .store-select select { width:auto; min-width:200px; }
+</style>
+
+<div style="max-width:700px;">
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+  {% for cat, msg in messages %}
+  <div style="padding:10px 14px; border-radius:6px; margin-bottom:16px;
+      background:{{ '#d4edda' if cat == 'success' else '#f8d7da' }};
+      color:{{ '#155724' if cat == 'success' else '#721c24' }}; font-size:13px;">{{ msg }}</div>
+  {% endfor %}
+  {% endwith %}
+
+  <form method="POST" action="/settings/smartstore/save">
+
+    <!-- 배송 설정 -->
+    <div class="card" style="margin-bottom:20px;">
+      <div class="section-title">배송 설정</div>
+      <div class="row-2">
+        <div class="field-group">
+          <label>배송방법</label>
+          <input type="text" name="delivery_method" value="{{ setting.delivery_method or '택배,소포,등기' }}">
+        </div>
+        <div class="field-group">
+          <label>발송기준일 (일)</label>
+          <input type="number" name="dispatch_days" value="{{ setting.dispatch_days or 1 }}" min="0" max="30">
+        </div>
+      </div>
+      <div class="row-3">
+        <div class="field-group">
+          <label>배송비유형</label>
+          <select name="delivery_fee_type">
+            {% for v in ['조건부무료','무료','유료','착불'] %}
+            <option value="{{ v }}" {{ 'selected' if setting.delivery_fee_type == v }}>{{ v }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field-group">
+          <label>기본배송비 (원)</label>
+          <input type="number" name="delivery_fee" value="{{ setting.delivery_fee or 3000 }}">
+        </div>
+        <div class="field-group">
+          <label>조건부무료 기준금액 (원)</label>
+          <input type="number" name="free_condition_amount" value="{{ setting.free_condition_amount or 30000 }}">
+        </div>
+      </div>
+      <div class="row-3">
+        <div class="field-group">
+          <label>배송비 결제방식</label>
+          <select name="delivery_fee_pay_type">
+            {% for v in ['착불또는선결제','선결제','착불'] %}
+            <option value="{{ v }}" {{ 'selected' if setting.delivery_fee_pay_type == v }}>{{ v }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field-group">
+          <label>반품배송비 (원)</label>
+          <input type="number" name="return_fee" value="{{ setting.return_fee or 2500 }}">
+        </div>
+        <div class="field-group">
+          <label>교환배송비 (원)</label>
+          <input type="number" name="exchange_fee" value="{{ setting.exchange_fee or 2500 }}">
+        </div>
+      </div>
+    </div>
+
+    <!-- 반품지 -->
+    <div class="card" style="margin-bottom:20px;">
+      <div class="section-title">반품지 (상품반송지)</div>
+      {% if stores %}
+      <div class="store-select">
+        <select id="returnStoreSelect">
+          {% for s in stores %}<option value="{{ s.id }}">{{ s.store_name }}</option>{% endfor %}
+        </select>
+        <button type="button" class="btn-naver" style="margin-left:8px;" onclick="loadReturnLocations()">네이버에서 불러오기</button>
+      </div>
+      <div class="location-list" id="returnList"></div>
+      {% endif %}
+      <div class="row-2">
+        <div class="field-group">
+          <label>반품지 명칭</label>
+          <input type="text" name="return_location_name" id="returnName" value="{{ setting.return_location_name or '' }}">
+        </div>
+        <div class="field-group">
+          <label>우편번호</label>
+          <input type="text" name="return_zip" id="returnZip" value="{{ setting.return_zip or '' }}">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>기본주소</label>
+        <input type="text" name="return_address" id="returnAddress" value="{{ setting.return_address or '' }}">
+      </div>
+      <div class="field-group">
+        <label>상세주소</label>
+        <input type="text" name="return_address_detail" id="returnAddressDetail" value="{{ setting.return_address_detail or '' }}">
+      </div>
+    </div>
+
+    <!-- 출고지 -->
+    <div class="card" style="margin-bottom:20px;">
+      <div class="section-title">출고지</div>
+      {% if stores %}
+      <div class="store-select">
+        <select id="departureStoreSelect">
+          {% for s in stores %}<option value="{{ s.id }}">{{ s.store_name }}</option>{% endfor %}
+        </select>
+        <button type="button" class="btn-naver" style="margin-left:8px;" onclick="loadDepartureLocations()">네이버에서 불러오기</button>
+      </div>
+      <div class="location-list" id="departureList"></div>
+      {% endif %}
+      <div class="row-2">
+        <div class="field-group">
+          <label>출고지 명칭</label>
+          <input type="text" name="departure_location_name" id="departureName" value="{{ setting.departure_location_name or '' }}">
+        </div>
+        <div class="field-group">
+          <label>우편번호</label>
+          <input type="text" name="departure_zip" id="departureZip" value="{{ setting.departure_zip or '' }}">
+        </div>
+      </div>
+      <div class="field-group">
+        <label>기본주소</label>
+        <input type="text" name="departure_address" id="departureAddress" value="{{ setting.departure_address or '' }}">
+      </div>
+      <div class="field-group">
+        <label>상세주소</label>
+        <input type="text" name="departure_address_detail" id="departureAddressDetail" value="{{ setting.departure_address_detail or '' }}">
+      </div>
+    </div>
+
+    <!-- A/S -->
+    <div class="card" style="margin-bottom:20px;">
+      <div class="section-title">A/S 정보</div>
+      <div class="field-group">
+        <label>A/S 전화번호</label>
+        <input type="text" name="as_phone" value="{{ setting.as_phone or '' }}" placeholder="예: 010-1234-5678">
+      </div>
+      <div class="field-group">
+        <label>A/S 안내</label>
+        <textarea name="as_guide" placeholder="A/S 안내 문구">{{ setting.as_guide or '' }}</textarea>
+      </div>
+    </div>
+
+    <button type="submit" class="btn-primary">저장</button>
+  </form>
+</div>
+
+<script>
+function renderLocations(listId, locations, fillFn) {
+  const el = document.getElementById(listId);
+  el.innerHTML = '';
+  if (!locations || !locations.length) {
+    el.innerHTML = '<div style="padding:12px;color:#999;font-size:13px;">불러온 주소가 없습니다.</div>';
+    el.style.display = 'block';
+    return;
+  }
+  locations.forEach(loc => {
+    const div = document.createElement('div');
+    div.className = 'location-item';
+    const name = loc.locationName || loc.name || '';
+    const zip  = loc.postalCode || loc.zipCode || loc.zip || '';
+    const base = loc.baseAddress || loc.address || '';
+    const detail = loc.detailAddress || loc.addressDetail || '';
+    div.innerHTML = `<div class="loc-name">${name}</div><div class="loc-addr">[${zip}] ${base} ${detail}</div>`;
+    div.onclick = () => { fillFn(name, zip, base, detail); el.style.display = 'none'; };
+    el.appendChild(div);
+  });
+  el.style.display = 'block';
+}
+
+function loadReturnLocations() {
+  const storeId = document.getElementById('returnStoreSelect').value;
+  fetch(`/api/naver/return-locations?store_id=${storeId}`)
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok) { alert('오류: ' + d.error); return; }
+      renderLocations('returnList', d.locations, (name, zip, addr, detail) => {
+        document.getElementById('returnName').value = name;
+        document.getElementById('returnZip').value = zip;
+        document.getElementById('returnAddress').value = addr;
+        document.getElementById('returnAddressDetail').value = detail;
+      });
+    });
+}
+
+
+function loadDepartureLocations() {
+  const storeId = document.getElementById('departureStoreSelect').value;
+  fetch(`/api/naver/departure-locations?store_id=${storeId}`)
+    .then(r => r.json())
+    .then(d => {
+      if (!d.ok) { alert('오류: ' + d.error); return; }
+      renderLocations('departureList', d.locations, (name, zip, addr, detail) => {
+        document.getElementById('departureName').value = name;
+        document.getElementById('departureZip').value = zip;
+        document.getElementById('departureAddress').value = addr;
+        document.getElementById('departureAddressDetail').value = detail;
+      });
+    });
+}
+</script>
+{% endblock %}

@@ -46,7 +46,46 @@
     background: white; border: 1px solid #d1d5db; text-decoration: none; color: #333;
   }
   .pagination span.current { background: #2c3e50; color: white; border-color: #2c3e50; }
+
+  /* 진행 모달 */
+  #progressModal {
+    display: none; position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    z-index: 9999; align-items: center; justify-content: center;
+  }
+  #progressModal.show { display: flex; }
+  .progress-box {
+    background: white; border-radius: 12px; padding: 28px 32px;
+    width: 480px; max-width: 90vw; box-shadow: 0 8px 32px rgba(0,0,0,0.2);
+  }
+  .progress-title { font-size: 16px; font-weight: bold; margin-bottom: 16px; color: #1e293b; }
+  .progress-bar-wrap { background: #e5e7eb; border-radius: 99px; height: 12px; margin-bottom: 10px; overflow: hidden; }
+  .progress-bar-fill { height: 100%; border-radius: 99px; background: #2563eb; transition: width 0.2s; }
+  .progress-stats { font-size: 13px; color: #64748b; margin-bottom: 14px; }
+  .progress-log {
+    background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px;
+    padding: 10px 12px; height: 160px; overflow-y: auto;
+    font-size: 12px; font-family: monospace; color: #334155;
+  }
+  .progress-log .log-ok { color: #059669; }
+  .progress-log .log-fail { color: #dc2626; }
+  .progress-log .log-skip { color: #9ca3af; }
+  .progress-done-btns { margin-top: 16px; text-align: right; }
 </style>
+
+<!-- 진행 모달 -->
+<div id="progressModal">
+  <div class="progress-box">
+    <div class="progress-title" id="progressTitle">처리 중...</div>
+    <div class="progress-bar-wrap">
+      <div class="progress-bar-fill" id="progressBar" style="width:0%"></div>
+    </div>
+    <div class="progress-stats" id="progressStats">0 / 0</div>
+    <div class="progress-log" id="progressLog"></div>
+    <div class="progress-done-btns" id="progressDoneBtns" style="display:none;">
+      <button class="btn btn-bulk" onclick="location.reload()">닫기 (새로고침)</button>
+    </div>
+  </div>
+</div>
 
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
@@ -61,10 +100,35 @@
   <div class="tab-bar">
     <a href="/actions?status=pending&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'pending' }}">대기중</a>
     <a href="/actions?status=executed&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'executed' }}">실행완료</a>
+    <a href="/actions?status=failed&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'failed' }}" style="{{ 'color:white;' if status_filter == 'failed' else 'color:#dc2626;' }}">
+      실패{% if failed_count > 0 %} <span style="background:#dc2626;color:white;border-radius:10px;padding:1px 7px;font-size:11px;">{{ failed_count }}</span>{% endif %}
+    </a>
     <a href="/actions?status=reverted&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'reverted' }}">되돌림</a>
     <a href="/actions?status=rejected&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'rejected' }}">거절</a>
     <a href="/actions?status=skipped&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'skipped' }}">건너뜀</a>
   </div>
+
+  <!-- 신호 타입 필터 -->
+  {% if status_filter == 'pending' %}
+  {% set sq = ("&store_id=" ~ store_filter) if store_filter else "" %}
+  <div style="margin-bottom:14px; display:flex; gap:6px; flex-wrap:wrap;">
+    <a href="/actions?status=pending&per_page={{ per_page }}{{ sq }}"
+       style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none;
+              background:{{ '#2c3e50' if not signal_type_filter else '#e9ecef' }}; color:{{ 'white' if not signal_type_filter else '#333' }};">전체</a>
+    <a href="/actions?status=pending&per_page={{ per_page }}&signal_type=SUSPEND_NEEDED{{ sq }}"
+       style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none;
+              background:{{ '#d97706' if signal_type_filter == 'SUSPEND_NEEDED' else '#fef3c7' }}; color:{{ 'white' if signal_type_filter == 'SUSPEND_NEEDED' else '#92400e' }};">품절</a>
+    <a href="/actions?status=pending&per_page={{ per_page }}&signal_type=DISCONTINUE_NEEDED{{ sq }}"
+       style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none;
+              background:{{ '#374151' if signal_type_filter == 'DISCONTINUE_NEEDED' else '#f3f4f6' }}; color:{{ 'white' if signal_type_filter == 'DISCONTINUE_NEEDED' else '#374151' }};">단종</a>
+    <a href="/actions?status=pending&per_page={{ per_page }}&signal_type=PRICE{{ sq }}"
+       style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none;
+              background:{{ '#dc2626' if signal_type_filter == 'PRICE' else '#fee2e2' }}; color:{{ 'white' if signal_type_filter == 'PRICE' else '#991b1b' }};">가격변동</a>
+    <a href="/actions?status=pending&per_page={{ per_page }}&signal_type=RESUME_POSSIBLE{{ sq }}"
+       style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none;
+              background:{{ '#059669' if signal_type_filter == 'RESUME_POSSIBLE' else '#d1fae5' }}; color:{{ 'white' if signal_type_filter == 'RESUME_POSSIBLE' else '#065f46' }};">판매재개</a>
+  </div>
+  {% endif %}
 
   <!-- 스토어 필터 -->
   <div style="margin-bottom:14px;">
@@ -95,6 +159,10 @@
     <button class="btn btn-bulk" onclick="bulkResolve('approve')">선택 승인</button>
     <button class="btn btn-reject" onclick="bulkResolve('reject')">선택 거절</button>
     <button class="btn btn-skip" onclick="bulkResolve('skip')">선택 건너뜀</button>
+    {% elif status_filter == 'failed' %}
+    <span style="margin-left:10px; font-size:13px; color:#666;">선택:</span>
+    <button class="btn" style="background:#2563eb;color:white;" onclick="bulkRetry()">선택 재시도</button>
+    <button class="btn btn-exclude" onclick="bulkExcludeFailed()">선택 예외처리</button>
     {% endif %}
   </div>
 
@@ -102,7 +170,7 @@
   <table>
     <thead>
       <tr>
-        {% if status_filter == 'pending' %}
+        {% if status_filter in ('pending', 'failed') %}
         <th><input type="checkbox" id="checkAll" onclick="toggleAll(this)"></th>
         {% endif %}
         <th>도매처</th>
@@ -114,13 +182,14 @@
         <th>마진적용가격</th>
         <th>판매가격</th>
         <th>감지일시</th>
-        {% if status_filter in ('pending', 'executed') %}<th>처리</th>{% endif %}
+        {% if status_filter == 'failed' %}<th>오류 내용</th>{% endif %}
+        {% if status_filter in ('pending', 'executed', 'failed') %}<th>처리</th>{% endif %}
       </tr>
     </thead>
     <tbody>
       {% for row in rows %}
-      <tr id="row-{{ row.id }}">
-        {% if status_filter == 'pending' %}
+      <tr id="row-{{ row.id }}" data-store-product-id="{{ row.store_product_id }}">
+        {% if status_filter in ('pending', 'failed') %}
         <td><input type="checkbox" class="row-check" value="{{ row.id }}"></td>
         {% endif %}
         <td style="font-size:13px; color:#666;">{{ row.wholesaler_name }}</td>
@@ -132,6 +201,9 @@
         <td>{{ '{:,}'.format(row.margin_price) if row.margin_price else '-' }}</td>
         <td>{{ '{:,}'.format(row.sale_price) if row.sale_price else '-' }}</td>
         <td>{{ row.detected_at }}</td>
+        {% if status_filter == 'failed' %}
+        <td style="font-size:12px; color:#dc2626; max-width:260px;">{{ row.error_message or '-' }}</td>
+        {% endif %}
         {% if status_filter == 'pending' %}
         <td style="white-space:nowrap;">
           <button class="btn btn-approve" onclick="resolve({{ row.id }}, 'approve')">승인</button>
@@ -142,6 +214,11 @@
         {% elif status_filter == 'executed' %}
         <td>
           <button class="btn" style="background:#7c3aed;color:white;" onclick="revert({{ row.id }})">되돌리기</button>
+        </td>
+        {% elif status_filter == 'failed' %}
+        <td style="white-space:nowrap;">
+          <button class="btn" style="background:#2563eb;color:white;" onclick="retry({{ row.id }}, this)">재시도</button>
+          <button class="btn btn-exclude" onclick="exclude({{ row.store_product_id }}, this)">예외</button>
         </td>
         {% endif %}
       </tr>
@@ -238,18 +315,154 @@ function revert(id) {
   .catch(() => alert('처리 중 오류가 발생했습니다.'));
 }
 
-function bulkResolve(action) {
-  const checked = [...document.querySelectorAll('.row-check:checked')].map(c => c.value);
-  if (checked.length === 0) { alert('선택된 항목이 없습니다.'); return; }
-  if (!confirm(`선택한 ${checked.length}개를 ${action === 'approve' ? '승인' : action === 'reject' ? '거절' : '건너뜀'} 처리할까요?`)) return;
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-  Promise.all(checked.map(id =>
-    fetch(`/actions/${id}/resolve`, {
+function openProgressModal(label, total) {
+  document.getElementById('progressTitle').textContent = `${label} 처리 중... (0 / ${total})`;
+  document.getElementById('progressBar').style.width = '0%';
+  document.getElementById('progressStats').textContent = `성공 0 / 실패 0 / 전체 ${total}`;
+  document.getElementById('progressLog').innerHTML = '';
+  document.getElementById('progressDoneBtns').style.display = 'none';
+  document.getElementById('progressModal').classList.add('show');
+}
+
+function updateProgressModal(current, total, ok, fail, name, status) {
+  const pct = Math.round(current / total * 100);
+  document.getElementById('progressTitle').textContent = `처리 중... (${current} / ${total})`;
+  document.getElementById('progressBar').style.width = pct + '%';
+  document.getElementById('progressStats').textContent = `성공 ${ok} / 실패 ${fail} / 전체 ${total}`;
+  const log = document.getElementById('progressLog');
+  const cls = status === 'ok' ? 'log-ok' : status === 'fail' ? 'log-fail' : 'log-skip';
+  const icon = status === 'ok' ? '✓' : status === 'fail' ? '✗' : '—';
+  const line = document.createElement('div');
+  line.className = cls;
+  line.textContent = `${icon} [${current}/${total}] ${name || '(상품명 없음)'}`;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+}
+
+function finishProgressModal(ok, fail) {
+  const bar = document.getElementById('progressBar');
+  bar.style.width = '100%';
+  bar.style.background = fail > 0 ? '#f59e0b' : '#059669';
+  document.getElementById('progressTitle').textContent =
+    fail > 0 ? `완료 — ${ok}개 성공, ${fail}개 실패 (실패 탭 확인)` : `완료 — ${ok}개 모두 성공`;
+  document.getElementById('progressDoneBtns').style.display = 'block';
+}
+
+async function bulkResolve(action) {
+  const checked = [...document.querySelectorAll('.row-check:checked')];
+  if (checked.length === 0) { alert('선택된 항목이 없습니다.'); return; }
+  const label = action === 'approve' ? '승인' : action === 'reject' ? '거절' : '건너뜀';
+  if (!confirm(`선택한 ${checked.length}개를 ${label} 처리할까요?`)) return;
+
+  // 각 row에서 상품명 추출
+  const items = checked.map(c => {
+    const tr = c.closest('tr');
+    const name = tr ? (tr.querySelector('td:nth-child(5)')?.textContent?.trim() || '') : '';
+    return {id: c.value, name};
+  });
+
+  openProgressModal(label, items.length);
+
+  let ok = 0, fail = 0;
+  for (let i = 0; i < items.length; i++) {
+    const {id, name} = items[i];
+    let status = 'ok';
+    try {
+      const r = await fetch(`/actions/${id}/resolve`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action})
+      });
+      const d = await r.json();
+      if (d.ok) { ok++; status = 'ok'; }
+      else { fail++; status = 'fail'; }
+    } catch { fail++; status = 'fail'; }
+
+    updateProgressModal(i + 1, items.length, ok, fail, name, status);
+
+    if (action === 'approve') await sleep(300);
+  }
+  finishProgressModal(ok, fail);
+}
+
+async function bulkRetry() {
+  const checked = [...document.querySelectorAll('.row-check:checked')];
+  if (checked.length === 0) { alert('선택된 항목이 없습니다.'); return; }
+  if (!confirm(`선택한 ${checked.length}개를 대기중으로 되돌리고 즉시 승인 처리할까요?`)) return;
+
+  const items = checked.map(c => {
+    const tr = c.closest('tr');
+    const name = tr ? (tr.querySelector('td:nth-child(5)')?.textContent?.trim() || '') : '';
+    return {id: c.value, name};
+  });
+
+  openProgressModal('재시도', items.length);
+
+  let ok = 0, fail = 0;
+  for (let i = 0; i < items.length; i++) {
+    const {id, name} = items[i];
+    let status = 'ok';
+    try {
+      // 먼저 pending으로 되돌리기
+      await fetch(`/actions/${id}/retry`, {
+        method: 'POST', headers: {'Content-Type': 'application/json'}
+      });
+      // 바로 승인
+      const r = await fetch(`/actions/${id}/resolve`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({action: 'approve'})
+      });
+      const d = await r.json();
+      if (d.ok) { ok++; status = 'ok'; } else { fail++; status = 'fail'; }
+    } catch { fail++; status = 'fail'; }
+
+    updateProgressModal(i + 1, items.length, ok, fail, name, status);
+    await sleep(300);
+  }
+  finishProgressModal(ok, fail);
+}
+
+function bulkExcludeFailed() {
+  const checked = [...document.querySelectorAll('.row-check:checked')];
+  if (checked.length === 0) { alert('선택된 항목이 없습니다.'); return; }
+  if (!confirm(`선택한 ${checked.length}개를 예외 등록할까요?\n이후 신호 감지에서 제외됩니다.`)) return;
+
+  const rows = checked.map(c => {
+    const tr = c.closest('tr');
+    const spId = tr ? tr.dataset.storeProductId : null;
+    return spId;
+  }).filter(Boolean);
+
+  Promise.all(rows.map(spId =>
+    fetch('/exclusions/add', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({action})
+      body: JSON.stringify({store_product_id: parseInt(spId)})
     }).then(r => r.json())
-  )).then(() => location.reload());
+  )).then(() => location.reload())
+  .catch(() => { alert('처리 중 오류가 발생했습니다.'); location.reload(); });
+}
+
+function retry(id, btn) {
+  btn.disabled = true;
+  fetch(`/actions/${id}/retry`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok) {
+      const row = document.getElementById('row-' + id);
+      if (row) row.remove();
+    } else {
+      alert('오류: ' + (data.error || '알 수 없는 오류'));
+      btn.disabled = false;
+    }
+  })
+  .catch(() => { alert('처리 중 오류가 발생했습니다.'); btn.disabled = false; });
 }
 </script>
 {% endblock %}

@@ -20,8 +20,9 @@ class ActionSignal(db.Model):
     current_value = db.Column(db.Text)   # JSON (현재 스토어 값)
     suggested_value = db.Column(db.Text) # JSON (제안값)
 
-    # 처리 상태: pending / approved / rejected / executed / skipped
+    # 처리 상태: pending / executed / reverted / rejected / skipped / failed
     status = db.Column(db.String(16), default="pending", nullable=False)
+    error_message = db.Column(db.Text, nullable=True)  # 실패 시 Naver API 오류 메시지
 
     detected_at = db.Column(db.DateTime, default=datetime.utcnow)
     resolved_at = db.Column(db.DateTime, nullable=True)

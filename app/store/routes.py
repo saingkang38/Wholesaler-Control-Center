@@ -32,6 +32,9 @@ def store_overview_page():
     unmatched = 0
     totals = {"total": 0, "sale": 0, "soldout": 0, "price_changes": 0}
 
+    signal_counts = {"SUSPEND_NEEDED": 0, "DISCONTINUE_NEEDED": 0,
+                     "PRICE_UP_NEEDED": 0, "PRICE_DOWN_POSSIBLE": 0, "RESUME_POSSIBLE": 0}
+
     if store_id:
         rows = db.session.query(
             Wholesaler.id,
@@ -77,6 +80,18 @@ def store_overview_page():
             naver_store_id=store_id, master_product_id=None
         ).count()
 
+        # 신호 타입별 카운트
+        sig_rows = db.session.query(
+            ActionSignal.signal_type,
+            func.count(ActionSignal.id)
+        ).join(StoreProduct, ActionSignal.store_product_id == StoreProduct.id)\
+         .filter(StoreProduct.naver_store_id == store_id)\
+         .filter(ActionSignal.status == "pending")\
+         .group_by(ActionSignal.signal_type).all()
+        for sig_type, cnt in sig_rows:
+            if sig_type in signal_counts:
+                signal_counts[sig_type] = cnt
+
     return render_template(
         "store_overview.html",
         stores=stores,
@@ -84,6 +99,7 @@ def store_overview_page():
         data=data,
         unmatched=unmatched,
         totals=totals,
+        signal_counts=signal_counts,
     )
 
 
@@ -91,20 +107,33 @@ def store_overview_page():
 @login_required
 def store_overview_sync():
     from app.store import _sync_single_store
+    from app.actions import detect_action_signals
     store_id = request.form.get("store_id", type=int)
     store = NaverStore.query.get_or_404(store_id)
     try:
         stats = _sync_single_store(store)
+
+        # 해당 스토어에 매칭된 도매처 목록 조회 후 신호 감지
+        wholesaler_ids = db.session.query(MasterProduct.wholesaler_id.distinct())\
+            .join(StoreProduct, StoreProduct.master_product_id == MasterProduct.id)\
+            .filter(StoreProduct.naver_store_id == store_id).all()
+        sig_total = {}
+        for (wid,) in wholesaler_ids:
+            sig = detect_action_signals(wid)
+            for k, v in sig.items():
+                sig_total[k] = sig_total.get(k, 0) + v
+
+        sig_summary = f"품절 {sig_total.get('SUSPEND_NEEDED',0)} / 단종 {sig_total.get('DISCONTINUE_NEEDED',0)} / 가격 {sig_total.get('PRICE_UP_NEEDED',0)+sig_total.get('PRICE_DOWN_POSSIBLE',0)}"
         flash(
             f"동기화 완료 — 신규 {stats['created']}건 / 갱신 {stats['updated']}건 / "
-            f"매칭 {stats['matched']}건 / 미매칭 {stats['unmatched']}건",
+            f"매칭 {stats['matched']}건 / 미매칭 {stats['unmatched']}건  |  신호: {sig_summary}",
             "success"
         )
         db.session.add(SyncLog(
             naver_store_id=store_id,
             action="FULL_SYNC",
             result="success",
-            detail=f"신규 {stats['created']} / 갱신 {stats['updated']} / 매칭 {stats['matched']} / 미매칭 {stats['unmatched']}",
+            detail=f"신규 {stats['created']} / 갱신 {stats['updated']} / 매칭 {stats['matched']} / 미매칭 {stats['unmatched']} | {sig_summary}",
         ))
         db.session.commit()
     except Exception as e:

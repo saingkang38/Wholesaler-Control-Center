@@ -40,6 +40,53 @@ class PrepSetting(db.Model):
         return s
 
 
+class SmartStoreSetting(db.Model):
+    __tablename__ = "smartstore_settings"
+
+    id = db.Column(db.Integer, primary_key=True)
+
+    # 배송 설정
+    delivery_method        = db.Column(db.String(64),  default="택배,소포,등기")
+    delivery_fee_type      = db.Column(db.String(32),  default="조건부무료")
+    delivery_fee           = db.Column(db.Integer,     default=3000)
+    free_condition_amount  = db.Column(db.Integer,     default=30000)
+    delivery_fee_pay_type  = db.Column(db.String(32),  default="착불또는선결제")
+    return_fee             = db.Column(db.Integer,     default=2500)
+    exchange_fee           = db.Column(db.Integer,     default=2500)
+    dispatch_days          = db.Column(db.Integer,     default=1)
+
+    # 반품지
+    return_location_name   = db.Column(db.String(128))
+    return_zip             = db.Column(db.String(16))
+    return_address         = db.Column(db.String(256))
+    return_address_detail  = db.Column(db.String(256))
+
+    # 출고지
+    departure_location_name  = db.Column(db.String(128))
+    departure_zip            = db.Column(db.String(16))
+    departure_address        = db.Column(db.String(256))
+    departure_address_detail = db.Column(db.String(256))
+
+    # 배송비 템플릿 (네이버 템플릿 선택 시 사용)
+    delivery_template_code = db.Column(db.String(32))   # 템플릿 코드 (e.g. 3355516)
+    delivery_template_name = db.Column(db.String(128))  # 템플릿명 (표시용)
+
+    # A/S
+    as_phone = db.Column(db.String(32))
+    as_guide = db.Column(db.String(512))
+
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    @classmethod
+    def get(cls):
+        s = cls.query.first()
+        if not s:
+            s = cls()
+            db.session.add(s)
+            db.session.commit()
+        return s
+
+
 class MarginRule(db.Model):
     __tablename__ = "margin_rules"
 

@@ -34,12 +34,17 @@ def actions_page():
         per_page = 50
 
     store_filter = request.args.get("store_id", 0, type=int)
+    signal_type_filter = request.args.get("signal_type", "")
 
     from app.store.models import StoreProduct, NaverStore
     query = ActionSignal.query.filter_by(status=status_filter)
     if store_filter:
         sub = db.session.query(StoreProduct.id).filter_by(naver_store_id=store_filter).subquery()
         query = query.filter(ActionSignal.store_product_id.in_(sub))
+    if signal_type_filter == "PRICE":
+        query = query.filter(ActionSignal.signal_type.in_(["PRICE_UP_NEEDED", "PRICE_DOWN_POSSIBLE"]))
+    elif signal_type_filter:
+        query = query.filter(ActionSignal.signal_type == signal_type_filter)
     query = query.order_by(ActionSignal.detected_at.desc())
 
     all_stores = NaverStore.query.order_by(NaverStore.store_name).all()
@@ -53,17 +58,10 @@ def actions_page():
         signals = pagination.items
         total = pagination.total
 
-    from app.settings import apply_margin, get_margin_rules
-    margin_rules = get_margin_rules()
+    from app.settings import apply_margin
 
     def _apply_margin_cached(price):
-        if not price or price <= 0:
-            return 0
-        for rule in margin_rules:
-            if price >= rule.price_from:
-                if rule.price_to is None or price <= rule.price_to:
-                    return round(price * (1 + rule.margin_rate) / 10) * 10
-        return price
+        return apply_margin(price) if price else None
 
     rows = []
     for s in signals:
@@ -88,12 +86,16 @@ def actions_page():
             "sale_price": sale_price,
             "detected_at": s.detected_at.strftime("%Y-%m-%d %H:%M") if s.detected_at else "-",
             "status": s.status,
+            "error_message": s.error_message,
         })
     pending_count = ActionSignal.query.filter_by(status="pending").count()
+    failed_count = ActionSignal.query.filter_by(status="failed").count()
     return render_template("actions.html", rows=rows, status_filter=status_filter,
-                           pending_count=pending_count, pagination=pagination,
+                           pending_count=pending_count, failed_count=failed_count,
+                           pagination=pagination,
                            per_page=per_page, total=total,
-                           all_stores=all_stores, store_filter=store_filter)
+                           all_stores=all_stores, store_filter=store_filter,
+                           signal_type_filter=signal_type_filter)
 
 
 @actions_bp.route("/exclusions")
@@ -130,6 +132,41 @@ def delete_exclusion(exclusion_id):
     return jsonify({"ok": True})
 
 
+@actions_bp.route("/actions/bulk-resolve", methods=["POST"])
+@login_required
+def bulk_resolve():
+    import time
+    ids = request.json.get("ids", [])
+    action = request.json.get("action")  # approve / reject / skip
+
+    ok_count = 0
+    fail_count = 0
+
+    for signal_id in ids:
+        signal = ActionSignal.query.get(signal_id)
+        if not signal or signal.status != "pending":
+            continue
+        if action == "approve":
+            _execute_signal(signal)
+            if signal.status == "executed":
+                ok_count += 1
+            else:
+                fail_count += 1
+            time.sleep(0.3)  # Naver API rate limit 방지
+        elif action == "reject":
+            signal.status = "rejected"
+            signal.resolved_at = datetime.utcnow()
+            db.session.commit()
+            ok_count += 1
+        elif action == "skip":
+            signal.status = "skipped"
+            signal.resolved_at = datetime.utcnow()
+            db.session.commit()
+            ok_count += 1
+
+    return jsonify({"ok": True, "ok_count": ok_count, "fail_count": fail_count})
+
+
 @actions_bp.route("/actions/<int:signal_id>/resolve", methods=["POST"])
 @login_required
 def resolve_signal(signal_id):
@@ -150,6 +187,33 @@ def resolve_signal(signal_id):
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
+    return jsonify({"ok": True})
+
+
+@actions_bp.route("/actions/bulk-retry", methods=["POST"])
+@login_required
+def bulk_retry():
+    ids = request.json.get("ids", [])
+    for signal_id in ids:
+        signal = ActionSignal.query.get(signal_id)
+        if signal and signal.status == "failed":
+            signal.status = "pending"
+            signal.error_message = None
+            signal.resolved_at = None
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@actions_bp.route("/actions/<int:signal_id>/retry", methods=["POST"])
+@login_required
+def retry_signal(signal_id):
+    signal = ActionSignal.query.get_or_404(signal_id)
+    if signal.status != "failed":
+        return jsonify({"ok": False, "error": "실패 상태 항목만 재시도할 수 있습니다."}), 400
+    signal.status = "pending"
+    signal.error_message = None
+    signal.resolved_at = None
+    db.session.commit()
     return jsonify({"ok": True})
 
 
@@ -195,6 +259,21 @@ def _revert_signal(signal: ActionSignal):
     db.session.commit()
 
 
+def _parse_naver_error(e) -> str:
+    """Naver API HTTPError에서 사람이 읽을 수 있는 오류 메시지 추출"""
+    try:
+        import requests as req_lib
+        if isinstance(e, req_lib.HTTPError) and e.response is not None:
+            data = e.response.json()
+            invalid = data.get("invalidInputs") or []
+            if invalid:
+                return " / ".join(i.get("message", "") for i in invalid if i.get("message"))
+            return data.get("message") or str(e)
+    except Exception:
+        pass
+    return str(e)
+
+
 def _execute_signal(signal: ActionSignal):
     from store.naver import update_price, change_status
 
@@ -223,18 +302,23 @@ def _execute_signal(signal: ActionSignal):
                 store.store_status = new_status
 
         signal.status = "executed"
+        signal.error_message = None
         signal.resolved_at = datetime.utcnow()
         db.session.commit()
 
-    except Exception:
+    except Exception as e:
         db.session.rollback()
-        raise
+        # 실패 상태로 저장 (pending에서 사라지고 실패 탭으로 이동)
+        signal.status = "failed"
+        signal.error_message = _parse_naver_error(e)
+        signal.resolved_at = datetime.utcnow()
+        db.session.commit()
 
 
 def detect_action_signals(wholesaler_id: int) -> dict:
     """
     마스터 상품 vs 스토어 상품 비교 → ActionSignal 생성
-    이미 pending 상태인 동일 시그널은 중복 생성하지 않음
+    매 실행마다 기존 pending 시그널을 지우고 현재 상태로 새로 감지 (중복/충돌 방지)
     """
     stats = {
         "PRICE_UP_NEEDED": 0,
@@ -254,19 +338,17 @@ def detect_action_signals(wholesaler_id: int) -> dict:
         .all()
     )
 
-    # 기존 pending 시그널을 한 번에 로드 — _already_pending N+1 방지
     store_ids = [s.id for s in stores]
-    existing_pending = set()
+
+    # 기존 pending 시그널 전부 삭제 → 현재 상태로 새로 감지 (중복/충돌 원천 차단)
     if store_ids:
-        pending_rows = ActionSignal.query.filter(
+        ActionSignal.query.filter(
             ActionSignal.store_product_id.in_(store_ids),
             ActionSignal.status == "pending",
-        ).with_entities(
-            ActionSignal.master_product_id,
-            ActionSignal.store_product_id,
-            ActionSignal.signal_type,
-        ).all()
-        existing_pending = {(r.master_product_id, r.store_product_id, r.signal_type) for r in pending_rows}
+        ).delete(synchronize_session=False)
+        db.session.flush()
+
+    existing_pending = set()  # 삭제 후이므로 항상 빈 셋
 
     for store in stores:
         master = store.master
@@ -289,26 +371,29 @@ def _check_price_signals(master: MasterProduct, store: StoreProduct, stats: dict
     if not master.price or not store.sale_price:
         return
 
-    if master.price > store.sale_price:
+    from app.settings import apply_margin
+    margin_price = apply_margin(master.price)  # 마진 적용 기준가
+
+    if margin_price > store.sale_price:
         if (master.id, store.id, "PRICE_UP_NEEDED") not in pending:
             db.session.add(ActionSignal(
                 master_product_id=master.id,
                 store_product_id=store.id,
                 signal_type="PRICE_UP_NEEDED",
                 current_value=json.dumps({"sale_price": store.sale_price}),
-                suggested_value=json.dumps({"sale_price": master.price}),
+                suggested_value=json.dumps({"sale_price": master.price}),  # 도매가 저장, 실행 시 마진 재적용
             ))
             pending.add((master.id, store.id, "PRICE_UP_NEEDED"))
             stats["PRICE_UP_NEEDED"] += 1
 
-    elif master.price < store.sale_price:
+    elif margin_price < store.sale_price:
         if (master.id, store.id, "PRICE_DOWN_POSSIBLE") not in pending:
             db.session.add(ActionSignal(
                 master_product_id=master.id,
                 store_product_id=store.id,
                 signal_type="PRICE_DOWN_POSSIBLE",
                 current_value=json.dumps({"sale_price": store.sale_price}),
-                suggested_value=json.dumps({"sale_price": master.price}),
+                suggested_value=json.dumps({"sale_price": master.price}),  # 도매가 저장, 실행 시 마진 재적용
             ))
             pending.add((master.id, store.id, "PRICE_DOWN_POSSIBLE"))
             stats["PRICE_DOWN_POSSIBLE"] += 1
