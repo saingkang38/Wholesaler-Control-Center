@@ -104,7 +104,7 @@ class OwnerclanCollector(BaseCollector):
                 logger.info(f"[ownerclan] 다운로드 세트 생성 / idx={idx}")
 
                 # 7. 1시간 대기 후 다운로드 (작업 완료에 시간이 많이 걸림)
-                wait_seconds = int(os.getenv("OWNERCLAN_WAIT_SECONDS", "3600"))
+                wait_seconds = int(os.getenv("OWNERCLAN_WAIT_SECONDS", "1200"))
                 logger.info(f"[ownerclan] {wait_seconds}초 대기 후 다운로드 시작...")
                 time.sleep(wait_seconds)
 

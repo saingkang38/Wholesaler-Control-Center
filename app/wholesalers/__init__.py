@@ -1,10 +1,18 @@
 import logging
 logger = logging.getLogger(__name__)
-from flask import Blueprint
+from flask import Blueprint, render_template
+from flask_login import login_required
 from app.wholesalers.models import Wholesaler
 from app.infrastructure import db
 
 wholesalers_bp = Blueprint("wholesalers", __name__)
+
+
+@wholesalers_bp.route("/wholesalers")
+@login_required
+def wholesalers_page():
+    wholesalers = Wholesaler.query.order_by(Wholesaler.name).all()
+    return render_template("wholesalers.html", wholesalers=wholesalers)
 
 
 def get_or_create_dometopia():

@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}도매처 관리{% endblock %}
+
+{% block content %}
+<style>
+    h2 { margin-bottom: 16px; font-size: 20px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th { background: #f0f0f0; padding: 10px 12px; text-align: left; border-bottom: 2px solid #ddd; }
+    td { padding: 9px 12px; border-bottom: 1px solid #eee; vertical-align: middle; }
+    tr:hover td { background: #fafafa; }
+    .badge-active   { display:inline-block; padding:2px 8px; border-radius:10px; background:#e8f5e9; color:#2e7d32; font-size:12px; }
+    .badge-inactive { display:inline-block; padding:2px 8px; border-radius:10px; background:#f5f5f5; color:#999; font-size:12px; }
+</style>
+
+<h2>도매처 관리</h2>
+<div class="card">
+    <table>
+        <thead>
+            <tr>
+                <th>코드</th>
+                <th>도매처명</th>
+                <th>사이트</th>
+                <th>프리픽스</th>
+                <th>상태</th>
+                <th>메모</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for w in wholesalers %}
+            <tr>
+                <td style="font-size:12px; color:#666;">{{ w.code }}</td>
+                <td><strong>{{ w.name }}</strong></td>
+                <td>
+                    {% if w.site_url %}
+                    <a href="{{ w.site_url }}" target="_blank" style="color:#1565c0; font-size:13px;">{{ w.site_url }}</a>
+                    {% else %}-{% endif %}
+                </td>
+                <td style="font-size:12px; color:#888;">{{ w.prefix or '-' }}</td>
+                <td>
+                    {% if w.is_active %}
+                    <span class="badge-active">활성</span>
+                    {% else %}
+                    <span class="badge-inactive">비활성</span>
+                    {% endif %}
+                </td>
+                <td style="font-size:12px; color:#666;">{{ w.notes or '-' }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endblock %}

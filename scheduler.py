@@ -1,7 +1,7 @@
 import os
 import sys
 import logging
-from datetime import datetime
+from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -19,8 +19,6 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-SCHEDULE_HOUR = int(os.getenv("SCHEDULE_HOUR", "2"))
-SCHEDULE_MINUTE = int(os.getenv("SCHEDULE_MINUTE", "0"))
 TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "Asia/Seoul")
 
 
@@ -56,7 +54,6 @@ def _collect_wholesaler(wholesaler_code: str, name: str, flask_app, run_time: st
             logger.info(f"[scheduler] {name} 수집 완료 ({result.get('total_items', 0)}건)")
             return True
         elif result.get("not_configured"):
-            # 환경변수 미설정 — 수집 시도 안 함, 알림 없음
             logger.info(f"[scheduler] {name} 설정 미완료 — 건너뜀 (알림 없음)")
             return False
         else:
@@ -74,28 +71,6 @@ def _collect_wholesaler(wholesaler_code: str, name: str, flask_app, run_time: st
             logger.error(f"[scheduler] {name} 수집 예외: {e}")
             notify_failure(name, err_str[:300], run_time)
         return False
-
-
-def run_all_wholesalers(flask_app, run_time: str):
-    """전체 도매처 순차 수집 — DB 활성 도매처 기준 (하드코딩 목록 제거)"""
-    logger.info(f"[scheduler] 전체 도매처 수집 시작 ({run_time})")
-
-    with flask_app.app_context():
-        from app.wholesalers.models import Wholesaler
-        wholesalers = [(w.code, w.name) for w in Wholesaler.query.filter_by(is_active=True).all()]
-
-    results = {}
-    for code, name in wholesalers:
-        results[code] = _collect_wholesaler(code, name, flask_app, run_time)
-
-    # 실패한 도매처 1회 재시도
-    retry_targets = [(code, name) for code, name in wholesalers if not results.get(code)]
-    if retry_targets:
-        logger.info(f"[scheduler] 재시도 대상: {[n for _, n in retry_targets]}")
-        for code, name in retry_targets:
-            results[code] = _collect_wholesaler(code, f"{name}(재시도)", flask_app, run_time)
-
-    logger.info(f"[scheduler] 전체 도매처 수집 완료")
 
 
 def run_store_sync(flask_app, run_time: str):
@@ -128,25 +103,68 @@ def run_match_and_signal(flask_app, run_time: str):
         logger.error(f"[scheduler] 매칭/시그널 감지 실패: {e}")
 
 
-def run_daily_pipeline():
-    """매일 새벽 — 수집 → 스토어동기화 → 매칭 순차 실행"""
+def run_early_pipeline():
+    """새벽 2시 — 오너클랜 → 철물박사 → 스토어동기화 → 시그널"""
     run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
-    logger.info(f"[scheduler] 일일 파이프라인 시작 ({run_time})")
+    logger.info(f"[scheduler] 새벽 파이프라인 시작 ({run_time})")
 
-    # 매 실행마다 새 앱 인스턴스 생성 — 전날 DB 세션 오염 방지
     from app import create_app
     flask_app = create_app()
 
-    run_all_wholesalers(flask_app, run_time)
+    # 오너클랜 먼저 (20분 대기 포함 — 수집 자체가 오래 걸림)
+    _collect_wholesaler("ownerclan", "오너클랜", flask_app, run_time)
+
+    # 성공/실패 무관하게 철물박사 연속 진행
+    _collect_wholesaler("metaldiy", "철물박사", flask_app, run_time)
+
+    # 수집 완료 후 스토어 동기화 + 시그널 갱신
     run_store_sync(flask_app, run_time)
     run_match_and_signal(flask_app, run_time)
 
-    logger.info(f"[scheduler] 일일 파이프라인 완료 ({run_time})")
+    logger.info(f"[scheduler] 새벽 파이프라인 완료 ({run_time})")
+
+
+def run_ownerclan_retry():
+    """새벽 6시 — 오너클랜 오늘 성공 기록 없으면 재시도"""
+    run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
+    logger.info(f"[scheduler] 오너클랜 재시도 확인 ({run_time})")
+
+    from app import create_app
+    flask_app = create_app()
+
+    try:
+        with flask_app.app_context():
+            from app.execution_logs.models import CollectionRun
+            from app.wholesalers.models import Wholesaler
+
+            ownerclan = Wholesaler.query.filter_by(code="ownerclan").first()
+            if not ownerclan:
+                logger.warning("[scheduler] 오너클랜 도매처 DB 없음 — 재시도 건너뜀")
+                return
+
+            today_start = datetime.combine(date.today(), datetime.min.time())
+            success_today = CollectionRun.query.filter(
+                CollectionRun.wholesaler_id == ownerclan.id,
+                CollectionRun.started_at >= today_start,
+                CollectionRun.status == "success",
+            ).first()
+
+            if success_today:
+                logger.info("[scheduler] 오너클랜 오늘 이미 성공 — 재시도 건너뜀")
+                return
+
+    except Exception as e:
+        logger.error(f"[scheduler] 오너클랜 재시도 확인 중 오류: {e}")
+        return
+
+    logger.info("[scheduler] 오너클랜 오늘 성공 기록 없음 — 재시도 시작")
+    _collect_wholesaler("ownerclan", "오너클랜(6시재시도)", flask_app, run_time)
 
 
 if __name__ == "__main__":
     import tempfile
     _lock_path = Path(tempfile.gettempdir()) / "wholesaler_scheduler.lock"
+
     def _write_lock(path):
         with open(path, "x") as f:
             f.write(str(os.getpid()))
@@ -154,7 +172,6 @@ if __name__ == "__main__":
     try:
         _write_lock(_lock_path)
     except FileExistsError:
-        # 락 파일이 남아있으면 PID 확인 후 판단
         try:
             old_pid = int(_lock_path.read_text().strip())
             import psutil
@@ -172,15 +189,23 @@ if __name__ == "__main__":
     atexit.register(lambda: _lock_path.unlink(missing_ok=True))
 
     scheduler = BlockingScheduler(timezone=TIMEZONE)
+
     scheduler.add_job(
-        run_daily_pipeline,
+        run_early_pipeline,
         trigger="cron",
-        hour=SCHEDULE_HOUR,
-        minute=SCHEDULE_MINUTE,
-        id="daily_pipeline",
+        hour=2,
+        minute=0,
+        id="early_pipeline",
+    )
+    scheduler.add_job(
+        run_ownerclan_retry,
+        trigger="cron",
+        hour=6,
+        minute=0,
+        id="ownerclan_retry",
     )
 
-    logger.info(f"[scheduler] 시작 - 매일 {SCHEDULE_HOUR:02d}:{SCHEDULE_MINUTE:02d} ({TIMEZONE}) 실행")
+    logger.info(f"[scheduler] 시작 — 02:00 새벽파이프라인 / 06:00 오너클랜재시도 ({TIMEZONE})")
     logger.info("[scheduler] Ctrl+C로 중단")
 
     try:

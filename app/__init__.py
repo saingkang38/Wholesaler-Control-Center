@@ -31,24 +31,16 @@ def create_app():
     from app.execution_logs import execution_logs_bp
     from app.collections import collections_bp
     from app.normalization import normalization_bp
-    from app.suppliers import suppliers_bp
     from app.master import master_bp
     from app.master.models import MasterProduct, ProductEvent  # noqa: F401 - 테이블 생성용
     from app.store import store_bp
     from app.store import routes as _store_routes  # noqa: F401 — blueprint에 라우트 등록
-    from app.store.models import StoreProduct, NaverStore, ProductExclusion, SyncLog, BulkRegisterJob, BulkRegisterItem  # noqa: F401 - 테이블 생성용
+    from app.store.models import StoreProduct, NaverStore, ProductExclusion, SyncLog  # noqa: F401 - 테이블 생성용
     from app.actions import actions_bp
     from app.actions.models import ActionSignal  # noqa: F401 - 테이블 생성용
     from app.settings import settings_bp
-    from app.settings.models import MarginRule, PrepSetting  # noqa: F401 - 테이블 생성용
-    from app.exporter import exporter_bp
-    from app.orders import orders_bp
-    from app.inquiries import inquiries_bp
-    from app.settlement import settlement_bp
-    from app.group_products import group_products_bp
-    from app.product_register import product_register_bp
-    from app.product_prep import product_prep_bp
-    from app.file_viewer import file_viewer_bp
+    from app.settings.models import MarginRule  # noqa: F401 - 테이블 생성용
+    # PrepSetting, SmartStoreSetting 삭제됨
 
     app.register_blueprint(auth_bp)
     app.register_blueprint(dashboard_bp)
@@ -56,19 +48,10 @@ def create_app():
     app.register_blueprint(execution_logs_bp)
     app.register_blueprint(collections_bp)
     app.register_blueprint(normalization_bp)
-    app.register_blueprint(suppliers_bp)
     app.register_blueprint(master_bp)
     app.register_blueprint(store_bp)
     app.register_blueprint(actions_bp)
     app.register_blueprint(settings_bp)
-    app.register_blueprint(exporter_bp)
-    app.register_blueprint(orders_bp)
-    app.register_blueprint(inquiries_bp)
-    app.register_blueprint(settlement_bp)
-    app.register_blueprint(group_products_bp)
-    app.register_blueprint(product_register_bp)
-    app.register_blueprint(product_prep_bp)
-    app.register_blueprint(file_viewer_bp)
 
     with app.app_context():
         db.create_all()
@@ -90,12 +73,6 @@ def create_app():
             "ALTER TABLE master_products ADD COLUMN discontinued_flag INTEGER DEFAULT 0",
             "ALTER TABLE wholesalers ADD COLUMN prefix TEXT",
             "ALTER TABLE wholesalers ADD COLUMN notes TEXT",
-            "ALTER TABLE prep_settings ADD COLUMN processed_image_dir VARCHAR(512)",
-            "ALTER TABLE prep_settings ADD COLUMN img_inner_scale INTEGER DEFAULT 100",
-            "ALTER TABLE prep_settings ADD COLUMN img_rotation INTEGER DEFAULT 0",
-            "ALTER TABLE prep_settings ADD COLUMN img_output_size INTEGER",
-            "ALTER TABLE prep_settings ADD COLUMN img_quality INTEGER DEFAULT 100",
-            "ALTER TABLE prep_settings ADD COLUMN side_panel_url VARCHAR(1024)",
             "ALTER TABLE master_products ADD COLUMN origin VARCHAR(128)",
             "ALTER TABLE master_products ADD COLUMN shipping_fee INTEGER",
             "ALTER TABLE master_products ADD COLUMN shipping_condition VARCHAR(256)",

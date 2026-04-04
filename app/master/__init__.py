@@ -8,6 +8,41 @@ from app.master.models import MasterProduct, ProductEvent
 master_bp = Blueprint("master", __name__)
 logger = logging.getLogger(__name__)
 
+
+@master_bp.route("/changes")
+def changes():
+    from flask_login import login_required, current_user
+    from flask import render_template, request
+    from app.wholesalers.models import Wholesaler
+
+    CHANGE_TYPES = ["IMAGE_CHANGE", "NAME_CHANGE", "DETAIL_CHANGE", "SHIPPING_CHANGE", "PRICE_CHANGE"]
+
+    wholesaler_id = request.args.get("wholesaler_id", type=int)
+    event_type = request.args.get("event_type", "")
+    page = request.args.get("page", 1, type=int)
+    per_page = 50
+
+    query = ProductEvent.query.filter(ProductEvent.event_type.in_(CHANGE_TYPES))
+    if wholesaler_id:
+        query = query.join(MasterProduct).filter(MasterProduct.wholesaler_id == wholesaler_id)
+    if event_type and event_type in CHANGE_TYPES:
+        query = query.filter(ProductEvent.event_type == event_type)
+
+    query = query.order_by(ProductEvent.event_date.desc(), ProductEvent.id.desc())
+    pagination = query.paginate(page=page, per_page=per_page, error_out=False)
+
+    wholesalers = Wholesaler.query.filter_by(is_active=True).order_by(Wholesaler.name).all()
+
+    return render_template(
+        "changes.html",
+        events=pagination.items,
+        pagination=pagination,
+        wholesalers=wholesalers,
+        selected_wholesaler_id=wholesaler_id,
+        selected_event_type=event_type,
+        change_types=CHANGE_TYPES,
+    )
+
 # 연속 미수집 N일 이상 → 상태 전환 기준
 MISSING_DAYS_CANDIDATE = 3    # missing_candidate
 MISSING_DAYS_DISCONTINUED = 7  # discontinued_candidate
@@ -35,6 +70,8 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
         "price_change": 0,
         "image_change": 0,
         "name_change": 0,
+        "detail_change": 0,
+        "shipping_change": 0,
     }
 
     existing = MasterProduct.query.filter_by(wholesaler_id=wholesaler_id).all()
@@ -127,6 +164,45 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
                     after_value=json.dumps({"name": new_name}, ensure_ascii=False),
                 ))
                 stats["name_change"] += 1
+
+            # 상세페이지 변동
+            new_detail = item.get("detail_description")
+            if master.detail_description and new_detail and master.detail_description != new_detail:
+                new_events.append(ProductEvent(
+                    master_product_id=master.id,
+                    event_type="DETAIL_CHANGE",
+                    event_date=snapshot_date,
+                ))
+                stats["detail_change"] += 1
+
+            # 배송비/배송조건 변동
+            new_shipping_fee = item.get("shipping_fee")
+            new_shipping_cond = item.get("shipping_condition")
+            shipping_fee_changed = (
+                new_shipping_fee is not None
+                and master.shipping_fee is not None
+                and master.shipping_fee != new_shipping_fee
+            )
+            shipping_cond_changed = (
+                new_shipping_cond
+                and master.shipping_condition
+                and master.shipping_condition != new_shipping_cond
+            )
+            if shipping_fee_changed or shipping_cond_changed:
+                new_events.append(ProductEvent(
+                    master_product_id=master.id,
+                    event_type="SHIPPING_CHANGE",
+                    event_date=snapshot_date,
+                    before_value=json.dumps({
+                        "shipping_fee": master.shipping_fee,
+                        "shipping_condition": master.shipping_condition,
+                    }, ensure_ascii=False),
+                    after_value=json.dumps({
+                        "shipping_fee": new_shipping_fee,
+                        "shipping_condition": new_shipping_cond,
+                    }, ensure_ascii=False),
+                ))
+                stats["shipping_change"] += 1
 
             # 마스터 갱신
             master.last_seen_date = snapshot_date

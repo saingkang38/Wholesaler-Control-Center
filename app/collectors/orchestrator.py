@@ -180,6 +180,9 @@ def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: 
             logger.info(f"[orchestrator] 저장 완료: {saved}건")
             master_stats = process_master_update(wholesaler.id, result["items"])
             logger.info(f"[orchestrator] 마스터 업데이트 완료")
+            from app.actions import detect_action_signals
+            detect_action_signals(wholesaler.id)
+            logger.info(f"[orchestrator] 액션 시그널 갱신 완료")
 
     except Exception as e:
         logger.error(f"[orchestrator] 오류 발생: {e}")

@@ -62,44 +62,6 @@ class SyncLog(db.Model):
     naver_store = db.relationship("NaverStore", backref="sync_logs")
 
 
-class DeliveryPreset(db.Model):
-    __tablename__ = "delivery_presets"
-
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(128), nullable=False)           # 예: 무료배송, 3000원 균일
-    delivery_fee_type = db.Column(db.String(32), nullable=False)  # FREE | PAID | CONDITIONAL_FREE
-    base_fee = db.Column(db.Integer, default=0)                # 기본 배송비
-    free_condition_amount = db.Column(db.Integer, default=0)   # 조건부 무료 기준금액
-    delivery_fee_pay_type = db.Column(db.String(16), default="PREPAID")  # PREPAID | COLLECT
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-
-class BulkRegisterJob(db.Model):
-    __tablename__ = "bulk_register_jobs"
-
-    id = db.Column(db.Integer, primary_key=True)
-    naver_store_id = db.Column(db.Integer, db.ForeignKey("naver_stores.id"), nullable=False)
-    status = db.Column(db.String(16), default="pending")  # pending|running|done|error
-    total = db.Column(db.Integer, default=0)
-    completed = db.Column(db.Integer, default=0)
-    failed = db.Column(db.Integer, default=0)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-
-    naver_store = db.relationship("NaverStore", backref="bulk_jobs")
-    items = db.relationship("BulkRegisterItem", backref="job", lazy="dynamic")
-
-
-class BulkRegisterItem(db.Model):
-    __tablename__ = "bulk_register_items"
-
-    id = db.Column(db.Integer, primary_key=True)
-    job_id = db.Column(db.Integer, db.ForeignKey("bulk_register_jobs.id"), nullable=False)
-    master_product_id = db.Column(db.Integer, db.ForeignKey("master_products.id"), nullable=False)
-    status = db.Column(db.String(16), default="pending")  # pending|success|error
-    error_msg = db.Column(db.Text)
-    origin_product_no = db.Column(db.BigInteger)
-
-    master = db.relationship("MasterProduct")
 
 
 class ProductExclusion(db.Model):
