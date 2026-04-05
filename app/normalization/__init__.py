@@ -3,7 +3,7 @@ from flask import Blueprint
 from app.infrastructure import db
 from app.normalization.models import NormalizedProduct
 from app.wholesalers.models import Wholesaler
-from datetime import datetime
+from app.utils import kst_now
 
 normalization_bp = Blueprint("normalization", __name__)
 logger = logging.getLogger(__name__)
@@ -36,8 +36,8 @@ def save_normalized_products(wholesaler_id: int, run_id: int, items: list):
                 existing.detail_url = item.get("detail_url")
                 existing.category_name = item.get("category_name")
                 existing.collection_run_id = run_id
-                existing.collected_at = datetime.utcnow()
-                existing.updated_at = datetime.utcnow()
+                existing.collected_at = kst_now()
+                existing.updated_at = kst_now()
             else:
                 product = NormalizedProduct(
                     wholesaler_id=wholesaler_id,

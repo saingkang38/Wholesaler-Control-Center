@@ -1,6 +1,6 @@
 import logging
-from datetime import datetime
 from app.infrastructure import db
+from app.utils import kst_now
 from app.execution_logs.models import CollectionRun
 from app.wholesalers.models import Wholesaler
 
@@ -80,9 +80,13 @@ def _save_desktop_xlsx(wholesaler_code: str, items: list):
         ws = wb.active
         ws.append(headers)
 
-        def to_cell(v):
+        STATUS_KO = {"active": "정상", "out_of_stock": "품절", "discontinued": "단종"}
+
+        def to_cell(v, key=None):
             if v is None:
                 return ""
+            if key == "status":
+                return STATUS_KO.get(str(v), str(v))
             if isinstance(v, (list, dict)):
                 import json
                 return json.dumps(v, ensure_ascii=False)
@@ -93,12 +97,12 @@ def _save_desktop_xlsx(wholesaler_code: str, items: list):
             row = []
             for k in all_keys:
                 if k in item and k != "extra":
-                    row.append(to_cell(item[k]))
+                    row.append(to_cell(item[k], key=k))
                 else:
-                    row.append(to_cell(extra.get(k)))
+                    row.append(to_cell(extra.get(k), key=k))
             ws.append(row)
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = kst_now().strftime("%Y%m%d_%H%M%S")
         path = desktop / f"{wholesaler_code}_{timestamp}.xlsx"
         wb.save(str(path))
         logger.info(f"[orchestrator] 데스크탑 저장: {path} ({len(items)}건, {len(all_keys)}컬럼)")
@@ -112,7 +116,7 @@ def _save_raw_json(wholesaler_code: str, items: list):
 
     save_dir = Path.home() / "OneDrive" / "supplier_sync" / wholesaler_code
     save_dir.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    timestamp = kst_now().strftime("%Y%m%d_%H%M%S")
     path = save_dir / f"{wholesaler_code}_{timestamp}.json"
     try:
         with open(path, "w", encoding="utf-8") as f:
@@ -139,7 +143,7 @@ def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: 
         wholesaler_id=wholesaler.id,
         trigger_type=trigger_type,
         status="running",
-        started_at=datetime.now(),
+        started_at=kst_now(),
         created_by_user_id=user_id,
     )
     db.session.add(run)
@@ -155,7 +159,7 @@ def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: 
         if not result.get("success") and any(kw in error_msg for kw in _CONFIG_KEYWORDS):
             run.status = "skipped"
             run.error_summary = error_msg
-            run.finished_at = datetime.now()
+            run.finished_at = kst_now()
             db.session.commit()
             logger.info(f"[orchestrator] {wholesaler_code} 설정 미완료 — 수집 건너뜀: {error_msg}")
             return {"success": False, "not_configured": True, "error": error_msg}
@@ -191,7 +195,7 @@ def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: 
         result = {"success": False, "error": str(e)}
 
     finally:
-        run.finished_at = datetime.now()
+        run.finished_at = kst_now()
         db.session.commit()
 
     return {

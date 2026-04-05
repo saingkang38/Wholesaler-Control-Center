@@ -1,5 +1,5 @@
 from app.infrastructure import db
-from datetime import datetime
+from app.utils import kst_now
 
 class Wholesaler(db.Model):
     __tablename__ = "wholesalers"
@@ -12,5 +12,5 @@ class Wholesaler(db.Model):
     login_required = db.Column(db.Boolean, default=True)
     prefix = db.Column(db.String(20), nullable=True)
     notes = db.Column(db.Text)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=kst_now)
+    updated_at = db.Column(db.DateTime, default=kst_now, onupdate=kst_now)

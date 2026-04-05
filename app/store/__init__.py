@@ -1,7 +1,7 @@
 import logging
 from flask import Blueprint, render_template, request, redirect, url_for, flash
 from flask_login import login_required
-from datetime import datetime
+from app.utils import kst_now
 from app.infrastructure import db
 from app.store.models import StoreProduct, NaverStore
 from app.master.models import MasterProduct
@@ -116,7 +116,7 @@ def _sync_single_store(naver_store: NaverStore) -> dict:
             store.sale_price = p["price"]
             store.product_name = p["name"]
             store.seller_management_code = seller_code
-            store.last_synced_at = datetime.utcnow()
+            store.last_synced_at = kst_now()
             stats["updated"] += 1
         else:
             store = StoreProduct(
@@ -127,7 +127,7 @@ def _sync_single_store(naver_store: NaverStore) -> dict:
                 product_name=p["name"],
                 store_status=p["status"],
                 sale_price=p["price"],
-                last_synced_at=datetime.utcnow(),
+                last_synced_at=kst_now(),
             )
             db.session.add(store)
             db.session.flush()

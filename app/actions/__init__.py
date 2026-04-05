@@ -2,7 +2,7 @@ import json
 import logging
 from flask import Blueprint, render_template, request, jsonify
 from flask_login import login_required
-from datetime import datetime
+from app.utils import kst_now
 from sqlalchemy.orm import joinedload
 from app.infrastructure import db
 from app.actions.models import ActionSignal
@@ -14,11 +14,12 @@ logger = logging.getLogger(__name__)
 
 
 SIGNAL_LABELS = {
-    "PRICE_UP_NEEDED":    {"label": "가격 인상 필요", "badge": "danger"},
+    "PRICE_UP_NEEDED":     {"label": "가격 인상 필요", "badge": "danger"},
     "PRICE_DOWN_POSSIBLE": {"label": "가격 인하 가능", "badge": "info"},
-    "SUSPEND_NEEDED":     {"label": "판매 중지 필요", "badge": "warning"},
-    "RESUME_POSSIBLE":    {"label": "판매 재개 가능", "badge": "success"},
-    "DISCONTINUE_NEEDED": {"label": "단종 처리 필요", "badge": "dark"},
+    "SUSPEND_NEEDED":      {"label": "판매 중지 필요", "badge": "warning"},
+    "RESUME_POSSIBLE":     {"label": "판매 재개 가능", "badge": "success"},
+    "DISCONTINUE_NEEDED":  {"label": "단종 처리 필요", "badge": "dark"},
+    "OPTION_PRICE_CHANGE": {"label": "옵션가 변동", "badge": "warning"},
 }
 
 
@@ -155,12 +156,12 @@ def bulk_resolve():
             time.sleep(0.3)  # Naver API rate limit 방지
         elif action == "reject":
             signal.status = "rejected"
-            signal.resolved_at = datetime.utcnow()
+            signal.resolved_at = kst_now()
             db.session.commit()
             ok_count += 1
         elif action == "skip":
             signal.status = "skipped"
-            signal.resolved_at = datetime.utcnow()
+            signal.resolved_at = kst_now()
             db.session.commit()
             ok_count += 1
 
@@ -178,11 +179,11 @@ def resolve_signal(signal_id):
             _execute_signal(signal)
         elif action == "reject":
             signal.status = "rejected"
-            signal.resolved_at = datetime.utcnow()
+            signal.resolved_at = kst_now()
             db.session.commit()
         elif action == "skip":
             signal.status = "skipped"
-            signal.resolved_at = datetime.utcnow()
+            signal.resolved_at = kst_now()
             db.session.commit()
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -254,8 +255,11 @@ def _revert_signal(signal: ActionSignal):
             change_status(store.origin_product_no, orig_status, client_id=client_id, client_secret=client_secret)
             store.store_status = orig_status
 
+    elif signal.signal_type == "OPTION_PRICE_CHANGE":
+        raise ValueError("옵션가 변동은 되돌리기를 지원하지 않습니다. 직접 수동으로 수정해주세요.")
+
     signal.status = "reverted"
-    signal.resolved_at = datetime.utcnow()
+    signal.resolved_at = kst_now()
     db.session.commit()
 
 
@@ -301,9 +305,58 @@ def _execute_signal(signal: ActionSignal):
                 change_status(store.origin_product_no, new_status, client_id=client_id, client_secret=client_secret)
                 store.store_status = new_status
 
+        elif signal.signal_type == "OPTION_PRICE_CHANGE":
+            from store.naver.products import get_origin_product, update_origin_product
+            from app.settings import apply_margin
+
+            option_diffs_text = suggested.get("option_diffs", "")
+            options_text = suggested.get("options_text", "")
+            base_price = suggested.get("base_price")
+
+            if not option_diffs_text or not base_price:
+                raise ValueError("옵션 데이터 부족")
+
+            option_names = [n.strip() for n in options_text.split("\n") if n.strip()]
+            option_diffs = []
+            for d in option_diffs_text.split("\n"):
+                try:
+                    option_diffs.append(int(d.strip()))
+                except ValueError:
+                    option_diffs.append(0)
+
+            # 현재 Naver 상품 전체 조회
+            product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
+            origin = product_data.get("originProduct", {})
+            option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
+            combinations = option_info.get("optionCombinations", [])
+
+            if not combinations:
+                raise ValueError("스토어 상품에 옵션 없음")
+
+            base_margin = apply_margin(base_price)
+            # 옵션명 순서 기준 매칭 (이름 일치 우선, 없으면 순서)
+            for i, combo in enumerate(combinations):
+                name = combo.get("optionName1") or combo.get("optionName2") or ""
+                # 이름으로 매칭 시도
+                matched_idx = None
+                for j, opt_name in enumerate(option_names):
+                    if opt_name == name:
+                        matched_idx = j
+                        break
+                if matched_idx is None and i < len(option_diffs):
+                    matched_idx = i
+                if matched_idx is not None and matched_idx < len(option_diffs):
+                    diff = option_diffs[matched_idx]
+                    new_addition = apply_margin(base_price + diff) - base_margin
+                    combo["price"] = max(0, new_addition)  # 음수 방지
+
+            option_info["optionCombinations"] = combinations
+            origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
+            update_origin_product(store.origin_product_no, {"originProduct": origin}, client_id, client_secret)
+
         signal.status = "executed"
         signal.error_message = None
-        signal.resolved_at = datetime.utcnow()
+        signal.resolved_at = kst_now()
         db.session.commit()
 
     except Exception as e:
@@ -311,7 +364,7 @@ def _execute_signal(signal: ActionSignal):
         # 실패 상태로 저장 (pending에서 사라지고 실패 탭으로 이동)
         signal.status = "failed"
         signal.error_message = _parse_naver_error(e)
-        signal.resolved_at = datetime.utcnow()
+        signal.resolved_at = kst_now()
         db.session.commit()
 
 
@@ -326,6 +379,7 @@ def detect_action_signals(wholesaler_id: int) -> dict:
         "SUSPEND_NEEDED": 0,
         "RESUME_POSSIBLE": 0,
         "DISCONTINUE_NEEDED": 0,
+        "OPTION_PRICE_CHANGE": 0,
     }
 
     # 해당 도매처의 매칭된 스토어 상품만 조회 — 전체 로드 방지, 관계 미리 로드
@@ -341,11 +395,15 @@ def detect_action_signals(wholesaler_id: int) -> dict:
     store_ids = [s.id for s in stores]
 
     # 기존 pending 시그널 전부 삭제 → 현재 상태로 새로 감지 (중복/충돌 원천 차단)
-    if store_ids:
+    # SQLite 파라미터 한계(999) 대비 500개씩 청크 처리
+    CHUNK = 500
+    for i in range(0, len(store_ids), CHUNK):
+        chunk = store_ids[i:i + CHUNK]
         ActionSignal.query.filter(
-            ActionSignal.store_product_id.in_(store_ids),
+            ActionSignal.store_product_id.in_(chunk),
             ActionSignal.status == "pending",
         ).delete(synchronize_session=False)
+    if store_ids:
         db.session.flush()
 
     existing_pending = set()  # 삭제 후이므로 항상 빈 셋
@@ -361,6 +419,7 @@ def detect_action_signals(wholesaler_id: int) -> dict:
 
         _check_price_signals(master, store, stats, existing_pending)
         _check_status_signals(master, store, stats, existing_pending)
+        _check_option_signals(master, store, stats, existing_pending)
 
     db.session.commit()
     logger.info(f"[actions] 시그널 감지 완료: {stats}")
@@ -397,6 +456,41 @@ def _check_price_signals(master: MasterProduct, store: StoreProduct, stats: dict
             ))
             pending.add((master.id, store.id, "PRICE_DOWN_POSSIBLE"))
             stats["PRICE_DOWN_POSSIBLE"] += 1
+
+
+def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set):
+    if not master.option_diffs or not master.options_text:
+        return
+    if not store.origin_product_no:
+        return
+
+    # 마지막 실행된 OPTION_PRICE_CHANGE 시그널의 suggested option_diffs와 비교
+    last_executed = (
+        ActionSignal.query
+        .filter_by(store_product_id=store.id, signal_type="OPTION_PRICE_CHANGE")
+        .filter(ActionSignal.status.in_(["executed", "reverted"]))
+        .order_by(ActionSignal.resolved_at.desc())
+        .first()
+    )
+    if last_executed:
+        last_suggested = json.loads(last_executed.suggested_value or "{}")
+        if last_suggested.get("option_diffs") == master.option_diffs:
+            return  # 이미 최신 옵션가로 적용됨
+
+    if (master.id, store.id, "OPTION_PRICE_CHANGE") not in pending:
+        db.session.add(ActionSignal(
+            master_product_id=master.id,
+            store_product_id=store.id,
+            signal_type="OPTION_PRICE_CHANGE",
+            current_value=json.dumps({"options_text": master.options_text}),
+            suggested_value=json.dumps({
+                "option_diffs": master.option_diffs,
+                "options_text": master.options_text,
+                "base_price": master.price,
+            }),
+        ))
+        pending.add((master.id, store.id, "OPTION_PRICE_CHANGE"))
+        stats["OPTION_PRICE_CHANGE"] += 1
 
 
 def _check_status_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set):

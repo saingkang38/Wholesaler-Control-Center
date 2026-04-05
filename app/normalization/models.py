@@ -1,5 +1,5 @@
 from app.infrastructure import db
-from datetime import datetime
+from app.utils import kst_now
 
 class NormalizedProduct(db.Model):
     __tablename__ = "normalized_products"
@@ -20,8 +20,8 @@ class NormalizedProduct(db.Model):
     category_name = db.Column(db.String(256))
     brand_name = db.Column(db.String(128))
     is_active = db.Column(db.Boolean, default=True)
-    collected_at = db.Column(db.DateTime, default=datetime.utcnow)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    collected_at = db.Column(db.DateTime, default=kst_now)
+    created_at = db.Column(db.DateTime, default=kst_now)
+    updated_at = db.Column(db.DateTime, default=kst_now, onupdate=kst_now)
 
     wholesaler = db.relationship("Wholesaler", backref="products")

@@ -1,7 +1,7 @@
 from app.infrastructure import db
 from werkzeug.security import generate_password_hash, check_password_hash
 from flask_login import UserMixin
-from datetime import datetime
+from app.utils import kst_now
 
 class User(UserMixin, db.Model):
     __tablename__ = "users"
@@ -11,8 +11,8 @@ class User(UserMixin, db.Model):
     password_hash = db.Column(db.String(256), nullable=False)
     role = db.Column(db.String(16), nullable=False, default="staff")  # admin / staff
     is_active = db.Column(db.Boolean, default=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=kst_now)
+    updated_at = db.Column(db.DateTime, default=kst_now, onupdate=kst_now)
     last_login_at = db.Column(db.DateTime, nullable=True)
 
     def set_password(self, password):

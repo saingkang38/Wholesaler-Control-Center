@@ -1,5 +1,5 @@
 from app.infrastructure import db
-from datetime import datetime
+from app.utils import kst_now
 
 
 class NaverStore(db.Model):
@@ -11,8 +11,8 @@ class NaverStore(db.Model):
     client_secret = db.Column(db.String(256), nullable=False)
     is_active = db.Column(db.Boolean, default=True)
 
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=kst_now)
+    updated_at = db.Column(db.DateTime, default=kst_now, onupdate=kst_now)
 
     products = db.relationship("StoreProduct", backref="naver_store", lazy="dynamic")
 
@@ -39,8 +39,8 @@ class StoreProduct(db.Model):
     master_product_id = db.Column(db.Integer, db.ForeignKey("master_products.id"), nullable=True)
 
     last_synced_at = db.Column(db.DateTime)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=kst_now)
+    updated_at = db.Column(db.DateTime, default=kst_now, onupdate=kst_now)
 
     master = db.relationship("MasterProduct", backref="store_products")
 
@@ -57,7 +57,7 @@ class SyncLog(db.Model):
     action = db.Column(db.String(32))   # FULL_SYNC / REMATCH
     result = db.Column(db.String(32))   # success / error
     detail = db.Column(db.Text)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=kst_now)
 
     naver_store = db.relationship("NaverStore", backref="sync_logs")
 
@@ -70,6 +70,6 @@ class ProductExclusion(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     store_product_id = db.Column(db.Integer, db.ForeignKey("store_products.id"), unique=True, nullable=False)
     reason = db.Column(db.String(256))  # 예외 사유 (선택)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=kst_now)
 
     store_product = db.relationship("StoreProduct", backref=db.backref("exclusion", uselist=False))

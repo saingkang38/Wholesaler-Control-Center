@@ -1,5 +1,5 @@
 from app.infrastructure import db
-from datetime import datetime
+from app.utils import kst_now
 
 
 class MasterProduct(db.Model):
@@ -24,6 +24,8 @@ class MasterProduct(db.Model):
     edited_name        = db.Column(db.String(512))                # 가공된 상품명 (NULL = 미가공)
     category_id        = db.Column(db.String(64))                 # 네이버 카테고리 ID (NULL = 미가공)
     is_prep_ready      = db.Column(db.Boolean, default=False)     # True = 등록 가능
+    options_text       = db.Column(db.Text, nullable=True)        # 옵션명 (줄바꿈 구분)
+    option_diffs       = db.Column(db.Text, nullable=True)        # 옵션가 차액 (줄바꿈 구분)
 
     # 상태: active / missing / discontinued_candidate / discontinued
     current_status = db.Column(db.String(32), default="active", nullable=False)
@@ -33,8 +35,8 @@ class MasterProduct(db.Model):
     last_status_change_date = db.Column(db.Date)
     discontinued_flag = db.Column(db.Boolean, default=False)
 
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=kst_now)
+    updated_at = db.Column(db.DateTime, default=kst_now, onupdate=kst_now)
 
     wholesaler = db.relationship("Wholesaler", backref="master_products")
     events = db.relationship("ProductEvent", backref="product", lazy="dynamic")
@@ -59,4 +61,4 @@ class ProductEvent(db.Model):
     after_value = db.Column(db.Text)    # JSON
     note = db.Column(db.String(256))
 
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=kst_now)

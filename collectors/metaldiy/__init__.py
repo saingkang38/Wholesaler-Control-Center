@@ -11,10 +11,6 @@ from app.collectors.base import BaseCollector
 BASE_URL = "https://www.metaldiy.com"
 MAIN_URL = "https://www.metaldiy.com/main/mainView.do"
 
-HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
-}
-
 STATUS_MAP = {
     "2": "discontinued",
     "3": "discontinued",
@@ -26,7 +22,7 @@ STATUS_MAP = {
 class MetaldiyCollector(BaseCollector):
     wholesaler_code = "metaldiy"
 
-    def run(self) -> dict:
+    def run(self, test_mode: bool = False) -> dict:
         login_id = os.getenv("METALDIY_LOGIN_ID")
         login_pw = os.getenv("METALDIY_LOGIN_PASSWORD")
 
@@ -34,6 +30,7 @@ class MetaldiyCollector(BaseCollector):
             return self._error("METALDIY_LOGIN_ID / METALDIY_LOGIN_PASSWORD 미설정")
 
         items = []
+        categories = []
 
         try:
             with sync_playwright() as p:
@@ -44,6 +41,7 @@ class MetaldiyCollector(BaseCollector):
                 page = context.new_page()
                 page.set_default_timeout(30000)
 
+                # 1. 로그인
                 page.goto(MAIN_URL)
                 page.wait_for_load_state("networkidle")
                 time.sleep(1)
@@ -69,6 +67,7 @@ class MetaldiyCollector(BaseCollector):
 
                 logger.info("[metaldiy] 로그인 성공 (기업회원)")
 
+                # 2. 카테고리 목록 수집
                 categories = self._get_categories(page)
                 if not categories:
                     browser.close()
@@ -76,6 +75,7 @@ class MetaldiyCollector(BaseCollector):
 
                 logger.info(f"[metaldiy] 카테고리 수: {len(categories)}")
 
+                # 3. 상품 목록 수집
                 for cat_id, cat_name in categories:
                     try:
                         cat_items = self._collect_category(page, cat_id, cat_name)
@@ -84,7 +84,50 @@ class MetaldiyCollector(BaseCollector):
                     except Exception as e:
                         logger.warning(f"[metaldiy] 카테고리 오류 ({cat_name}/{cat_id}): {e}")
 
+                logger.info(f"[metaldiy] 목록 수집 완료: {len(items)}건, 상세페이지 수집 시작...")
+
+                # 4. Playwright 쿠키 → requests 세션으로 전달
+                playwright_cookies = context.cookies()
+                session = requests.Session()
+                session.headers.update({
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36"
+                })
+                for c in playwright_cookies:
+                    session.cookies.set(c["name"], c["value"], domain=c.get("domain", ""))
+
                 browser.close()
+
+            # 5. 상세페이지 수집 (requests + 로그인 쿠키)
+            if test_mode:
+                logger.info("[metaldiy] 테스트 모드 — 옵션 2개 상품 최대 5개 수집")
+                result_items = []
+                for item in items:
+                    if len(result_items) >= 5:
+                        break
+                    try:
+                        detail = self._fetch_detail(session, item["source_product_code"], item.get("price"))
+                        item.update(detail)
+                        opt_lines = (item.get("extra") or {}).get("옵션") or ""
+                        opt_count = len([l for l in opt_lines.split("\n") if l.strip()]) if opt_lines else 0
+                        if opt_count == 2:
+                            result_items.append(item)
+                            logger.info(f"[metaldiy] 테스트 상품: {item['source_product_code']} (옵션 {opt_count}개)")
+                    except Exception as e:
+                        logger.warning(f"[metaldiy] 상세 오류 ({item['source_product_code']}): {e}")
+                    time.sleep(0.3)
+                items = result_items
+                logger.info(f"[metaldiy] 테스트 수집 완료: {len(items)}건")
+            else:
+                for i, item in enumerate(items):
+                    try:
+                        detail = self._fetch_detail(session, item["source_product_code"], item.get("price"))
+                        item.update(detail)
+                    except Exception as e:
+                        logger.warning(f"[metaldiy] 상세 오류 ({item['source_product_code']}): {e}")
+                    if (i + 1) % 100 == 0:
+                        logger.info(f"[metaldiy] 상세 수집 진행: {i + 1}/{len(items)}")
+                    time.sleep(0.3)
+                logger.info(f"[metaldiy] 전체 수집 완료: {len(items)}건")
 
         except PlaywrightTimeout as e:
             return {
@@ -104,38 +147,23 @@ class MetaldiyCollector(BaseCollector):
                 "items": items,
             }
 
-        # 상세페이지 수집 (requests, 로그인 불필요)
-        logger.info(f"[metaldiy] 목록 수집 완료: {len(items)}건, 상세페이지 수집 시작...")
-        for i, item in enumerate(items):
-            try:
-                detail = self._fetch_detail(item["source_product_code"], item.get("price"))
-                item.update(detail)
-            except Exception as e:
-                logger.warning(f"[metaldiy] 상세 오류 (itemId={item['source_product_code']}): {e}")
-            if (i + 1) % 100 == 0:
-                logger.info(f"[metaldiy] 상세 수집 진행: {i + 1}/{len(items)}")
-            time.sleep(0.3)
-
-        logger.info(f"[metaldiy] 전체 수집 완료: {len(items)}건")
         return {
             "success": True,
             "total_items": len(items),
-            "total_pages": len(categories) if 'categories' in dir() else 0,
+            "total_pages": len(categories),
             "success_count": len(items),
             "fail_count": 0,
             "error_summary": None,
             "items": items,
         }
 
-    def _fetch_detail(self, item_id: str, price: int = None) -> dict:
+    def _fetch_detail(self, session: requests.Session, item_id: str, price: int = None) -> dict:
+        """로그인 쿠키가 담긴 requests 세션으로 상세페이지 수집"""
         url = f"{BASE_URL}/item/itemView.do?itemId={item_id}"
-        resp = requests.get(url, headers=HEADERS, timeout=15)
-        resp.encoding = "utf-8"
+        resp = session.get(url, timeout=20)
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # 가격은 목록 수집 시 로그인 상태(할인가)로 이미 수집됨 → 여기서 덮어쓰지 않음
-
-        # 원산지: dt[원산지] → dd
+        # 원산지
         origin = None
         for dt in soup.select("dt"):
             if dt.get_text(strip=True) == "원산지":
@@ -143,7 +171,7 @@ class MetaldiyCollector(BaseCollector):
                 origin = dd.get_text(strip=True) if dd else None
                 break
 
-        # 자체코드: dt[상품코드] → dd
+        # 자체코드
         own_code = None
         for dt in soup.select("dt"):
             if dt.get_text(strip=True) == "상품코드":
@@ -151,31 +179,30 @@ class MetaldiyCollector(BaseCollector):
                 own_code = dd.get_text(strip=True) if dd else None
                 break
 
-        # 카테고리: path_field select selected option 텍스트
+        # 카테고리
         category = self._parse_category(soup)
 
-        # 배송비: JavaScript deliveryFee 변수
+        # 배송비
         shipping_fee = None
-        shipping_condition = None
-        scripts = soup.find_all("script")
-        for script in scripts:
+        for script in soup.find_all("script"):
             text = script.get_text()
             m = re.search(r'deliveryFee\s*:parseFloat\([\'"]?([\d.]+)[\'"]?\)', text)
             if m:
                 shipping_fee = int(float(m.group(1)))
                 break
 
-        # 무료배송조건: 추가혜택 dd에서 배송 관련 줄만
+        # 무료배송 조건
+        shipping_condition = None
         for dt in soup.select("dt"):
             if "추가혜택" in dt.get_text(strip=True):
                 dd = dt.find_next("dd")
                 if dd:
-                    lines = [line.strip() for line in dd.get_text("\n", strip=True).split("\n")]
+                    lines = [l.strip() for l in dd.get_text("\n", strip=True).split("\n")]
                     delivery_lines = [l for l in lines if l and ("배송" in l or "무료" in l)]
                     shipping_condition = " / ".join(delivery_lines) if delivery_lines else None
                 break
 
-        # 상세설명 HTML: .goodsCon에서 tabNav, goods_related 제거 후 가운데 정렬
+        # 상세설명 HTML
         detail_html = ""
         goods_con = soup.select_one(".goodsCon")
         if goods_con:
@@ -190,9 +217,7 @@ class MetaldiyCollector(BaseCollector):
             inner = goods_con.decode_contents().strip()
             detail_html = f'<div style="text-align:center;">{inner}</div>'
 
-        # 옵션: tbody.optionArea tr.itemOptionTr
-        # 옵션가 = 옵션 실제가 - 기본 판매가 (차액)
-        # 예) 기본가 29700, 옵션 29700 → 0 / 옵션 30000 → +300 / 옵션 29400 → -300
+        # 옵션 (마지막 td = 할인가 기준)
         options_text = None
         option_prices_text = None
         option_rows = soup.select("tbody.optionArea tr.itemOptionTr")
@@ -206,10 +231,12 @@ class MetaldiyCollector(BaseCollector):
                 name = name_el.get_text(strip=True)
                 if not name:
                     continue
-                opt_price = self._parse_price(tr.get("price", ""))
+                tds = tr.select("td")
+                price_td = tds[-1] if tds else None
+                opt_price = self._parse_price(price_td.get_text(strip=True)) if price_td else None
                 if price is not None and opt_price is not None:
                     diff = opt_price - price
-                    diff_str = f"+{diff}" if diff > 0 else str(diff)
+                    diff_str = str(diff) if diff != 0 else "0"
                 else:
                     diff_str = ""
                 option_names.append(name)
@@ -225,7 +252,6 @@ class MetaldiyCollector(BaseCollector):
             "detail_description": detail_html,
             "shipping_fee": shipping_fee,
             "shipping_condition": shipping_condition,
-            "product_url": f"{BASE_URL}/item/itemView.do?itemId={item_id}",
             "extra": {
                 "옵션": options_text,
                 "옵션가": option_prices_text,
@@ -233,7 +259,6 @@ class MetaldiyCollector(BaseCollector):
         }
 
     def _parse_category(self, soup) -> str:
-        """path_field의 select 태그 selected 옵션에서 카테고리 경로 추출"""
         path_field = soup.select_one("div.path_field")
         if not path_field:
             return None
@@ -314,11 +339,9 @@ class MetaldiyCollector(BaseCollector):
                     "source_product_code": item_id,
                     "product_name": p.get("name", ""),
                     "price": self._parse_price(p.get("price", "")),
-                    "supply_price": None,
                     "status": STATUS_MAP.get(p.get("itemSts", ""), "active"),
                     "image_url": img or None,
                     "detail_url": f"{BASE_URL}/item/itemView.do?itemId={item_id}",
-                    "stock_qty": None,
                     "category_name": cat_name,
                     "origin": None,
                     "own_code": None,

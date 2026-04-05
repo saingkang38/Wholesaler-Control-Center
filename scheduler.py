@@ -142,7 +142,8 @@ def run_ownerclan_retry():
                 logger.warning("[scheduler] 오너클랜 도매처 DB 없음 — 재시도 건너뜀")
                 return
 
-            today_start = datetime.combine(date.today(), datetime.min.time())
+            today_kst = datetime.now(ZoneInfo("Asia/Seoul")).date()
+            today_start = datetime.combine(today_kst, datetime.min.time())
             success_today = CollectionRun.query.filter(
                 CollectionRun.wholesaler_id == ownerclan.id,
                 CollectionRun.started_at >= today_start,

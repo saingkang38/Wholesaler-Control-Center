@@ -1,5 +1,5 @@
 from app.infrastructure import db
-from datetime import datetime
+from app.utils import kst_now
 
 
 class ActionSignal(db.Model):
@@ -24,7 +24,7 @@ class ActionSignal(db.Model):
     status = db.Column(db.String(16), default="pending", nullable=False)
     error_message = db.Column(db.Text, nullable=True)  # 실패 시 Naver API 오류 메시지
 
-    detected_at = db.Column(db.DateTime, default=datetime.utcnow)
+    detected_at = db.Column(db.DateTime, default=kst_now)
     resolved_at = db.Column(db.DateTime, nullable=True)
 
     master = db.relationship("MasterProduct", backref="action_signals")

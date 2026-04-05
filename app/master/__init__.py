@@ -1,6 +1,7 @@
 import json
 import logging
-from datetime import date, datetime
+from datetime import date
+from app.utils import kst_now
 from flask import Blueprint
 from app.infrastructure import db
 from app.master.models import MasterProduct, ProductEvent
@@ -50,7 +51,7 @@ MISSING_DAYS_DISCONTINUED = 7  # discontinued_candidate
 
 def process_master_update(wholesaler_id: int, items: list, snapshot_date: date = None) -> dict:
     if snapshot_date is None:
-        snapshot_date = datetime.utcnow().date()
+        snapshot_date = kst_now().date()
 
     from app.wholesalers.models import Wholesaler
     wholesaler = Wholesaler.query.get(wholesaler_id)
@@ -84,6 +85,9 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
     for code, item in today_map.items():
         if code not in existing_map:
             # 신규 상품
+            extra = item.get("extra") or {}
+            _opt_text = extra.get("옵션")
+            _opt_diffs = extra.get("옵션가")
             master = MasterProduct(
                 wholesaler_id=wholesaler_id,
                 supplier_product_code=code,
@@ -97,6 +101,8 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
                 origin=item.get("origin"),
                 shipping_fee=item.get("shipping_fee"),
                 shipping_condition=item.get("shipping_condition"),
+                options_text=_opt_text if isinstance(_opt_text, str) else None,
+                option_diffs=_opt_diffs if isinstance(_opt_diffs, str) else None,
                 current_status="active",
                 first_seen_date=snapshot_date,
                 last_seen_date=snapshot_date,
@@ -204,6 +210,21 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
                 ))
                 stats["shipping_change"] += 1
 
+            # 옵션 변동 (문자열 형식만 저장 — 도매처별 표준화 전까지 리스트는 무시)
+            extra = item.get("extra") or {}
+            _raw_options = extra.get("옵션")
+            _raw_diffs = extra.get("옵션가")
+            new_options = _raw_options if isinstance(_raw_options, str) else None
+            new_diffs = _raw_diffs if isinstance(_raw_diffs, str) else None
+            if master.option_diffs and new_diffs and master.option_diffs != new_diffs:
+                new_events.append(ProductEvent(
+                    master_product_id=master.id,
+                    event_type="OPTION_PRICE_CHANGE",
+                    event_date=snapshot_date,
+                    before_value=json.dumps({"option_diffs": master.option_diffs}, ensure_ascii=False),
+                    after_value=json.dumps({"option_diffs": new_diffs}, ensure_ascii=False),
+                ))
+
             # 마스터 갱신
             master.last_seen_date = snapshot_date
             master.missing_days = 0
@@ -233,6 +254,8 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
                 master.shipping_fee = item.get("shipping_fee")
             if item.get("shipping_condition"):
                 master.shipping_condition = item.get("shipping_condition")
+            master.options_text = new_options
+            master.option_diffs = new_diffs
 
     # 2. 오늘 수집에서 빠진 상품 처리 (미수집)
     missing_codes = existing_codes - set(today_map.keys())
