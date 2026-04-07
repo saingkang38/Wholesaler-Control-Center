@@ -5,12 +5,11 @@ import re
 import time
 import requests
 from bs4 import BeautifulSoup
-from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+from playwright.sync_api import sync_playwright
 from app.collectors.base import BaseCollector
 
 BASE_URL = "https://www.ds1008.com"
 LOGIN_URL = f"{BASE_URL}/member/login.html"
-LOGIN_ACTION = f"{BASE_URL}/exec/front/Member/login/"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -18,6 +17,10 @@ HEADERS = {
     "Accept-Language": "ko-KR,ko;q=0.9,en-US;q=0.8",
     "Referer": BASE_URL,
 }
+
+# 테스트 모드: True면 상품 3개만 수집
+TEST_MODE = False
+TEST_LIMIT = 3
 
 
 class Ds1008Collector(BaseCollector):
@@ -30,42 +33,47 @@ class Ds1008Collector(BaseCollector):
         if not login_id or not login_pw:
             return self._error("DS1008_LOGIN_ID / DS1008_LOGIN_PASSWORD 미설정")
 
-        # 1차: requests
+        if TEST_MODE:
+            logger.info(f"[ds1008] 테스트 모드 — 상품 {TEST_LIMIT}개만 수집")
+
+        # Playwright로 로그인 → 쿠키를 requests로 이전 (철물박사 패턴)
         try:
-            return self._run_requests(login_id, login_pw)
+            session = self._login_and_get_session(login_id, login_pw)
+            logger.info("[ds1008] 로그인 완료, requests 세션 전환")
         except Exception as e:
-            logger.warning(f"[ds1008] requests 실패 → Playwright 전환: {e}")
-
-        # 2차: Playwright
-        try:
-            return self._run_playwright(login_id, login_pw)
-        except Exception as e:
-            logger.warning(f"[ds1008] Playwright 실패: {e}")
-            return self._error(f"모든 수집 방식 실패: {str(e)[:200]}")
-
-    # ──────────────────────────────────────────────
-    # requests 방식
-    # ──────────────────────────────────────────────
-
-    def _run_requests(self, login_id: str, login_pw: str) -> dict:
-        session = requests.Session()
-        session.headers.update(HEADERS)
-
-        self._login_requests(session, login_id, login_pw)
-        logger.info("[ds1008] 로그인 성공 (requests)")
+            return self._error(f"로그인 실패: {str(e)[:200]}")
 
         categories = self._get_categories(session)
         logger.info(f"[ds1008] 카테고리 수: {len(categories)}")
 
+        # 목록 수집
         items = []
         for cate_no, cate_name in categories:
             try:
-                cat_items = self._collect_category_requests(session, cate_no, cate_name)
+                cat_items = self._collect_category(session, cate_no, cate_name)
                 if cat_items:
                     items.extend(cat_items)
                     logger.info(f"[ds1008] [{cate_name}] {len(cat_items)}개")
             except Exception as e:
                 logger.warning(f"[ds1008] 카테고리 오류 ({cate_name}/{cate_no}): {e}")
+            if TEST_MODE and len(items) >= TEST_LIMIT:
+                items = items[:TEST_LIMIT]
+                break
+
+        logger.info(f"[ds1008] 목록 수집 완료: {len(items)}개, 상세페이지 수집 시작")
+
+        # 상세페이지 수집
+        for i, item in enumerate(items):
+            try:
+                detail = self._fetch_detail(session, item["detail_url"])
+                item.update(detail)
+            except Exception as e:
+                logger.warning(f"[ds1008] 상세 오류 ({item['source_product_code']}): {e}")
+            if (i + 1) % 100 == 0:
+                logger.info(f"[ds1008] 상세 수집 진행: {i + 1}/{len(items)}")
+            time.sleep(0.3)
+
+        logger.info(f"[ds1008] 전체 수집 완료: {len(items)}건")
 
         return {
             "success": True,
@@ -77,30 +85,41 @@ class Ds1008Collector(BaseCollector):
             "items": items,
         }
 
-    def _login_requests(self, session: requests.Session, login_id: str, login_pw: str):
-        # hidden field 포함 로그인 폼 추출
-        resp = self._get_with_retry(session, LOGIN_URL)
-        soup = BeautifulSoup(resp.text, "html.parser")
+    # ──────────────────────────────────────────────
+    # 로그인 → requests 세션 전환
+    # ──────────────────────────────────────────────
 
-        form = soup.find("form", {"action": re.compile("LoginKeeping", re.I)})
-        payload = {}
-        if form:
-            for inp in form.find_all("input"):
-                name = inp.get("name")
-                val = inp.get("value", "")
-                if name:
-                    payload[name] = val
+    def _login_and_get_session(self, login_id: str, login_pw: str) -> requests.Session:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(user_agent=HEADERS["User-Agent"])
+            page = context.new_page()
+            page.set_default_timeout(30000)
 
-        payload["member_id"] = login_id
-        payload["member_passwd"] = login_pw
-        payload["use_login_keeping"] = "T"
+            page.goto(LOGIN_URL, wait_until="domcontentloaded")
+            page.fill("input[name='member_id']", login_id)
+            page.fill("input[name='member_passwd']", login_pw)
+            page.click("a[onclick*='MemberAction.login']")
+            page.wait_for_load_state("domcontentloaded")
+            time.sleep(1)
 
-        resp = self._post_with_retry(
-            session, LOGIN_ACTION, data=payload, allow_redirects=True
-        )
+            if "로그아웃" not in page.content() and "logout" not in page.content().lower():
+                browser.close()
+                raise Exception("로그인 실패 - 계정 정보 확인 필요")
 
-        if "로그아웃" not in resp.text and "logout" not in resp.text.lower():
-            raise Exception("로그인 실패 - 계정 정보 확인 필요")
+            playwright_cookies = context.cookies()
+            browser.close()
+
+        session = requests.Session()
+        session.headers.update(HEADERS)
+        for c in playwright_cookies:
+            session.cookies.set(c["name"], c["value"], domain=c.get("domain", ""))
+
+        return session
+
+    # ──────────────────────────────────────────────
+    # 카테고리 수집
+    # ──────────────────────────────────────────────
 
     def _get_categories(self, session: requests.Session) -> list:
         resp = self._get_with_retry(session, f"{BASE_URL}/index.html")
@@ -108,24 +127,31 @@ class Ds1008Collector(BaseCollector):
 
         seen = set()
         categories = []
-        # 카테고리 링크는 href가 아닌 cate 속성에 있음: <a cate="?cate_no=7262">
+
         for a in soup.find_all("a", attrs={"cate": re.compile(r"cate_no=\d+")}):
             m = re.search(r"cate_no=(\d+)", a.get("cate", ""))
-            if not m:
-                continue
-            cate_no = m.group(1)
-            if cate_no in seen:
-                continue
-            seen.add(cate_no)
-            name = a.get_text(strip=True)
-            if name:
-                categories.append((cate_no, name))
+            if m:
+                cate_no = m.group(1)
+                if cate_no not in seen:
+                    seen.add(cate_no)
+                    name = a.get_text(strip=True)
+                    if name:
+                        categories.append((cate_no, name))
+
+        if not categories:
+            for a in soup.find_all("a", href=re.compile(r"cate_no=\d+")):
+                m = re.search(r"cate_no=(\d+)", a.get("href", ""))
+                if m:
+                    cate_no = m.group(1)
+                    if cate_no not in seen:
+                        seen.add(cate_no)
+                        name = a.get_text(strip=True)
+                        if name:
+                            categories.append((cate_no, name))
 
         return categories
 
-    def _collect_category_requests(
-        self, session: requests.Session, cate_no: str, cate_name: str
-    ) -> list:
+    def _collect_category(self, session: requests.Session, cate_no: str, cate_name: str) -> list:
         items = []
         page_num = 1
 
@@ -140,23 +166,31 @@ class Ds1008Collector(BaseCollector):
 
             for prod in products:
                 try:
+                    # href에서 product_no 추출
                     a_tag = prod.select_one("a[href*='/product/']")
                     if not a_tag:
                         continue
                     href = a_tag.get("href", "")
-                    m = re.search(r"/product/[^/]+/(\d+)/", href)
+                    m = re.search(r"product_no=(\d+)", href)
+                    if not m:
+                        m = re.search(r"/product/[^/]+/(\d+)/", href)
                     if not m:
                         continue
                     product_no = m.group(1)
 
-                    name_el = prod.select_one("div.hb_desc_box p, .hb_name, .name")
-                    name = name_el.get_text(strip=True) if name_el else ""
+                    # 상세 URL (카테고리 포함한 원본 href 사용)
+                    detail_url = BASE_URL + href if href.startswith("/") else href
 
-                    price_el = prod.select_one(
-                        ".hb_prodrecom_price span span, .price span, .hb_price strong"
-                    )
-                    price = self._parse_price(price_el.get_text() if price_el else "")
+                    # 상품명: displaynone span 제외
+                    name_el = prod.select_one("p.name a")
+                    name = ""
+                    if name_el:
+                        for hidden in name_el.select("span.displaynone, span.title"):
+                            hidden.decompose()
+                        name = name_el.get_text(strip=True)
+                        name = re.sub(r"^\[\s*\]\s*", "", name).strip()
 
+                    # 이미지
                     img_el = prod.select_one("img")
                     img = img_el.get("src", "") if img_el else ""
                     if img.startswith("//"):
@@ -165,20 +199,28 @@ class Ds1008Collector(BaseCollector):
                     items.append({
                         "source_product_code": product_no,
                         "product_name": name,
-                        "price": price,
+                        "price": None,          # 상세페이지에서 수집
                         "supply_price": None,
                         "status": "active",
                         "image_url": img or None,
-                        "detail_url": f"{BASE_URL}/product/detail.html?product_no={product_no}",
+                        "detail_url": detail_url,
                         "stock_qty": None,
                         "category_name": cate_name,
+                        "origin": None,
+                        "own_code": None,
+                        "detail_description": "",
+                        "shipping_fee": None,
+                        "shipping_condition": None,
+                        "extra": {},
                     })
                 except Exception as e:
                     logger.warning(f"[ds1008] 상품 파싱 오류: {e}")
 
-            time.sleep(0.8)
+                if TEST_MODE and len(items) >= TEST_LIMIT:
+                    return items
 
-            # 다음 페이지 확인
+            time.sleep(0.5)
+
             next_link = soup.select_one(
                 f".xans-product-listpage a[href*='page={page_num + 1}'], "
                 f"a[href*='cate_no={cate_no}'][href*='page={page_num + 1}']"
@@ -190,135 +232,147 @@ class Ds1008Collector(BaseCollector):
         return items
 
     # ──────────────────────────────────────────────
-    # Playwright fallback
+    # 상세페이지 수집
     # ──────────────────────────────────────────────
 
-    def _run_playwright(self, login_id: str, login_pw: str) -> dict:
-        items = []
-        categories = []
+    def _fetch_detail(self, session: requests.Session, detail_url: str) -> dict:
+        resp = self._get_with_retry(session, detail_url)
+        soup = BeautifulSoup(resp.text, "html.parser")
+        return self._parse_detail(soup)
 
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            context = browser.new_context(user_agent=HEADERS["User-Agent"])
-            page = context.new_page()
-            page.set_default_timeout(30000)
+    def _parse_detail(self, soup) -> dict:
+        # li.xans-record- 에서 라벨 → 값 맵 생성
+        info = {}
+        for li in soup.select(".xans-product-detail li.xans-record-"):
+            title_el = li.select_one(".info_title, [class*=info_title]")
+            cont_el = li.select_one(".info_cont, [class*=info_cont]")
+            if title_el and cont_el:
+                label = title_el.get_text(strip=True)
+                value = cont_el.get_text(strip=True)
+                if label:
+                    info[label] = value
 
-            # 로그인
-            page.goto(LOGIN_URL, wait_until="domcontentloaded")
-            page.fill("input[name='member_id']", login_id)
-            page.fill("input[name='member_passwd']", login_pw)
-            page.click("a[onclick*='MemberAction.login']")
-            page.wait_for_load_state("domcontentloaded")
-            time.sleep(1)
+        # 가격
+        price = None
+        if "판매가" in info:
+            price = self._parse_price(info["판매가"])
 
-            if "로그아웃" not in page.content():
-                browser.close()
-                raise Exception("Playwright 로그인 실패")
+        # 자체상품코드
+        own_code = info.get("자체상품코드") or None
 
-            logger.info("[ds1008] 로그인 성공 (Playwright)")
+        # 원산지
+        origin = info.get("원산지") or None
 
-            # 카테고리 추출
-            page.goto(f"{BASE_URL}/index.html", wait_until="domcontentloaded")
-            categories = page.evaluate(r"""
-                () => {
-                    const seen = new Set();
-                    const cats = [];
-                    document.querySelectorAll('a[href*="cate_no="]').forEach(el => {
-                        const m = el.href.match(/cate_no=(\d+)/);
-                        if (m && !seen.has(m[1]) && el.textContent.trim()) {
-                            seen.add(m[1]);
-                            cats.push([m[1], el.textContent.trim()]);
-                        }
-                    });
-                    return cats;
-                }
-            """)
+        # 배송비 + 무료배송 조건: "3,300원(330,000원 이상 구매 시 무료)"
+        shipping_fee = None
+        shipping_condition = None
+        if "배송비" in info:
+            ship_text = info["배송비"]
+            fee_match = re.match(r"([\d,]+)원", ship_text)
+            if fee_match:
+                shipping_fee = int(fee_match.group(1).replace(",", ""))
+            cond_match = re.search(r"\(([^)]+)\)", ship_text)
+            if cond_match:
+                shipping_condition = cond_match.group(1)
 
-            for cate_no, cate_name in categories:
-                try:
-                    cat_items = self._collect_category_playwright(page, cate_no, cate_name)
-                    if cat_items:
-                        items.extend(cat_items)
-                        logger.info(f"[ds1008][PW] [{cate_name}] {len(cat_items)}개")
-                except Exception as e:
-                    logger.warning(f"[ds1008][PW] 카테고리 오류 ({cate_name}): {e}")
+        # 옵션
+        options_text = None
+        option_prices_text = None
+        all_option_values = []
+        all_option_prices = []
 
-            browser.close()
+        for sel_el in soup.select(".xans-product-option select, select[name*=option]"):
+            for opt in sel_el.find_all("option"):
+                text = opt.get_text(strip=True)
+                if not text or "선택해 주세요" in text:
+                    continue
+                all_option_values.append(text)
+                price_match = re.search(r"([+-])\s*([\d,]+)\s*원", text)
+                if price_match:
+                    sign = 1 if price_match.group(1) == "+" else -1
+                    opt_diff = int(price_match.group(2).replace(",", "")) * sign
+                    all_option_prices.append(str(opt_diff))
+                else:
+                    all_option_prices.append("0")
+
+        if all_option_values:
+            options_text = "\n".join(all_option_values)
+            option_prices_text = "\n".join(all_option_prices)
+
+        # 상세설명 HTML
+        detail_html = ""
+        detail_el = soup.select_one("#tab-responsive-1 .cont, #prdDetail .cont, #prdDetail")
+        if detail_el:
+            for img in detail_el.select("img"):
+                # lazy loading: ec-data-src → src
+                real_src = img.get("ec-data-src") or img.get("src", "")
+                if real_src.startswith("//"):
+                    real_src = "https:" + real_src
+                elif real_src.startswith("/"):
+                    real_src = BASE_URL + real_src
+                img["src"] = real_src
+            detail_html = detail_el.decode_contents().strip()
 
         return {
-            "success": True,
-            "total_items": len(items),
-            "total_pages": len(categories),
-            "success_count": len(items),
-            "fail_count": 0,
-            "error_summary": None,
-            "items": items,
+            "price": price,
+            "origin": origin,
+            "own_code": own_code,
+            "detail_description": detail_html,
+            "shipping_fee": shipping_fee,
+            "shipping_condition": shipping_condition,
+            "extra": {
+                "옵션": options_text,
+                "옵션가": option_prices_text,
+            },
         }
 
-    def _collect_category_playwright(self, page, cate_no: str, cate_name: str) -> list:
-        items = []
-        page_num = 1
+    # ──────────────────────────────────────────────
+    # 테스트 엑셀 저장
+    # ──────────────────────────────────────────────
 
-        while True:
-            url = f"{BASE_URL}/product/list.html?cate_no={cate_no}&page={page_num}"
-            page.goto(url, wait_until="domcontentloaded")
-            time.sleep(0.5)
+    def _save_test_excel(self, items: list):
+        import openpyxl
+        from pathlib import Path
+        from datetime import datetime
 
-            products = page.evaluate(r"""
-                () => {
-                    const results = [];
-                    document.querySelectorAll('div.hb_prod_item').forEach(el => {
-                        const a = el.querySelector('a[href*="/product/"]');
-                        if (!a) return;
-                        const m = a.href.match(/\/product\/[^\/]+\/(\d+)\//);
-                        if (!m) return;
+        save_dir = Path(__file__).resolve().parents[2] / "downloads" / "ds1008"
+        save_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        path = save_dir / f"ds1008_test_{timestamp}.xlsx"
 
-                        const nameEl = el.querySelector('div.hb_desc_box p, .hb_name, .name');
-                        const priceEl = el.querySelector('.hb_prodrecom_price span span, .price span');
-                        const imgEl = el.querySelector('img');
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "DS도매_테스트"
+        headers = [
+            "상품코드", "상품명", "판매가", "공급가", "재고수량", "상태",
+            "이미지URL", "상세URL", "카테고리", "원산지", "자체코드",
+            "배송비", "배송조건", "옵션", "옵션가", "상세설명",
+        ]
+        ws.append(headers)
 
-                        results.push({
-                            product_no: m[1],
-                            name: nameEl ? nameEl.textContent.trim() : '',
-                            price: priceEl ? priceEl.textContent.trim() : '',
-                            img: imgEl ? (imgEl.src || '') : '',
-                        });
-                    });
-                    return results;
-                }
-            """)
+        for item in items:
+            extra = item.get("extra") or {}
+            ws.append([
+                item.get("source_product_code"),
+                item.get("product_name"),
+                item.get("price"),
+                item.get("supply_price"),
+                item.get("stock_qty"),
+                item.get("status"),
+                item.get("image_url"),
+                item.get("detail_url"),
+                item.get("category_name"),
+                item.get("origin"),
+                item.get("own_code"),
+                item.get("shipping_fee"),
+                item.get("shipping_condition"),
+                extra.get("옵션"),
+                extra.get("옵션가"),
+                item.get("detail_description"),
+            ])
 
-            if not products:
-                break
-
-            for prod in products:
-                img = prod.get("img", "")
-                if img.startswith("//"):
-                    img = "https:" + img
-                product_no = prod["product_no"]
-                items.append({
-                    "source_product_code": product_no,
-                    "product_name": prod.get("name", ""),
-                    "price": self._parse_price(prod.get("price", "")),
-                    "supply_price": None,
-                    "status": "active",
-                    "image_url": img or None,
-                    "detail_url": f"{BASE_URL}/product/detail.html?product_no={product_no}",
-                    "stock_qty": None,
-                    "category_name": cate_name,
-                })
-
-            # 다음 페이지 확인
-            has_next = page.evaluate(f"""
-                () => !!document.querySelector(
-                    '.xans-product-listpage a[href*="page={page_num + 1}"]'
-                )
-            """)
-            if not has_next:
-                break
-            page_num += 1
-
-        return items
+        wb.save(path)
+        logger.info(f"[ds1008] 테스트 엑셀 저장: {path}")
 
     # ──────────────────────────────────────────────
     # 공통 유틸
@@ -328,7 +382,7 @@ class Ds1008Collector(BaseCollector):
         delay = 2
         for attempt in range(retries):
             try:
-                resp = session.get(url, timeout=15)
+                resp = session.get(url, timeout=20)
                 if resp.status_code == 200:
                     return resp
                 if resp.status_code in (403, 429):
@@ -340,18 +394,6 @@ class Ds1008Collector(BaseCollector):
                     raise
                 time.sleep(delay)
         raise Exception(f"GET 요청 실패 ({retries}회 시도): {url}")
-
-    def _post_with_retry(self, session: requests.Session, url: str, retries: int = 3, **kwargs) -> requests.Response:
-        delay = 2
-        for attempt in range(retries):
-            try:
-                resp = session.post(url, timeout=15, **kwargs)
-                return resp
-            except requests.RequestException as e:
-                if attempt == retries - 1:
-                    raise
-                time.sleep(delay)
-        raise Exception(f"POST 요청 실패 ({retries}회 시도): {url}")
 
     def _parse_price(self, text) -> int:
         if not text:
