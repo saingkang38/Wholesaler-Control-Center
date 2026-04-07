@@ -57,8 +57,8 @@
 | 친구도매 | chingudome | API | 운영중 |
 | 젠트레이드 | zentrade | API | IP허용 대기 |
 | 3MRO | mro3 | API | 운영중 |
-| DS1008 | ds1008 | 크롤링 | 미검토 |
-| 힛디자인 | hitdesign | 크롤링 | 미검토 |
+| DS도매 | ds1008 | 크롤링 | 운영중 |
+| 히트가구 | hitdesign | 크롤링 | 미검토 |
 | 필우커머스 | feelwoo | 크롤링 | 미검토 |
 | 식자재마트 | sikjaje | 크롤링 | 미검토 |
 | 온채널 | onch3 | 크롤링 | 미검토 |

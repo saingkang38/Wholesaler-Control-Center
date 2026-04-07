@@ -20,18 +20,75 @@ STATUS_MAP = {
 }
 
 
+IDX_FILE = Path(__file__).resolve().parents[2] / "downloads" / "ownerclan" / ".ownerclan_idx.txt"
+
+
 class OwnerclanCollector(BaseCollector):
     wholesaler_code = "ownerclan"
 
-    def run(self, supplier_code: str = None) -> dict:
+    def run(self, supplier_code: str = None, phase: str = None) -> dict:
+        """
+        phase=None   : 기존 전체 실행 (트리거 + 대기 + 다운로드)
+        phase='trigger'  : 로그인 → 다운로드 세트 요청 → idx 저장 후 종료
+        phase='download' : 로그인 → 저장된 idx로 다운로드 → 파싱
+        """
         login_id = os.getenv("OWNERCLAN_LOGIN_ID")
         login_pw = os.getenv("OWNERCLAN_LOGIN_PASSWORD")
 
         if not login_id or not login_pw:
             return self._error("OWNERCLAN_LOGIN_ID / OWNERCLAN_LOGIN_PASSWORD 미설정")
 
-        items = []
+        if phase == "trigger":
+            return self._run_trigger(login_id, login_pw)
+        elif phase == "download":
+            return self._run_download(login_id, login_pw)
+        else:
+            return self._run_full(login_id, login_pw)
 
+    # ──────────────────────────────────────────────
+    # 트리거 단계: 로그인 → 다운로드 세트 요청 → idx 저장
+    # ──────────────────────────────────────────────
+
+    def _run_trigger(self, login_id: str, login_pw: str) -> dict:
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context()
+                page = context.new_page()
+                page.set_default_timeout(30000)
+
+                idx = self._login_and_trigger(page, login_id, login_pw)
+                browser.close()
+
+            IDX_FILE.parent.mkdir(parents=True, exist_ok=True)
+            IDX_FILE.write_text(str(idx))
+            logger.info(f"[ownerclan] 트리거 완료 / idx={idx} 저장됨")
+
+            return {
+                "success": True,
+                "total_items": 0, "total_pages": 0,
+                "success_count": 0, "fail_count": 0,
+                "error_summary": None,
+                "items": [],
+                "trigger_idx": idx,
+            }
+        except Exception as e:
+            logger.error(f"[ownerclan] 트리거 실패: {e}")
+            return self._error(f"트리거 실패: {str(e)[:300]}")
+
+    # ──────────────────────────────────────────────
+    # 다운로드 단계: 저장된 idx로 파일 다운로드 + 파싱
+    # ──────────────────────────────────────────────
+
+    def _run_download(self, login_id: str, login_pw: str) -> dict:
+        if not IDX_FILE.exists():
+            return self._error("트리거 idx 파일 없음 — 먼저 트리거를 실행하세요")
+
+        idx = IDX_FILE.read_text().strip()
+        if not idx:
+            return self._error("트리거 idx 값이 비어있음")
+
+        items = []
         try:
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
@@ -39,114 +96,55 @@ class OwnerclanCollector(BaseCollector):
                 page = context.new_page()
                 page.set_default_timeout(30000)
 
-                # 1. 로그인
-                page.goto(LOGIN_URL)
-                page.wait_for_load_state("networkidle")
-                time.sleep(1)
-                page.fill("input[name='id']", login_id)
-                page.fill("input[name='passwd']", login_pw)
-                page.click("input[type='submit'].img_log")
-                page.wait_for_load_state("networkidle")
-                time.sleep(2)
+                self._login(page, login_id, login_pw)
 
-                if "loginform" in page.url.lower():
-                    browser.close()
-                    return self._error("로그인 실패 - 계정 정보 확인 필요")
+                safe_path = self._download_file(page, idx)
+                browser.close()
 
-                logger.info("[ownerclan] 로그인 성공")
+            items, total_rows = self._parse_zip(safe_path)
+            IDX_FILE.unlink(missing_ok=True)
+            logger.info(f"[ownerclan] 다운로드+파싱 완료: {total_rows}건")
 
-                # 2. DB 다운로드 폼 페이지 이동
-                page.goto(DOWNLOAD_FORM_URL)
-                page.wait_for_load_state("networkidle")
-                time.sleep(1)
+        except PlaywrightTimeout as e:
+            return self._error(f"타임아웃: {str(e)[:200]}")
+        except Exception as e:
+            logger.warning(f"[ownerclan] 다운로드 오류: {e}")
+            return self._error(str(e)[:500])
 
-                # 3. 마켓수수료 0% 설정
-                try:
-                    page.fill("input[name='price_free_rate5']", "0")
-                except Exception:
-                    pass
+        return {
+            "success": True,
+            "total_items": total_rows,
+            "total_pages": 1,
+            "success_count": total_rows,
+            "fail_count": 0,
+            "error_summary": None,
+            "items": items,
+        }
 
-                # 4. "찜한 공급사 상품만 다운로드" 라디오 선택 (value="D")
-                page.check("input[name='is_search_vender'][value='D']")
-                time.sleep(0.5)
+    # ──────────────────────────────────────────────
+    # 전체 실행 (기존 동작 유지)
+    # ──────────────────────────────────────────────
 
-                # 5. 다운로드 세트 만들기 클릭 (팝업 2회 자동 수락)
-                page.on("dialog", lambda d: (logger.info(f"[ownerclan] 팝업: {d.message[:80]}"), d.accept()))
-                page.click("button#btn_submit2")
-                page.wait_for_load_state("networkidle")
-                time.sleep(2)
+    def _run_full(self, login_id: str, login_pw: str) -> dict:
+        items = []
+        try:
+            with sync_playwright() as p:
+                browser = p.chromium.launch(headless=True)
+                context = browser.new_context(accept_downloads=True)
+                page = context.new_page()
+                page.set_default_timeout(30000)
 
-                # 6. 목록 페이지로 이동 후 idx 확인
-                page.goto(DOWNLOAD_LIST_URL)
-                page.wait_for_load_state("networkidle")
-                time.sleep(1)
+                idx = self._login_and_trigger(page, login_id, login_pw)
 
-                idx = page.evaluate(r"""
-                    () => {
-                        const links = document.querySelectorAll('a[href*="productDownload.php?idx="]');
-                        if (links.length > 0) {
-                            const m = links[0].href.match(/idx=(\d+)/);
-                            if (m) return m[1];
-                        }
-                        const spans = document.querySelectorAll('[id^="downloadSpan"]');
-                        if (spans.length > 0) {
-                            const m = spans[0].id.match(/\d+/);
-                            if (m) return m[0];
-                        }
-                        return null;
-                    }
-                """)
-
-                if not idx:
-                    browser.close()
-                    return self._error("다운로드 세트 idx 확인 실패")
-
-                logger.info(f"[ownerclan] 다운로드 세트 생성 / idx={idx}")
-
-                # 7. 1시간 대기 후 다운로드 (작업 완료에 시간이 많이 걸림)
                 wait_seconds = int(os.getenv("OWNERCLAN_WAIT_SECONDS", "1200"))
                 logger.info(f"[ownerclan] {wait_seconds}초 대기 후 다운로드 시작...")
                 time.sleep(wait_seconds)
 
-                # 8. showDownloadList 호출 → 하위 행(tr#downloadTr) 표시
-                page.evaluate(f"showDownloadList('{idx}')")
-
-                # AJAX 응답으로 DOM에 다운로드 링크가 생길 때까지 대기
-                download_selector = f'a[href*="downloadServer.php?idx={idx}"]'
-                try:
-                    page.wait_for_selector(download_selector, timeout=30000)
-                except PlaywrightTimeout:
-                    browser.close()
-                    return self._error(f"다운로드 링크 미표시 (idx={idx}) - showDownloadList 응답 없음")
-
-                # 9. 전체 다운로드 클릭 → 파일 다운로드
-                with page.expect_download(timeout=120000) as dl_info:
-                    page.evaluate(f"""
-                        () => {{
-                            const link = document.querySelector('a[href*="downloadServer.php?idx={idx}"]');
-                            if (link) link.click();
-                        }}
-                    """)
-
-                download = dl_info.value
-                tmp_path = download.path()
-                logger.info(f"[ownerclan] ZIP 다운로드 완료: {tmp_path}")
-
-                # 브라우저 닫기 전에 프로젝트 downloads 폴더로 복사
-                import shutil
-                from datetime import datetime
-                downloads_dir = Path(__file__).resolve().parents[2] / "downloads" / "ownerclan"
-                downloads_dir.mkdir(parents=True, exist_ok=True)
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                safe_path = str(downloads_dir / f"ownerclan_{timestamp}.zip")
-                shutil.copy2(tmp_path, safe_path)
-                logger.info(f"[ownerclan] 파일 저장 위치: {safe_path}")
-
+                safe_path = self._download_file(page, idx)
                 browser.close()
 
-                # 10. ZIP 해제 + xlsx 파싱
-                items, total_rows = self._parse_zip(safe_path)
-                logger.info(f"[ownerclan] 파싱 완료: {total_rows}건")
+            items, total_rows = self._parse_zip(safe_path)
+            logger.info(f"[ownerclan] 파싱 완료: {total_rows}건")
 
         except PlaywrightTimeout as e:
             return {
@@ -175,6 +173,110 @@ class OwnerclanCollector(BaseCollector):
             "error_summary": None,
             "items": items,
         }
+
+    # ──────────────────────────────────────────────
+    # 공통: 로그인
+    # ──────────────────────────────────────────────
+
+    def _login(self, page, login_id: str, login_pw: str):
+        page.goto(LOGIN_URL)
+        page.wait_for_load_state("networkidle")
+        time.sleep(1)
+        page.fill("input[name='id']", login_id)
+        page.fill("input[name='passwd']", login_pw)
+        page.click("input[type='submit'].img_log")
+        page.wait_for_load_state("networkidle")
+        time.sleep(2)
+        if "loginform" in page.url.lower():
+            raise Exception("로그인 실패 - 계정 정보 확인 필요")
+        logger.info("[ownerclan] 로그인 성공")
+
+    # ──────────────────────────────────────────────
+    # 공통: 로그인 + 트리거 → idx 반환
+    # ──────────────────────────────────────────────
+
+    def _login_and_trigger(self, page, login_id: str, login_pw: str) -> str:
+        self._login(page, login_id, login_pw)
+
+        page.goto(DOWNLOAD_FORM_URL)
+        page.wait_for_load_state("networkidle")
+        time.sleep(1)
+
+        try:
+            page.fill("input[name='price_free_rate5']", "0")
+        except Exception:
+            pass
+
+        page.check("input[name='is_search_vender'][value='D']")
+        time.sleep(0.5)
+
+        page.on("dialog", lambda d: (logger.info(f"[ownerclan] 팝업: {d.message[:80]}"), d.accept()))
+        page.click("button#btn_submit2")
+        page.wait_for_load_state("networkidle")
+        time.sleep(2)
+
+        page.goto(DOWNLOAD_LIST_URL)
+        page.wait_for_load_state("networkidle")
+        time.sleep(1)
+
+        idx = page.evaluate(r"""
+            () => {
+                const links = document.querySelectorAll('a[href*="productDownload.php?idx="]');
+                if (links.length > 0) {
+                    const m = links[0].href.match(/idx=(\d+)/);
+                    if (m) return m[1];
+                }
+                const spans = document.querySelectorAll('[id^="downloadSpan"]');
+                if (spans.length > 0) {
+                    const m = spans[0].id.match(/\d+/);
+                    if (m) return m[0];
+                }
+                return null;
+            }
+        """)
+
+        if not idx:
+            raise Exception("다운로드 세트 idx 확인 실패")
+
+        logger.info(f"[ownerclan] 다운로드 세트 생성 / idx={idx}")
+        return idx
+
+    # ──────────────────────────────────────────────
+    # 공통: idx로 파일 다운로드 → 저장 경로 반환
+    # ──────────────────────────────────────────────
+
+    def _download_file(self, page, idx: str) -> str:
+        page.goto(DOWNLOAD_LIST_URL)
+        page.wait_for_load_state("networkidle")
+        time.sleep(1)
+
+        page.evaluate(f"showDownloadList('{idx}')")
+
+        download_selector = f'a[href*="downloadServer.php?idx={idx}"]'
+        try:
+            page.wait_for_selector(download_selector, timeout=30000)
+        except PlaywrightTimeout:
+            raise Exception(f"다운로드 링크 미표시 (idx={idx})")
+
+        with page.expect_download(timeout=120000) as dl_info:
+            page.evaluate(f"""
+                () => {{
+                    const link = document.querySelector('a[href*="downloadServer.php?idx={idx}"]');
+                    if (link) link.click();
+                }}
+            """)
+
+        import shutil
+        from datetime import datetime
+        download = dl_info.value
+        tmp_path = download.path()
+        downloads_dir = Path(__file__).resolve().parents[2] / "downloads" / "ownerclan"
+        downloads_dir.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        safe_path = str(downloads_dir / f"ownerclan_{timestamp}.zip")
+        shutil.copy2(tmp_path, safe_path)
+        logger.info(f"[ownerclan] 파일 저장: {safe_path}")
+        return safe_path
 
     def _parse_zip(self, zip_path) -> tuple:
         import openpyxl

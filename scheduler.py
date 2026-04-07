@@ -73,6 +73,29 @@ def _collect_wholesaler(wholesaler_code: str, name: str, flask_app, run_time: st
         return False
 
 
+def _ownerclan_trigger(flask_app, run_time: str) -> bool:
+    """오너클랜 트리거만 실행 (다운로드 세트 요청). DB 저장 없음."""
+    from notifiers.telegram import notify_failure
+    from collectors.ownerclan import OwnerclanCollector
+
+    logger.info("[scheduler] 오너클랜 트리거 시작")
+    try:
+        with flask_app.app_context():
+            result = OwnerclanCollector().run(phase="trigger")
+        if result.get("success"):
+            logger.info(f"[scheduler] 오너클랜 트리거 완료 (idx={result.get('trigger_idx')})")
+            return True
+        else:
+            error = result.get("error_summary") or "알 수 없는 오류"
+            logger.error(f"[scheduler] 오너클랜 트리거 실패: {error}")
+            notify_failure("오너클랜(트리거)", str(error)[:300], run_time)
+            return False
+    except Exception as e:
+        logger.error(f"[scheduler] 오너클랜 트리거 예외: {e}")
+        notify_failure("오너클랜(트리거)", str(e)[:300], run_time)
+        return False
+
+
 def run_store_sync(flask_app, run_time: str):
     """스마트스토어 전체 동기화"""
     from notifiers.telegram import notify_failure
@@ -103,29 +126,54 @@ def run_match_and_signal(flask_app, run_time: str):
         logger.error(f"[scheduler] 매칭/시그널 감지 실패: {e}")
 
 
-def run_early_pipeline():
-    """새벽 2시 — 오너클랜 → 철물박사 → 스토어동기화 → 시그널"""
+def run_noon_pipeline():
+    """
+    12:00 전체 수집 파이프라인 (순차 실행)
+
+    순서:
+      1. 오너클랜 트리거 (다운로드 세트 요청)
+      2. API 도매처: 친구도매 → 젠트레이드 → 3MRO
+      3. 오너클랜 다운로드 (API 수집 중 파일 준비됨)
+      4. 크롤링/파일 도매처: 철물박사 → JTC코리아 → 필우커머스 → 식자재마트
+                            → 히트가구 → DS도매 → 도매토피아 → 온채널
+      5. 스토어 동기화 + 시그널 갱신
+    """
     run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
-    logger.info(f"[scheduler] 새벽 파이프라인 시작 ({run_time})")
+    logger.info(f"[scheduler] 낮 파이프라인 시작 ({run_time})")
 
     from app import create_app
     flask_app = create_app()
 
-    # 오너클랜 먼저 (20분 대기 포함 — 수집 자체가 오래 걸림)
+    # 1. 오너클랜 트리거 (다운로드 세트 요청만, 빠름)
+    _ownerclan_trigger(flask_app, run_time)
+
+    # 2. API 도매처 (오너클랜 파일 준비되는 동안 수집)
+    _collect_wholesaler("chingudome", "친구도매", flask_app, run_time)
+    _collect_wholesaler("zentrade",   "젠트레이드", flask_app, run_time)
+    _collect_wholesaler("mro3",       "3MRO",      flask_app, run_time)
+
+    # 3. 오너클랜 다운로드 (API 수집 소요 시간 ≒ 20분 대기 완료)
     _collect_wholesaler("ownerclan", "오너클랜", flask_app, run_time)
 
-    # 성공/실패 무관하게 철물박사 연속 진행
-    _collect_wholesaler("metaldiy", "철물박사", flask_app, run_time)
+    # 4. 크롤링 도매처 (시간 오래 걸리는 순으로)
+    _collect_wholesaler("metaldiy",   "철물박사",   flask_app, run_time)
+    _collect_wholesaler("jtckorea",   "JTC코리아",  flask_app, run_time)
+    _collect_wholesaler("feelwoo",    "필우커머스", flask_app, run_time)
+    _collect_wholesaler("sikjaje",    "식자재마트", flask_app, run_time)
+    _collect_wholesaler("hitdesign",  "히트가구",   flask_app, run_time)
+    _collect_wholesaler("ds1008",     "DS도매",     flask_app, run_time)
+    _collect_wholesaler("dometopia",  "도매토피아", flask_app, run_time)
+    _collect_wholesaler("onch3",      "온채널",     flask_app, run_time)
 
-    # 수집 완료 후 스토어 동기화 + 시그널 갱신
+    # 5. 스토어 동기화 + 시그널
     run_store_sync(flask_app, run_time)
     run_match_and_signal(flask_app, run_time)
 
-    logger.info(f"[scheduler] 새벽 파이프라인 완료 ({run_time})")
+    logger.info(f"[scheduler] 낮 파이프라인 완료 ({run_time})")
 
 
 def run_ownerclan_retry():
-    """새벽 6시 — 오너클랜 오늘 성공 기록 없으면 재시도"""
+    """18:00 — 오너클랜 오늘 성공 기록 없으면 재시도"""
     run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
     logger.info(f"[scheduler] 오너클랜 재시도 확인 ({run_time})")
 
@@ -159,7 +207,7 @@ def run_ownerclan_retry():
         return
 
     logger.info("[scheduler] 오너클랜 오늘 성공 기록 없음 — 재시도 시작")
-    _collect_wholesaler("ownerclan", "오너클랜(6시재시도)", flask_app, run_time)
+    _collect_wholesaler("ownerclan", "오너클랜(18시재시도)", flask_app, run_time)
 
 
 if __name__ == "__main__":
@@ -192,11 +240,11 @@ if __name__ == "__main__":
     scheduler = BlockingScheduler(timezone=TIMEZONE)
 
     scheduler.add_job(
-        run_early_pipeline,
+        run_noon_pipeline,
         trigger="cron",
-        hour=2,
-        minute=0,
-        id="early_pipeline",
+        hour=0,
+        minute=1,
+        id="noon_pipeline",
     )
     scheduler.add_job(
         run_ownerclan_retry,
@@ -206,7 +254,7 @@ if __name__ == "__main__":
         id="ownerclan_retry",
     )
 
-    logger.info(f"[scheduler] 시작 — 02:00 새벽파이프라인 / 06:00 오너클랜재시도 ({TIMEZONE})")
+    logger.info(f"[scheduler] 시작 — 00:01 새벽파이프라인 / 06:00 오너클랜재시도 ({TIMEZONE})")
     logger.info("[scheduler] Ctrl+C로 중단")
 
     try:

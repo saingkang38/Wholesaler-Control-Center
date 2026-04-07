@@ -36,8 +36,19 @@ def trigger_collection(wholesaler_code):
 @collections_bp.route("/api/collection-status")
 @login_required
 def collection_status():
+    from datetime import datetime, date
     from app.execution_logs.models import CollectionRun
+
     running = CollectionRun.query.filter_by(status="running").all()
+
+    today_start = datetime.combine(date.today(), datetime.min.time())
+    recent_runs = (
+        CollectionRun.query
+        .filter(CollectionRun.started_at >= today_start)
+        .order_by(CollectionRun.started_at.desc())
+        .all()
+    )
+
     return jsonify({
         "running": [
             {
@@ -47,5 +58,16 @@ def collection_status():
                 "trigger_type": r.trigger_type,
             }
             for r in running
-        ]
+        ],
+        "recent_runs": [
+            {
+                "wholesaler_code": r.wholesaler.code,
+                "wholesaler_name": r.wholesaler.name,
+                "status": r.status,
+                "started_at": r.started_at.strftime("%H:%M") if r.started_at else "?",
+                "total_items": r.total_items,
+                "error_summary": r.error_summary,
+            }
+            for r in recent_runs
+        ],
     })

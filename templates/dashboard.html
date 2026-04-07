@@ -3,17 +3,24 @@
 
 {% block content %}
 
-<!-- 수집 중 상태 배너 -->
-<div id="collection-banner" style="display:none; margin-bottom:16px; padding:12px 16px;
-    background:#fff8e1; border:1px solid #ffe082; border-radius:8px;
-    display:flex; align-items:center; gap:10px;">
-    <span style="display:inline-block; width:10px; height:10px; background:#f39c12;
-        border-radius:50%; animation:blink 1s infinite;"></span>
-    <span id="collection-banner-text" style="font-size:13px; color:#7d5a00; font-weight:bold;"></span>
-    <span style="font-size:12px; color:#999; margin-left:auto;">10초마다 자동 갱신</span>
+<!-- 실시간 수집 진행 현황 -->
+<div class="card" style="margin-bottom:20px;">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+        <h3 style="font-size:14px; color:#888;">실시간 수집 현황</h3>
+        <span style="font-size:11px; color:#bbb;" id="status-last-updated"></span>
+    </div>
+    <div id="progress-panel" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px,1fr)); gap:10px;">
+        <div style="color:#bbb; font-size:13px; padding:12px;">불러오는 중...</div>
+    </div>
 </div>
 <style>
 @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.3} }
+@keyframes spin { to { transform:rotate(360deg); } }
+.ws-card { border-radius:8px; padding:12px 14px; border:1px solid #e8e8e8; background:#fafafa; }
+.ws-card.running { background:#fff8e1; border-color:#ffe082; }
+.ws-card.success { background:#e8f8f0; border-color:#a8e6c0; }
+.ws-card.failed  { background:#fdecea; border-color:#f5a9a3; }
+.ws-card.idle    { background:#f8f9fa; border-color:#e0e0e0; }
 </style>
 
 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:20px;">
@@ -123,65 +130,6 @@
     </div>
 </div>
 
-<!-- 오늘 이벤트 목록 -->
-<div class="card" id="event-card">
-    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-        <h3 style="font-size:14px; color:#888;">
-            오늘 이벤트
-            <span id="filter-label" style="font-size:13px; color:#2c3e50; font-weight:bold; margin-left:8px;"></span>
-        </h3>
-        <button onclick="filterEvents('')" id="clear-btn"
-            style="display:none; padding:4px 12px; background:#f0f0f0; border:none; border-radius:4px; font-size:12px; cursor:pointer; color:#666;">
-            전체 보기
-        </button>
-    </div>
-    {% if recent_events %}
-    <table style="width:100%; border-collapse:collapse; font-size:13px;">
-        <thead>
-            <tr style="background:#f8f9fa;">
-                <th style="padding:8px 12px; text-align:left; color:#666;">이벤트</th>
-                <th style="padding:8px 12px; text-align:left; color:#666;">상품코드</th>
-                <th style="padding:8px 12px; text-align:left; color:#666;">상품명</th>
-                <th style="padding:8px 12px; text-align:left; color:#666;">변경 전</th>
-                <th style="padding:8px 12px; text-align:left; color:#666;">변경 후</th>
-            </tr>
-        </thead>
-        <tbody id="event-tbody">
-            {% for ev in recent_events %}
-            {% set type_styles = {
-                'NEW': ('신규', '#27ae60', '#e8f8f0'),
-                'RESTOCKED': ('재입고', '#2980b9', '#eaf4fb'),
-                'PRICE_CHANGE': ('가격변동', '#8e44ad', '#f5eef8'),
-                'IMAGE_CHANGE': ('이미지변경', '#16a085', '#e8f8f5'),
-                'NAME_CHANGE': ('상품명변경', '#2c3e50', '#f0f3f4'),
-                'MISSING': ('미수집', '#e67e22', '#fef9e7'),
-                'DISCONTINUED_CANDIDATE': ('단종후보', '#e74c3c', '#fdedec'),
-                'DISCONTINUED': ('단종확정', '#c0392b', '#fdedec'),
-            } %}
-            {% set label, color, bg = type_styles.get(ev.event_type, (ev.event_type, '#999', '#f5f5f5')) %}
-            <tr data-type="{{ ev.event_type }}" style="border-bottom:1px solid #f0f0f0;">
-                <td style="padding:8px 12px;">
-                    <span style="background:{{ bg }}; color:{{ color }}; padding:2px 8px; border-radius:4px; font-size:12px; font-weight:bold;">
-                        {{ label }}
-                    </span>
-                </td>
-                <td style="padding:8px 12px; font-family:monospace; color:#555; font-size:12px;">
-                    {{ ev.product.supplier_product_code }}
-                </td>
-                <td style="padding:8px 12px; color:#333; font-size:12px; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
-                    {{ ev.product.product_name or '-' }}
-                </td>
-                <td style="padding:8px 12px; color:#999; font-size:12px;">{{ ev.before_value or '-' }}</td>
-                <td style="padding:8px 12px; color:#333; font-size:12px;">{{ ev.after_value or '-' }}</td>
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    <p id="no-result" style="display:none; color:#aaa; font-size:13px; margin-top:12px;">해당 이벤트 없음</p>
-    {% else %}
-    <p style="color:#aaa; font-size:13px;">오늘 이벤트 없음</p>
-    {% endif %}
-</div>
 
 <!-- 최근 수집 이력 -->
 <div class="card">
@@ -223,47 +171,21 @@
 </div>
 
 <script>
-let activeFilter = '';
-const typeLabels = {
-    'NEW': '신규', 'RESTOCKED': '재입고', 'PRICE_CHANGE': '가격변동',
-    'IMAGE_CHANGE': '이미지변경', 'NAME_CHANGE': '상품명변경',
-    'MISSING': '미수집', 'DISCONTINUED_CANDIDATE': '단종후보'
-};
-
-function filterEvents(type) {
-    activeFilter = type;
-    const rows = document.querySelectorAll('#event-tbody tr');
-    const clearBtn = document.getElementById('clear-btn');
-    const filterLabel = document.getElementById('filter-label');
-    const noResult = document.getElementById('no-result');
-
-    // 배지 테두리 초기화
-    document.querySelectorAll('[data-type]').forEach(el => {
-        if (el.tagName === 'DIV') el.style.borderColor = 'transparent';
-    });
-
-    let visible = 0;
-    rows.forEach(row => {
-        const show = !type || row.dataset.type === type;
-        row.style.display = show ? '' : 'none';
-        if (show) visible++;
-    });
-
-    if (type) {
-        filterLabel.textContent = '— ' + (typeLabels[type] || type) + ' ' + visible + '건';
-        clearBtn.style.display = '';
-        // 선택된 배지 하이라이트
-        const badge = document.querySelector('[data-type="' + type + '"]');
-        if (badge) badge.style.borderColor = badge.querySelector('div').style.color;
-        // 이벤트 카드로 스크롤
-        document.getElementById('event-card').scrollIntoView({behavior: 'smooth', block: 'start'});
-    } else {
-        filterLabel.textContent = '';
-        clearBtn.style.display = 'none';
-    }
-
-    noResult.style.display = visible === 0 ? '' : 'none';
-}
+// 도매처 전체 목록 (순서 = 파이프라인 순서)
+const WS_LIST = [
+    { code: 'ownerclan',  name: '오너클랜' },
+    { code: 'chingudome', name: '친구도매' },
+    { code: 'zentrade',   name: '젠트레이드' },
+    { code: 'mro3',       name: '3MRO' },
+    { code: 'metaldiy',   name: '철물박사' },
+    { code: 'jtckorea',   name: 'JTC코리아' },
+    { code: 'feelwoo',    name: '필우커머스' },
+    { code: 'sikjaje',    name: '식자재마트' },
+    { code: 'hitdesign',  name: '히트가구' },
+    { code: 'ds1008',     name: 'DS도매' },
+    { code: 'dometopia',  name: '도매토피아' },
+    { code: 'onch3',      name: '온채널' },
+];
 
 function triggerCollect(code) {
     const btn = event.target;
@@ -280,7 +202,7 @@ function triggerCollect(code) {
             } else if (data.success) {
                 result.style.color = "#27ae60";
                 result.textContent = "수집 요청 완료";
-                updateCollectionBanner();
+                updateProgressPanel();
             } else {
                 result.style.color = "#e74c3c";
                 result.textContent = "실패: " + (data.error || "알 수 없는 오류");
@@ -294,26 +216,81 @@ function triggerCollect(code) {
         });
 }
 
-function updateCollectionBanner() {
+function updateProgressPanel() {
     fetch("/api/collection-status")
         .then(r => r.json())
         .then(data => {
-            const banner = document.getElementById("collection-banner");
-            const text = document.getElementById("collection-banner-text");
-            if (data.running && data.running.length > 0) {
-                const names = data.running.map(r => r.wholesaler_name + " (" + r.started_at + " 시작)").join("  /  ");
-                text.textContent = "수집 진행 중: " + names;
-                banner.style.display = "flex";
-            } else {
-                banner.style.display = "none";
-            }
+            const panel = document.getElementById("progress-panel");
+            const lastUpdated = document.getElementById("status-last-updated");
+
+            // running 목록을 code → 정보 맵으로
+            const runningMap = {};
+            (data.running || []).forEach(r => { runningMap[r.wholesaler_code] = r; });
+
+            // recent_runs (오늘 수집 이력) code → 정보 맵
+            const recentMap = {};
+            (data.recent_runs || []).forEach(r => {
+                if (!recentMap[r.wholesaler_code]) recentMap[r.wholesaler_code] = r;
+            });
+
+            const now = new Date();
+            const cards = WS_LIST.map(ws => {
+                const running = runningMap[ws.code];
+                const recent  = recentMap[ws.code];
+
+                let stateClass = 'idle';
+                let stateIcon  = '<span style="color:#bbb; font-size:16px;">&#x2B58;</span>';
+                let statusText = '<span style="color:#bbb; font-size:12px;">대기</span>';
+                let subText    = '';
+
+                if (running) {
+                    stateClass = 'running';
+                    stateIcon  = '<span style="display:inline-block;width:10px;height:10px;border:2px solid #f39c12;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;"></span>';
+                    statusText = '<span style="color:#c77d00; font-size:12px; font-weight:bold;">수집 중</span>';
+                    subText    = '<div style="font-size:11px; color:#999; margin-top:3px;">' + (running.started_at || '') + ' 시작</div>';
+                } else if (recent) {
+                    if (recent.status === 'success') {
+                        stateClass = 'success';
+                        stateIcon  = '<span style="color:#27ae60; font-size:16px;">&#10003;</span>';
+                        statusText = '<span style="color:#27ae60; font-size:12px; font-weight:bold;">완료</span>';
+                        const cnt = recent.total_items != null ? recent.total_items.toLocaleString() + '건' : '';
+                        subText    = '<div style="font-size:11px; color:#666; margin-top:3px;">' + (recent.started_at || '') + (cnt ? ' · ' + cnt : '') + '</div>';
+                    } else if (recent.status === 'failed') {
+                        stateClass = 'failed';
+                        stateIcon  = '<span style="color:#e74c3c; font-size:16px;">&#10007;</span>';
+                        statusText = '<span style="color:#e74c3c; font-size:12px; font-weight:bold;">실패</span>';
+                        const err  = recent.error_summary ? recent.error_summary.substring(0, 40) : '';
+                        subText    = '<div style="font-size:11px; color:#e74c3c; margin-top:3px;">' + err + '</div>';
+                    } else {
+                        stateClass = 'running';
+                        stateIcon  = '<span style="display:inline-block;width:10px;height:10px;border:2px solid #f39c12;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;"></span>';
+                        statusText = '<span style="color:#c77d00; font-size:12px; font-weight:bold;">진행중</span>';
+                        subText    = '<div style="font-size:11px; color:#999; margin-top:3px;">' + (recent.started_at || '') + '</div>';
+                    }
+                }
+
+                return '<div class="ws-card ' + stateClass + '">' +
+                    '<div style="display:flex; justify-content:space-between; align-items:center;">' +
+                        '<span style="font-size:13px; font-weight:bold; color:#333;">' + ws.name + '</span>' +
+                        stateIcon +
+                    '</div>' +
+                    '<div style="margin-top:6px;">' + statusText + subText + '</div>' +
+                '</div>';
+            });
+
+            panel.innerHTML = cards.join('');
+
+            const h = now.getHours().toString().padStart(2,'0');
+            const m = now.getMinutes().toString().padStart(2,'0');
+            const s = now.getSeconds().toString().padStart(2,'0');
+            lastUpdated.textContent = '마지막 갱신: ' + h + ':' + m + ':' + s;
         })
         .catch(() => {});
 }
 
-// 페이지 로드 즉시 + 10초마다 갱신
-updateCollectionBanner();
-setInterval(updateCollectionBanner, 10000);
+// 페이지 로드 즉시 + 5초마다 갱신
+updateProgressPanel();
+setInterval(updateProgressPanel, 5000);
 </script>
 
 {% endblock %}
