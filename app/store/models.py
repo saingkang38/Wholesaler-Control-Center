@@ -35,6 +35,10 @@ class StoreProduct(db.Model):
     store_status = db.Column(db.String(32))
     sale_price = db.Column(db.Integer)
 
+    # 옵션 상품 가격 구조 (정가+즉시할인 방식)
+    option_list_price     = db.Column(db.Integer, nullable=True)   # 설정 판매가(정가)
+    option_discount_amount = db.Column(db.Integer, nullable=True)  # 즉시할인금액
+
     # 마스터 매칭
     master_product_id = db.Column(db.Integer, db.ForeignKey("master_products.id"), nullable=True)
 

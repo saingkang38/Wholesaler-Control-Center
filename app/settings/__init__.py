@@ -1,3 +1,4 @@
+import math
 from flask import Blueprint, render_template, request, redirect, url_for, flash
 from flask_login import login_required
 from app.infrastructure import db
@@ -35,6 +36,62 @@ def apply_margin(wholesale_price: int) -> int:
                 applied = wholesale_price * (1 + margin_rate)
                 return round(applied / 10) * 10
     return wholesale_price
+
+
+def calculate_option_pricing(base_price: int, option_diffs_text: str) -> dict:
+    """
+    옵션 상품의 정가/즉시할인/옵션추가금 계산.
+
+    스마트스토어 옵션가 제한:
+      정가 <  2,000       → 0 ~ +100%  (마이너스 불가)
+      정가  2,000~9,999   → -50% ~ +100%
+      정가 ≥ 10,000       → ±50%
+    0원 옵션은 option_diffs 중 0이 있으면 자동 충족.
+
+    Returns:
+        list_price  : 정가 (스마트스토어 설정 판매가)
+        discount    : 즉시할인금액  (0이면 할인 없음)
+        sale_price  : 실판매가 = apply_margin(base_price)
+        additions   : 각 옵션 추가금 리스트 (int, 음수 가능)
+    """
+    sale_price = apply_margin(base_price)
+
+    diffs = []
+    for token in option_diffs_text.split("\n"):
+        token = token.strip()
+        try:
+            diffs.append(int(token))
+        except (ValueError, AttributeError):
+            pass
+
+    if not diffs:
+        return {"list_price": sale_price, "discount": 0, "sale_price": sale_price, "additions": []}
+
+    additions = [apply_margin(base_price + d) - sale_price for d in diffs]
+    max_add = max(additions)
+    abs_min = abs(min(additions))   # 마이너스 최대 절대값 (양수면 0)
+    abs_min = abs_min if min(additions) < 0 else 0
+
+    # ── Case 1: 정가 < 2,000 (마이너스 불가, +100%) ─────────────────
+    if abs_min == 0:
+        L = _ceil10(max(sale_price, max_add))
+        if L < 2000:
+            return {"list_price": L, "discount": L - sale_price, "sale_price": sale_price, "additions": additions}
+
+    # ── Case 2: 정가 2,000 ~ 9,999 (-50% ~ +100%) ──────────────────
+    L = _ceil10(max(sale_price, max_add, abs_min * 2))
+    if 2000 <= L < 10000:
+        return {"list_price": L, "discount": L - sale_price, "sale_price": sale_price, "additions": additions}
+
+    # ── Case 3: 정가 ≥ 10,000 (±50%) ──────────────────────────────
+    L = _ceil10(max(sale_price, max_add * 2, abs_min * 2))
+    L = max(L, 10000)
+    return {"list_price": L, "discount": L - sale_price, "sale_price": sale_price, "additions": additions}
+
+
+def _ceil10(v: float) -> int:
+    """10원 단위 올림"""
+    return math.ceil(v / 10) * 10
 
 
 @settings_bp.route("/settings/margin")

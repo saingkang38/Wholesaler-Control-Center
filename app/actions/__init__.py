@@ -346,24 +346,18 @@ def _execute_signal(signal: ActionSignal):
 
         elif signal.signal_type == "OPTION_PRICE_CHANGE":
             from store.naver.products import get_origin_product, update_origin_product
-            from app.settings import apply_margin
 
-            option_diffs_text = suggested.get("option_diffs", "")
-            options_text = suggested.get("options_text", "")
-            base_price = suggested.get("base_price")
+            list_price    = suggested.get("list_price")
+            discount      = suggested.get("discount", 0)
+            additions     = suggested.get("additions", [])
+            options_text  = suggested.get("options_text", "")
 
-            if not option_diffs_text or not base_price:
-                raise ValueError("옵션 데이터 부족")
+            if not list_price or not additions:
+                raise ValueError("옵션 가격 데이터 부족 (시그널 재감지 필요)")
 
             option_names = [n.strip() for n in options_text.split("\n") if n.strip()]
-            option_diffs = []
-            for d in option_diffs_text.split("\n"):
-                try:
-                    option_diffs.append(int(d.strip()))
-                except ValueError:
-                    option_diffs.append(0)
 
-            # 현재 Naver 상품 전체 조회
+            # 네이버 상품 전체 조회
             product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
             origin = product_data.get("originProduct", {})
             option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
@@ -372,26 +366,36 @@ def _execute_signal(signal: ActionSignal):
             if not combinations:
                 raise ValueError("스토어 상품에 옵션 없음")
 
-            base_margin = apply_margin(base_price)
-            # 옵션명 순서 기준 매칭 (이름 일치 우선, 없으면 순서)
+            # 옵션 추가금 매칭 (이름 우선, 없으면 순서)
             for i, combo in enumerate(combinations):
                 name = combo.get("optionName1") or combo.get("optionName2") or ""
-                # 이름으로 매칭 시도
                 matched_idx = None
                 for j, opt_name in enumerate(option_names):
                     if opt_name == name:
                         matched_idx = j
                         break
-                if matched_idx is None and i < len(option_diffs):
+                if matched_idx is None and i < len(additions):
                     matched_idx = i
-                if matched_idx is not None and matched_idx < len(option_diffs):
-                    diff = option_diffs[matched_idx]
-                    new_addition = apply_margin(base_price + diff) - base_margin
-                    combo["price"] = max(0, new_addition)  # 음수 방지
+                if matched_idx is not None and matched_idx < len(additions):
+                    combo["price"] = additions[matched_idx]   # 음수 허용 (조건 충족 보장됨)
 
             option_info["optionCombinations"] = combinations
             origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
+
+            # 정가 설정
+            origin["salePrice"] = list_price
+
+            # 즉시할인 설정 (0이면 필드 제거)
+            if discount > 0:
+                origin["immediateDiscountPolicy"] = {"immediateDiscountAmount": discount}
+            else:
+                origin.pop("immediateDiscountPolicy", None)
+
             update_origin_product(store.origin_product_no, {"originProduct": origin}, client_id, client_secret)
+
+            # DB에 적용 가격 기록
+            store.option_list_price = list_price
+            store.option_discount_amount = discount if discount > 0 else None
 
         signal.status = "executed"
         signal.error_message = None
@@ -519,15 +523,25 @@ def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dic
             return  # 이미 최신 옵션가로 적용됨
 
     if (master.id, store.id, "OPTION_PRICE_CHANGE") not in pending:
+        from app.settings import calculate_option_pricing
+        pricing = calculate_option_pricing(master.price, master.option_diffs)
         db.session.add(ActionSignal(
             master_product_id=master.id,
             store_product_id=store.id,
             signal_type="OPTION_PRICE_CHANGE",
-            current_value=json.dumps({"options_text": master.options_text}),
+            current_value=json.dumps({
+                "options_text": master.options_text,
+                "store_list_price": store.option_list_price,
+                "store_discount": store.option_discount_amount,
+            }),
             suggested_value=json.dumps({
+                "base_price":   master.price,
                 "option_diffs": master.option_diffs,
                 "options_text": master.options_text,
-                "base_price": master.price,
+                "list_price":   pricing["list_price"],
+                "discount":     pricing["discount"],
+                "sale_price":   pricing["sale_price"],
+                "additions":    pricing["additions"],
             }),
         ))
         pending.add((master.id, store.id, "OPTION_PRICE_CHANGE"))
