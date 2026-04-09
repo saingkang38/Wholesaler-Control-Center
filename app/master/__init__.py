@@ -88,6 +88,10 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
             extra = item.get("extra") or {}
             _opt_text = extra.get("옵션")
             _opt_diffs = extra.get("옵션가")
+            _opt_stocks = extra.get("옵션재고")
+            _init_status = "active"
+            if item.get("status") == "out_of_stock" and not _opt_text:
+                _init_status = "out_of_stock"
             master = MasterProduct(
                 wholesaler_id=wholesaler_id,
                 supplier_product_code=code,
@@ -103,7 +107,8 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
                 shipping_condition=item.get("shipping_condition"),
                 options_text=_opt_text if isinstance(_opt_text, str) else None,
                 option_diffs=_opt_diffs if isinstance(_opt_diffs, str) else None,
-                current_status="active",
+                option_stocks=_opt_stocks if isinstance(_opt_stocks, str) else None,
+                current_status=_init_status,
                 first_seen_date=snapshot_date,
                 last_seen_date=snapshot_date,
                 missing_days=0,
@@ -123,8 +128,8 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
             master = existing_map[code]
             prev_status = master.current_status
 
-            # 이전에 미수집/단종후보였으면 재입고
-            if prev_status in ("missing", "discontinued_candidate"):
+            # 이전에 미수집/단종후보/품절이었으면 재입고
+            if prev_status in ("missing", "discontinued_candidate", "out_of_stock"):
                 new_events.append(ProductEvent(
                     master_product_id=master.id,
                     event_type="RESTOCKED",
@@ -214,8 +219,11 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
             extra = item.get("extra") or {}
             _raw_options = extra.get("옵션")
             _raw_diffs = extra.get("옵션가")
+            _raw_stocks = extra.get("옵션재고")
             new_options = _raw_options if isinstance(_raw_options, str) else None
             new_diffs = _raw_diffs if isinstance(_raw_diffs, str) else None
+            new_option_stocks = _raw_stocks if isinstance(_raw_stocks, str) else None
+
             if master.option_diffs and new_diffs and master.option_diffs != new_diffs:
                 new_events.append(ProductEvent(
                     master_product_id=master.id,
@@ -225,12 +233,31 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
                     after_value=json.dumps({"option_diffs": new_diffs}, ensure_ascii=False),
                 ))
 
+            if master.option_stocks is not None and new_option_stocks is not None and master.option_stocks != new_option_stocks:
+                new_events.append(ProductEvent(
+                    master_product_id=master.id,
+                    event_type="OPTION_STOCK_CHANGE",
+                    event_date=snapshot_date,
+                    before_value=json.dumps({"option_stocks": master.option_stocks}, ensure_ascii=False),
+                    after_value=json.dumps({"option_stocks": new_option_stocks}, ensure_ascii=False),
+                ))
+
             # 마스터 갱신
             master.last_seen_date = snapshot_date
             master.missing_days = 0
-            if master.current_status != "active":
-                master.last_status_change_date = snapshot_date
-            master.current_status = "active"
+
+            # 품절 상태 처리: 옵션 없는 상품이 OOS로 수집되면 out_of_stock으로 표시
+            item_status = item.get("status", "active")
+            if item_status == "out_of_stock" and not new_options:
+                if master.current_status != "out_of_stock":
+                    master.last_status_change_date = snapshot_date
+                master.current_status = "out_of_stock"
+            else:
+                if master.current_status != "active":
+                    master.last_status_change_date = snapshot_date
+                master.current_status = "active"
+
+            master.option_stocks = new_option_stocks
             if new_name:
                 master.product_name = new_name
             if new_price is not None:

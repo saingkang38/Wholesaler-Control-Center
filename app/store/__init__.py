@@ -1,14 +1,92 @@
 import logging
+import threading
+import time as _time
 from flask import Blueprint, render_template, request, redirect, url_for, flash
 from flask_login import login_required
 from app.utils import kst_now
 from app.infrastructure import db
-from app.store.models import StoreProduct, NaverStore
+from app.store.models import StoreProduct, NaverStore, SyncLog
 from app.master.models import MasterProduct
 from app.wholesalers.models import Wholesaler
 
 store_bp = Blueprint("store", __name__)
 logger = logging.getLogger(__name__)
+
+# ── 실시간 진행 상황 추적 ─────────────────────────────────
+_sync_progress: dict = {}   # store_id → {logs, percent, done, error}
+_sync_lock = threading.Lock()
+
+
+def _push_log(store_id: int, msg: str, percent: int = None):
+    with _sync_lock:
+        p = _sync_progress.setdefault(store_id, {"logs": [], "percent": 0, "done": False, "error": None})
+        p["logs"].append(msg)
+        if percent is not None:
+            p["percent"] = percent
+
+
+def get_sync_progress(store_id: int) -> dict | None:
+    with _sync_lock:
+        p = _sync_progress.get(store_id)
+        return dict(p, logs=list(p["logs"])) if p else None
+
+
+def start_sync_background(store_id: int, flask_app) -> bool:
+    """백그라운드 스레드로 동기화 실행. 이미 진행 중이면 False 반환."""
+    with _sync_lock:
+        existing = _sync_progress.get(store_id, {})
+        if existing and not existing.get("done") and existing.get("logs"):
+            return False
+        _sync_progress[store_id] = {"logs": [], "percent": 0, "done": False, "error": None}
+
+    def _run():
+        try:
+            with flask_app.app_context():
+                store = NaverStore.query.get(store_id)
+                if not store:
+                    _push_log(store_id, "스토어를 찾을 수 없습니다.", 100)
+                    return
+
+                def log_cb(msg, pct=None):
+                    logger.info(f"[store] {msg}")
+                    _push_log(store_id, msg, pct)
+
+                stats = _sync_single_store(store, log_cb=log_cb)
+
+                log_cb("액션 시그널 감지 중...", 88)
+                from app.actions import detect_action_signals
+                wholesaler_ids = db.session.query(MasterProduct.wholesaler_id.distinct())\
+                    .join(StoreProduct, StoreProduct.master_product_id == MasterProduct.id)\
+                    .filter(StoreProduct.naver_store_id == store_id).all()
+                for (wid,) in wholesaler_ids:
+                    detect_action_signals(wid)
+
+                summary = (f"완료 — 신규 {stats['created']}건 / 갱신 {stats['updated']}건 / "
+                           f"매칭 {stats['matched']}건 / 미매칭 {stats['unmatched']}건")
+                log_cb(summary, 100)
+
+                db.session.add(SyncLog(
+                    naver_store_id=store_id,
+                    action="FULL_SYNC",
+                    result="success",
+                    detail=f"신규 {stats['created']} / 갱신 {stats['updated']} / "
+                           f"매칭 {stats['matched']} / 미매칭 {stats['unmatched']}",
+                ))
+                db.session.commit()
+
+        except Exception as e:
+            logger.error(f"[store] 동기화 오류: {e}")
+            _push_log(store_id, f"오류 발생: {e}", 100)
+            with _sync_lock:
+                _sync_progress[store_id]["error"] = str(e)
+                db.session.add(SyncLog(naver_store_id=store_id, action="FULL_SYNC", result="error", detail=str(e)))
+                db.session.commit()
+        finally:
+            with _sync_lock:
+                _sync_progress[store_id]["done"] = True
+
+    threading.Thread(target=_run, daemon=True).start()
+    return True
 
 
 def _get_prefixes() -> list:
@@ -61,13 +139,25 @@ def sync_store_products() -> dict:
     return total_stats
 
 
-def _sync_single_store(naver_store: NaverStore) -> dict:
+def _sync_single_store(naver_store: NaverStore, log_cb=None) -> dict:
+    def log(msg, pct=None):
+        if log_cb:
+            log_cb(msg, pct)
+
     from store.naver import get_all_products
+
+    log("네이버 API 토큰 발급 중...", 2)
+
+    def on_page(page, total_pages, count):
+        pct = int(5 + (page / max(total_pages, 1)) * 42)
+        log(f"상품 목록 수신 중... {page}/{total_pages} 페이지 ({count}건 누적)", pct)
 
     raw_items = get_all_products(
         client_id=naver_store.client_id,
         client_secret=naver_store.client_secret,
+        on_page=on_page,
     )
+    log(f"API 수신 완료 — 총 {len(raw_items)}건, DB 저장 중...", 50)
     stats = {"created": 0, "updated": 0, "matched": 0, "unmatched": 0}
 
     prefixes = _get_prefixes()
@@ -142,6 +232,7 @@ def _sync_single_store(naver_store: NaverStore) -> dict:
                 stats["unmatched"] += 1
 
     db.session.commit()
+    log(f"매칭 완료 — 매칭 {stats['matched']}건 / 미매칭 {stats['unmatched']}건", 82)
     logger.info(f"[store] {naver_store.store_name} 동기화: {stats}")
     return stats
 

@@ -20,6 +20,7 @@ SIGNAL_LABELS = {
     "RESUME_POSSIBLE":     {"label": "판매 재개 가능", "badge": "success"},
     "DISCONTINUE_NEEDED":  {"label": "단종 처리 필요", "badge": "dark"},
     "OPTION_PRICE_CHANGE": {"label": "옵션가 변동", "badge": "warning"},
+    "OPTION_STOCK_CHANGE": {"label": "옵션 재고 변동", "badge": "secondary"},
 }
 
 
@@ -255,8 +256,8 @@ def _revert_signal(signal: ActionSignal):
             change_status(store.origin_product_no, orig_status, client_id=client_id, client_secret=client_secret)
             store.store_status = orig_status
 
-    elif signal.signal_type == "OPTION_PRICE_CHANGE":
-        raise ValueError("옵션가 변동은 되돌리기를 지원하지 않습니다. 직접 수동으로 수정해주세요.")
+    elif signal.signal_type in ("OPTION_PRICE_CHANGE", "OPTION_STOCK_CHANGE"):
+        raise ValueError("옵션 변동은 되돌리기를 지원하지 않습니다. 직접 수동으로 수정해주세요.")
 
     signal.status = "reverted"
     signal.resolved_at = kst_now()
@@ -304,6 +305,44 @@ def _execute_signal(signal: ActionSignal):
             if new_status:
                 change_status(store.origin_product_no, new_status, client_id=client_id, client_secret=client_secret)
                 store.store_status = new_status
+
+        elif signal.signal_type == "OPTION_STOCK_CHANGE":
+            from store.naver.products import get_origin_product, update_origin_product
+
+            options_text = suggested.get("options_text", "")
+            option_stocks_text = suggested.get("option_stocks", "")
+
+            option_names = [n.strip() for n in options_text.split("\n") if n.strip()]
+            option_stocks = []
+            for s in option_stocks_text.split("\n"):
+                try:
+                    option_stocks.append(int(s.strip()))
+                except ValueError:
+                    option_stocks.append(999)
+
+            product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
+            origin = product_data.get("originProduct", {})
+            option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
+            combinations = option_info.get("optionCombinations", [])
+
+            if not combinations:
+                raise ValueError("스토어 상품에 옵션 없음")
+
+            for i, combo in enumerate(combinations):
+                name = combo.get("optionName1") or combo.get("optionName2") or ""
+                matched_idx = None
+                for j, opt_name in enumerate(option_names):
+                    if opt_name == name:
+                        matched_idx = j
+                        break
+                if matched_idx is None and i < len(option_stocks):
+                    matched_idx = i
+                if matched_idx is not None and matched_idx < len(option_stocks):
+                    combo["stockQuantity"] = max(0, option_stocks[matched_idx])
+
+            option_info["optionCombinations"] = combinations
+            origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
+            update_origin_product(store.origin_product_no, {"originProduct": origin}, client_id, client_secret)
 
         elif signal.signal_type == "OPTION_PRICE_CHANGE":
             from store.naver.products import get_origin_product, update_origin_product
@@ -380,6 +419,7 @@ def detect_action_signals(wholesaler_id: int) -> dict:
         "RESUME_POSSIBLE": 0,
         "DISCONTINUE_NEEDED": 0,
         "OPTION_PRICE_CHANGE": 0,
+        "OPTION_STOCK_CHANGE": 0,
     }
 
     # 해당 도매처의 매칭된 스토어 상품만 조회 — 전체 로드 방지, 관계 미리 로드
@@ -420,6 +460,7 @@ def detect_action_signals(wholesaler_id: int) -> dict:
         _check_price_signals(master, store, stats, existing_pending)
         _check_status_signals(master, store, stats, existing_pending)
         _check_option_signals(master, store, stats, existing_pending)
+        _check_option_stock_signals(master, store, stats, existing_pending)
 
     db.session.commit()
     logger.info(f"[actions] 시그널 감지 완료: {stats}")
@@ -493,6 +534,40 @@ def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dic
         stats["OPTION_PRICE_CHANGE"] += 1
 
 
+def _check_option_stock_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set):
+    """옵션 재고 변동 감지 — 수집기가 extra["옵션재고"] 제공 시 동작"""
+    if not master.options_text or master.option_stocks is None:
+        return
+    if not store.origin_product_no:
+        return
+
+    last_executed = (
+        ActionSignal.query
+        .filter_by(store_product_id=store.id, signal_type="OPTION_STOCK_CHANGE")
+        .filter(ActionSignal.status.in_(["executed", "reverted"]))
+        .order_by(ActionSignal.resolved_at.desc())
+        .first()
+    )
+    if last_executed:
+        last_suggested = json.loads(last_executed.suggested_value or "{}")
+        if last_suggested.get("option_stocks") == master.option_stocks:
+            return
+
+    if (master.id, store.id, "OPTION_STOCK_CHANGE") not in pending:
+        db.session.add(ActionSignal(
+            master_product_id=master.id,
+            store_product_id=store.id,
+            signal_type="OPTION_STOCK_CHANGE",
+            current_value=json.dumps({"option_stocks": master.option_stocks}),
+            suggested_value=json.dumps({
+                "option_stocks": master.option_stocks,
+                "options_text": master.options_text,
+            }),
+        ))
+        pending.add((master.id, store.id, "OPTION_STOCK_CHANGE"))
+        stats["OPTION_STOCK_CHANGE"] += 1
+
+
 def _check_status_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set):
     store_active = store.store_status == "SALE"
     master_status = master.current_status
@@ -521,8 +596,23 @@ def _check_status_signals(master: MasterProduct, store: StoreProduct, stats: dic
             pending.add((master.id, store.id, "SUSPEND_NEEDED"))
             stats["SUSPEND_NEEDED"] += 1
 
+    elif master_status == "out_of_stock":
+        # 옵션 없는 상품이 명시적으로 품절 → 상품 전체 중지
+        if store_active and not master.options_text and (master.id, store.id, "SUSPEND_NEEDED") not in pending:
+            db.session.add(ActionSignal(
+                master_product_id=master.id,
+                store_product_id=store.id,
+                signal_type="SUSPEND_NEEDED",
+                current_value=json.dumps({"store_status": store.store_status}),
+                suggested_value=json.dumps({"store_status": "SUSPENSION"}),
+            ))
+            pending.add((master.id, store.id, "SUSPEND_NEEDED"))
+            stats["SUSPEND_NEEDED"] += 1
+
     elif master_status == "active":
-        if not store_active and (master.id, store.id, "RESUME_POSSIBLE") not in pending:
+        # CLOSE(판매종료)는 API로 복구 불가 → 제외
+        resumable = not store_active and store.store_status != "CLOSE"
+        if resumable and (master.id, store.id, "RESUME_POSSIBLE") not in pending:
             db.session.add(ActionSignal(
                 master_product_id=master.id,
                 store_product_id=store.id,

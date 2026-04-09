@@ -50,7 +50,8 @@ def get_products(page: int = 1, size: int = 100, token: str = None, client_id: s
     return resp.json()
 
 
-def get_all_products(client_id: str = None, client_secret: str = None) -> list:
+def get_all_products(client_id: str = None, client_secret: str = None, on_page=None) -> list:
+    """on_page(page, total_pages, fetched_count) — 페이지 수신 시 호출되는 콜백"""
     all_items = []
     page = 1
     size = 100
@@ -74,7 +75,7 @@ def get_all_products(client_id: str = None, client_secret: str = None) -> list:
                         token = _get_access_token(client_id, client_secret)
                     except Exception as te:
                         _logger.error(f"[naver] 토큰 재발급 실패: {te}")
-                        retries = 5  # 재발급 불가 → 즉시 포기
+                        retries = 5
                         break
                 retries += 1
                 wait = 10 * retries
@@ -88,6 +89,9 @@ def get_all_products(client_id: str = None, client_secret: str = None) -> list:
         all_items.extend(items)
 
         total_pages = data.get("totalPages", 1)
+        if on_page:
+            on_page(page, total_pages, len(all_items))
+
         if data.get("last", True) or page >= total_pages:
             break
         page += 1

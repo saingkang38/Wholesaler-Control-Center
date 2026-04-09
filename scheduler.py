@@ -210,6 +210,31 @@ def run_ownerclan_retry():
     _collect_wholesaler("ownerclan", "오너클랜(18시재시도)", flask_app, run_time)
 
 
+def run_db_backup():
+    """매일 03:00 — DB 백업 (최근 7일치 보관)"""
+    import shutil
+    run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
+    db_path = Path(__file__).resolve().parent / "instance" / "wholesaler.db"
+    backup_dir = Path(__file__).resolve().parent / "instance" / "backups"
+    backup_dir.mkdir(exist_ok=True)
+
+    timestamp = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d_%H%M%S")
+    backup_path = backup_dir / f"wholesaler_{timestamp}.db"
+
+    try:
+        shutil.copy2(db_path, backup_path)
+        logger.info(f"[scheduler] DB 백업 완료: {backup_path.name}")
+    except Exception as e:
+        logger.error(f"[scheduler] DB 백업 실패: {e}")
+        return
+
+    # 7일 초과 백업 삭제
+    backups = sorted(backup_dir.glob("wholesaler_*.db"))
+    for old in backups[:-7]:
+        old.unlink()
+        logger.info(f"[scheduler] 오래된 백업 삭제: {old.name}")
+
+
 if __name__ == "__main__":
     import tempfile
     _lock_path = Path(tempfile.gettempdir()) / "wholesaler_scheduler.lock"
@@ -239,22 +264,29 @@ if __name__ == "__main__":
 
     scheduler = BlockingScheduler(timezone=TIMEZONE)
 
-    scheduler.add_job(
-        run_noon_pipeline,
-        trigger="cron",
-        hour=0,
-        minute=1,
-        id="noon_pipeline",
-    )
-    scheduler.add_job(
-        run_ownerclan_retry,
-        trigger="cron",
-        hour=6,
-        minute=0,
-        id="ownerclan_retry",
-    )
+    # scheduler.add_job(
+    #     run_noon_pipeline,
+    #     trigger="cron",
+    #     hour=0,
+    #     minute=1,
+    #     id="noon_pipeline",
+    # )
+    # scheduler.add_job(
+    #     run_ownerclan_retry,
+    #     trigger="cron",
+    #     hour=6,
+    #     minute=0,
+    #     id="ownerclan_retry",
+    # )
+    # scheduler.add_job(
+    #     run_db_backup,
+    #     trigger="cron",
+    #     hour=3,
+    #     minute=0,
+    #     id="db_backup",
+    # )
 
-    logger.info(f"[scheduler] 시작 — 00:01 새벽파이프라인 / 06:00 오너클랜재시도 ({TIMEZONE})")
+    logger.info(f"[scheduler] 시작 — 모든 스케줄 비활성 ({TIMEZONE})")
     logger.info("[scheduler] Ctrl+C로 중단")
 
     try:

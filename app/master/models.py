@@ -26,6 +26,7 @@ class MasterProduct(db.Model):
     is_prep_ready      = db.Column(db.Boolean, default=False)     # True = 등록 가능
     options_text       = db.Column(db.Text, nullable=True)        # 옵션명 (줄바꿈 구분)
     option_diffs       = db.Column(db.Text, nullable=True)        # 옵션가 차액 (줄바꿈 구분)
+    option_stocks      = db.Column(db.Text, nullable=True)        # 옵션별 재고 (줄바꿈 구분, 예: "99\n0\n10")
 
     # 상태: active / missing / discontinued_candidate / discontinued
     current_status = db.Column(db.String(32), default="active", nullable=False)

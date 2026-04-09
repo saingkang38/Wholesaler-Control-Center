@@ -1,4 +1,6 @@
-from flask import render_template, request, redirect, url_for, flash, jsonify
+import json
+import time
+from flask import render_template, request, redirect, url_for, flash, jsonify, Response, stream_with_context, current_app
 from flask_login import login_required
 from sqlalchemy import func, case
 from app.infrastructure import db
@@ -106,41 +108,53 @@ def store_overview_page():
 @store_bp.route("/store-overview/sync", methods=["POST"])
 @login_required
 def store_overview_sync():
-    from app.store import _sync_single_store
-    from app.actions import detect_action_signals
-    store_id = request.form.get("store_id", type=int)
-    store = NaverStore.query.get_or_404(store_id)
-    try:
-        stats = _sync_single_store(store)
+    """동기화 백그라운드 시작 — JSON 응답"""
+    from app.store import start_sync_background
+    store_id = request.json.get("store_id") if request.is_json else request.form.get("store_id", type=int)
+    if not store_id:
+        return jsonify({"error": "store_id 필요"}), 400
+    NaverStore.query.get_or_404(store_id)
+    flask_app = current_app._get_current_object()
+    started = start_sync_background(int(store_id), flask_app)
+    return jsonify({"started": started, "already_running": not started})
 
-        # 해당 스토어에 매칭된 도매처 목록 조회 후 신호 감지
-        wholesaler_ids = db.session.query(MasterProduct.wholesaler_id.distinct())\
-            .join(StoreProduct, StoreProduct.master_product_id == MasterProduct.id)\
-            .filter(StoreProduct.naver_store_id == store_id).all()
-        sig_total = {}
-        for (wid,) in wholesaler_ids:
-            sig = detect_action_signals(wid)
-            for k, v in sig.items():
-                sig_total[k] = sig_total.get(k, 0) + v
 
-        sig_summary = f"품절 {sig_total.get('SUSPEND_NEEDED',0)} / 단종 {sig_total.get('DISCONTINUE_NEEDED',0)} / 가격 {sig_total.get('PRICE_UP_NEEDED',0)+sig_total.get('PRICE_DOWN_POSSIBLE',0)}"
-        flash(
-            f"동기화 완료 — 신규 {stats['created']}건 / 갱신 {stats['updated']}건 / "
-            f"매칭 {stats['matched']}건 / 미매칭 {stats['unmatched']}건  |  신호: {sig_summary}",
-            "success"
-        )
-        db.session.add(SyncLog(
-            naver_store_id=store_id,
-            action="FULL_SYNC",
-            result="success",
-            detail=f"신규 {stats['created']} / 갱신 {stats['updated']} / 매칭 {stats['matched']} / 미매칭 {stats['unmatched']} | {sig_summary}",
-        ))
-        db.session.commit()
-    except Exception as e:
-        db.session.add(SyncLog(naver_store_id=store_id, action="FULL_SYNC", result="error", detail=str(e)))
-        db.session.commit()
-        flash(f"동기화 실패: {e}", "error")
-    return redirect(url_for("store.store_overview_page", store_id=store_id))
+@store_bp.route("/store-overview/sync-stream/<int:store_id>")
+@login_required
+def sync_stream(store_id):
+    """SSE — 실시간 동기화 진행 스트림"""
+    from app.store import _sync_progress, _sync_lock
+
+    def generate():
+        last_idx = 0
+        while True:
+            with _sync_lock:
+                p = _sync_progress.get(store_id)
+
+            if not p:
+                yield f"data: {json.dumps({'log': '진행 정보 없음', 'percent': 0, 'done': True})}\n\n"
+                break
+
+            logs = p["logs"]
+            percent = p["percent"]
+            done = p["done"]
+            error = p.get("error")
+
+            for msg in logs[last_idx:]:
+                yield f"data: {json.dumps({'log': msg, 'percent': percent})}\n\n"
+                last_idx += 1
+
+            if done:
+                yield f"data: {json.dumps({'done': True, 'percent': percent, 'error': error})}\n\n"
+                break
+
+            time.sleep(0.4)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @store_bp.route("/store-overview/rematch-codes", methods=["POST"])
