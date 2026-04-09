@@ -385,13 +385,21 @@ def _execute_signal(signal: ActionSignal):
             # 정가 설정
             origin["salePrice"] = list_price
 
-            # 즉시할인 설정 (0이면 필드 제거)
+            # 즉시할인: originProduct.customerBenefit.immediateDiscountPolicy
             if discount > 0:
-                origin["immediateDiscountPolicy"] = {"immediateDiscountAmount": discount}
+                origin["customerBenefit"] = {
+                    "immediateDiscountPolicy": {
+                        "discountMethod": {"value": discount, "unitType": "WON"}
+                    }
+                }
             else:
-                origin.pop("immediateDiscountPolicy", None)
+                origin["customerBenefit"] = {}
 
-            update_origin_product(store.origin_product_no, {"originProduct": origin}, client_id, client_secret)
+            payload = {
+                "originProduct": origin,
+                "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
+            }
+            update_origin_product(store.origin_product_no, payload, client_id, client_secret)
 
             # DB에 적용 가격 기록
             store.option_list_price = list_price
