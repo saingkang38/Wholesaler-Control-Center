@@ -69,10 +69,38 @@ def actions_page():
     for s in signals:
         current = json.loads(s.current_value) if s.current_value else {}
         suggested = json.loads(s.suggested_value) if s.suggested_value else {}
-        s_price = suggested.get("sale_price")
-        wholesale_price = s_price if s_price is not None else current.get("sale_price")
-        sale_price = current.get("sale_price")
-        margin_price = _apply_margin_cached(wholesale_price) if wholesale_price else None
+
+        if s.signal_type == "OPTION_PRICE_CHANGE":
+            # 도매가격=도매기준가 / 마진적용=실판매가 / 판매가격=정가(설정판매가)
+            wholesale_price = suggested.get("base_price")
+            margin_price    = suggested.get("sale_price")      # apply_margin(base_price) 이미 계산됨
+            sale_price      = suggested.get("list_price")      # 조건 충족 정가
+            discount        = suggested.get("discount", 0)
+            option_count    = len(suggested.get("additions", []))
+            # 구형 시그널 폴백: list_price/additions 없으면 즉시 계산
+            if wholesale_price and not sale_price:
+                from app.settings import calculate_option_pricing
+                _diffs = suggested.get("option_diffs", "")
+                if _diffs:
+                    _p = calculate_option_pricing(wholesale_price, _diffs)
+                    margin_price = _p["sale_price"]
+                    sale_price   = _p["list_price"]
+                    discount     = _p["discount"]
+                    option_count = len(_p["additions"])
+        elif s.signal_type == "OPTION_STOCK_CHANGE":
+            wholesale_price = None
+            margin_price    = None
+            sale_price      = None
+            discount        = 0
+            option_count    = None
+        else:
+            s_price         = suggested.get("sale_price")
+            wholesale_price = s_price if s_price is not None else current.get("sale_price")
+            sale_price      = current.get("sale_price")
+            margin_price    = _apply_margin_cached(wholesale_price) if wholesale_price else None
+            discount        = 0
+            option_count    = None
+
         rows.append({
             "id": s.id,
             "store_product_id": s.store_product_id,
@@ -86,6 +114,8 @@ def actions_page():
             "wholesale_price": wholesale_price,
             "margin_price": margin_price,
             "sale_price": sale_price,
+            "discount": discount,
+            "option_count": option_count,
             "detected_at": s.detected_at.strftime("%Y-%m-%d %H:%M") if s.detected_at else "-",
             "status": s.status,
             "error_message": s.error_message,
@@ -352,8 +382,17 @@ def _execute_signal(signal: ActionSignal):
             additions     = suggested.get("additions", [])
             options_text  = suggested.get("options_text", "")
 
+            # 구형 시그널 폴백: list_price/additions 없으면 즉시 계산
             if not list_price or not additions:
-                raise ValueError("옵션 가격 데이터 부족 (시그널 재감지 필요)")
+                from app.settings import calculate_option_pricing
+                _base = suggested.get("base_price")
+                _diffs = suggested.get("option_diffs", "")
+                if not _base or not _diffs:
+                    raise ValueError("옵션 가격 데이터 부족 (base_price/option_diffs 없음)")
+                _p = calculate_option_pricing(_base, _diffs)
+                list_price = _p["list_price"]
+                discount   = _p["discount"]
+                additions  = _p["additions"]
 
             option_names = [n.strip() for n in options_text.split("\n") if n.strip()]
 

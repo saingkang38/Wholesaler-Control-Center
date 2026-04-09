@@ -197,9 +197,19 @@
         <td><span class="badge badge-{{ row.badge }}">{{ row.label }}</span></td>
         <td>{{ row.product_name }}</td>
         <td>{{ row.seller_code }}</td>
+        {% if row.signal_type == 'OPTION_PRICE_CHANGE' %}
+        <td style="font-size:12px; color:#666;">{{ '{:,}'.format(row.wholesale_price) if row.wholesale_price else '-' }}<br><span style="color:#999;">도매기준가</span></td>
+        <td style="font-size:12px;">{{ '{:,}'.format(row.margin_price) if row.margin_price else '-' }}<br><span style="color:#999;">실판매가</span></td>
+        <td style="font-size:12px;">
+          {{ '{:,}'.format(row.sale_price) if row.sale_price else '-' }}<br>
+          <span style="color:#999;">정가</span>
+          {% if row.discount %}<span style="color:#e65100; margin-left:4px;">-{{ '{:,}'.format(row.discount) }}</span>{% endif %}
+        </td>
+        {% else %}
         <td>{{ '{:,}'.format(row.wholesale_price) if row.wholesale_price else '-' }}</td>
         <td>{{ '{:,}'.format(row.margin_price) if row.margin_price else '-' }}</td>
         <td>{{ '{:,}'.format(row.sale_price) if row.sale_price else '-' }}</td>
+        {% endif %}
         <td>{{ row.detected_at }}</td>
         {% if status_filter == 'failed' %}
         <td style="font-size:12px; color:#dc2626; max-width:260px;">{{ row.error_message or '-' }}</td>
