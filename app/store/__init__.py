@@ -1,6 +1,5 @@
 import logging
 import threading
-import time as _time
 from flask import Blueprint, render_template, request, redirect, url_for, flash
 from flask_login import login_required
 from app.utils import kst_now

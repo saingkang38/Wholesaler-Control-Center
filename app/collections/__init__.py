@@ -36,12 +36,15 @@ def trigger_collection(wholesaler_code):
 @collections_bp.route("/api/collection-status")
 @login_required
 def collection_status():
-    from datetime import datetime, date
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
     from app.execution_logs.models import CollectionRun
 
     running = CollectionRun.query.filter_by(status="running").all()
 
-    today_start = datetime.combine(date.today(), datetime.min.time())
+    _kst = ZoneInfo("Asia/Seoul")
+    today_kst = datetime.now(_kst).date()
+    today_start = datetime.combine(today_kst, datetime.min.time())
     recent_runs = (
         CollectionRun.query
         .filter(CollectionRun.started_at >= today_start)
