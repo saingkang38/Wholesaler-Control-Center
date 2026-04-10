@@ -235,6 +235,7 @@ class ChingudomeCollector(BaseCollector):
             "origin": None,
             "shipping_fee": None,
             "shipping_condition": None,
+            "detail_description": self._text(product, "detailed_source"),
             "extra": extra,
         }
 
