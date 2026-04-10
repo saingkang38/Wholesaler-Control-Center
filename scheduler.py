@@ -128,7 +128,7 @@ def run_match_and_signal(flask_app, run_time: str):
 
 def run_noon_pipeline():
     """
-    12:00 전체 수집 파이프라인 (순차 실행)
+    00:01 전체 수집 파이프라인 (순차 실행)
 
     순서:
       1. 오너클랜 트리거 (다운로드 세트 요청)
@@ -264,29 +264,32 @@ if __name__ == "__main__":
 
     scheduler = BlockingScheduler(timezone=TIMEZONE)
 
-    # scheduler.add_job(
-    #     run_noon_pipeline,
-    #     trigger="cron",
-    #     hour=0,
-    #     minute=1,
-    #     id="noon_pipeline",
-    # )
-    # scheduler.add_job(
-    #     run_ownerclan_retry,
-    #     trigger="cron",
-    #     hour=6,
-    #     minute=0,
-    #     id="ownerclan_retry",
-    # )
-    # scheduler.add_job(
-    #     run_db_backup,
-    #     trigger="cron",
-    #     hour=3,
-    #     minute=0,
-    #     id="db_backup",
-    # )
+    scheduler.add_job(
+        run_noon_pipeline,
+        trigger="cron",
+        hour=0,
+        minute=1,
+        id="daily_pipeline",
+        timezone=TIMEZONE,
+    )
+    scheduler.add_job(
+        run_ownerclan_retry,
+        trigger="cron",
+        hour=6,
+        minute=0,
+        id="ownerclan_retry",
+        timezone=TIMEZONE,
+    )
+    scheduler.add_job(
+        run_db_backup,
+        trigger="cron",
+        hour=3,
+        minute=0,
+        id="db_backup",
+        timezone=TIMEZONE,
+    )
 
-    logger.info(f"[scheduler] 시작 — 모든 스케줄 비활성 ({TIMEZONE})")
+    logger.info(f"[scheduler] 시작 — 매일 00:01 파이프라인 / 06:00 오너클랜 재시도 / 03:00 DB백업 ({TIMEZONE})")
     logger.info("[scheduler] Ctrl+C로 중단")
 
     try:
