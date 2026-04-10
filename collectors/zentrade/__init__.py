@@ -235,6 +235,7 @@ class ZentraldeCollector(BaseCollector):
             "origin": None,
             "shipping_fee": None,
             "shipping_condition": None,
+            "detail_description": self._cdata_text(product, "detailed_source"),
             "extra": extra,
         }
 
