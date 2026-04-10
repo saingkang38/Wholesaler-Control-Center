@@ -256,6 +256,7 @@ class FeelwooCollector(BaseCollector):
         idx_shipping_cond = col(headers, ["배송조건", "무료배송"])
         idx_option = col(headers, ["옵션명", "옵션"])
         idx_option_price = col(headers, ["옵션가"])
+        idx_detail_desc = col(headers, ["상세설명", "본문상세", "본문", "detail"])
 
         if idx_code is None and idx_name is None:
             raise ValueError(f"상품코드/상품명 컬럼 없음. 헤더: {headers}")
@@ -314,6 +315,7 @@ class FeelwooCollector(BaseCollector):
                 "origin": cell(idx_origin),
                 "shipping_fee": self._parse_price(cell(idx_shipping_fee)),
                 "shipping_condition": cell(idx_shipping_cond),
+                "detail_description": cell(idx_detail_desc),
                 "extra": extra,
             })
 
