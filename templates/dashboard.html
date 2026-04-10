@@ -261,6 +261,12 @@ function updateProgressPanel() {
                         statusText = '<span style="color:#e74c3c; font-size:12px; font-weight:bold;">실패</span>';
                         const err  = recent.error_summary ? recent.error_summary.substring(0, 40) : '';
                         subText    = '<div style="font-size:11px; color:#e74c3c; margin-top:3px;">' + err + '</div>';
+                    } else if (recent.status === 'skipped') {
+                        stateClass = 'idle';
+                        stateIcon  = '<span style="color:#bbb; font-size:16px;">&#8212;</span>';
+                        statusText = '<span style="color:#aaa; font-size:12px;">건너뜀</span>';
+                        const err  = recent.error_summary ? recent.error_summary.substring(0, 40) : '';
+                        subText    = '<div style="font-size:11px; color:#aaa; margin-top:3px;">' + err + '</div>';
                     } else {
                         stateClass = 'running';
                         stateIcon  = '<span style="display:inline-block;width:10px;height:10px;border:2px solid #f39c12;border-top-color:transparent;border-radius:50%;animation:spin 0.8s linear infinite;"></span>';
