@@ -208,6 +208,9 @@ def resolve_signal(signal_id):
     try:
         if action == "approve":
             _execute_signal(signal)
+            # 실행 후 실제 상태 확인 — 내부 오류로 failed가 됐어도 감지
+            if signal.status == "failed":
+                return jsonify({"ok": False, "error": signal.error_message or "실행 실패"}), 200
         elif action == "reject":
             signal.status = "rejected"
             signal.resolved_at = kst_now()
@@ -325,10 +328,56 @@ def _execute_signal(signal: ActionSignal):
         if signal.signal_type in ("PRICE_UP_NEEDED", "PRICE_DOWN_POSSIBLE"):
             wholesale_price = suggested.get("sale_price")
             if wholesale_price and wholesale_price > 0:
-                from app.settings import apply_margin
+                from app.settings import apply_margin, calculate_option_pricing
                 new_price = apply_margin(wholesale_price)
-                update_price(store.origin_product_no, new_price, client_id=client_id, client_secret=client_secret)
-                store.sale_price = new_price
+                master = signal.master
+
+                # 옵션 있는 상품: 정가+즉시할인+옵션추가금 세트로 업데이트
+                if master and master.option_diffs and master.options_text:
+                    from store.naver.products import get_origin_product, update_origin_product
+                    pricing = calculate_option_pricing(wholesale_price, master.option_diffs)
+                    option_names = [n.strip() for n in master.options_text.split("\n") if n.strip()]
+
+                    product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
+                    origin = product_data.get("originProduct", {})
+                    option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
+                    combinations = option_info.get("optionCombinations", [])
+
+                    for i, combo in enumerate(combinations):
+                        name = combo.get("optionName1") or combo.get("optionName2") or ""
+                        matched_idx = next(
+                            (j for j, n in enumerate(option_names) if n == name), None
+                        )
+                        if matched_idx is None and i < len(pricing["additions"]):
+                            matched_idx = i
+                        if matched_idx is not None and matched_idx < len(pricing["additions"]):
+                            combo["price"] = pricing["additions"][matched_idx]
+
+                    option_info["optionCombinations"] = combinations
+                    origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
+                    origin["salePrice"] = pricing["list_price"]
+                    if pricing["discount"] > 0:
+                        origin["customerBenefit"] = {
+                            "immediateDiscountPolicy": {
+                                "discountMethod": {"value": pricing["discount"], "unitType": "WON"}
+                            }
+                        }
+                    else:
+                        origin["customerBenefit"] = {}
+
+                    payload = {
+                        "originProduct": origin,
+                        "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
+                    }
+                    update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+                    store.sale_price = new_price
+                    store.option_list_price = pricing["list_price"]
+                    store.option_discount_amount = pricing["discount"] or None
+
+                else:
+                    # 옵션 없는 일반 상품: 판매가만 업데이트
+                    update_price(store.origin_product_no, new_price, client_id=client_id, client_secret=client_secret)
+                    store.sale_price = new_price
 
         elif signal.signal_type in ("SUSPEND_NEEDED", "RESUME_POSSIBLE", "DISCONTINUE_NEEDED"):
             new_status = suggested.get("store_status")
