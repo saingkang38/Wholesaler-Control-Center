@@ -35,7 +35,8 @@ def store_overview_page():
     totals = {"total": 0, "sale": 0, "soldout": 0, "price_changes": 0}
 
     signal_counts = {"SUSPEND_NEEDED": 0, "DISCONTINUE_NEEDED": 0,
-                     "PRICE_UP_NEEDED": 0, "PRICE_DOWN_POSSIBLE": 0, "RESUME_POSSIBLE": 0}
+                     "PRICE_UP_NEEDED": 0, "PRICE_DOWN_POSSIBLE": 0, "RESUME_POSSIBLE": 0,
+                     "OPTION_ADD": 0, "OPTION_PRICE_CHANGE": 0, "OPTION_STOCK_CHANGE": 0}
 
     if store_id:
         rows = db.session.query(
@@ -62,21 +63,37 @@ def store_overview_page():
          .all()
         price_map = {r.wholesaler_id: r.cnt for r in price_rows}
 
+        option_rows = db.session.query(
+            MasterProduct.wholesaler_id,
+            func.count(ActionSignal.id).label("cnt")
+        ).join(StoreProduct, ActionSignal.store_product_id == StoreProduct.id)\
+         .join(MasterProduct, StoreProduct.master_product_id == MasterProduct.id)\
+         .filter(StoreProduct.naver_store_id == store_id)\
+         .filter(ActionSignal.status == "pending")\
+         .filter(ActionSignal.signal_type.in_(["OPTION_ADD", "OPTION_PRICE_CHANGE", "OPTION_STOCK_CHANGE"]))\
+         .group_by(MasterProduct.wholesaler_id)\
+         .all()
+        option_map = {r.wholesaler_id: r.cnt for r in option_rows}
+
+        totals["option_changes"] = 0
         for row in rows:
             sale = row.sale or 0
             soldout = row.soldout or 0
             price_changes = price_map.get(row.id, 0)
+            option_changes = option_map.get(row.id, 0)
             data.append({
                 "wholesaler_name": row.name,
                 "total": row.total,
                 "sale": sale,
                 "soldout": soldout,
                 "price_changes": price_changes,
+                "option_changes": option_changes,
             })
             totals["total"] += row.total
             totals["sale"] += sale
             totals["soldout"] += soldout
             totals["price_changes"] += price_changes
+            totals["option_changes"] += option_changes
 
         unmatched = StoreProduct.query.filter_by(
             naver_store_id=store_id, master_product_id=None
