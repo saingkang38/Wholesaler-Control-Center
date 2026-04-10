@@ -513,43 +513,20 @@ def _execute_signal(signal: ActionSignal):
             option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
             combinations = option_info.get("optionCombinations", [])
 
-            store_names = [
-                (c.get("optionName1") or c.get("optionName2") or "").strip()
-                for c in combinations
-            ]
-
-            # 스토어 옵션명과 도매처 옵션명의 교집합 비율로 전체교체 vs 추가 결정
-            matched = sum(1 for n in store_names if n in master_names)
-            replace_all = len(store_names) == 0 or matched < len(store_names) * 0.5
-
             pricing = calculate_option_pricing(base_price, option_diffs)
             additions = pricing["additions"]
 
-            if replace_all:
-                # 옵션 전체 교체: 도매처 옵션명으로 새로 구성
-                new_combos = []
-                for i, name in enumerate(master_names):
-                    add = additions[i] if i < len(additions) else 0
-                    new_combos.append({
-                        "optionName1": name,
-                        "price": add,
-                        "stockQuantity": 999,
-                        "usable": True,
-                    })
-                logger.info(f"[actions] OPTION_ADD 전체교체: {len(new_combos)}개")
-            else:
-                # 기존 옵션 유지 + 없는 옵션만 추가
-                new_combos = list(combinations)
-                for i, name in enumerate(master_names):
-                    if name not in store_names:
-                        add = additions[i] if i < len(additions) else 0
-                        new_combos.append({
-                            "optionName1": name,
-                            "price": add,
-                            "stockQuantity": 999,
-                            "usable": True,
-                        })
-                        logger.info(f"[actions] OPTION_ADD 신규옵션 추가: {name} ({add:+})")
+            # 도매처 옵션으로 무조건 전체 교체
+            new_combos = []
+            for i, name in enumerate(master_names):
+                add = additions[i] if i < len(additions) else 0
+                new_combos.append({
+                    "optionName1": name,
+                    "price": add,
+                    "stockQuantity": 999,
+                    "usable": True,
+                })
+            logger.info(f"[actions] OPTION_ADD 전체교체: {len(new_combos)}개")
 
             option_info["optionCombinations"] = new_combos
             origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
