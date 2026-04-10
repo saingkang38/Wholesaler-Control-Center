@@ -191,12 +191,15 @@ class ChingudomeCollector(BaseCollector):
         # 이미지: img_l 하위에 img_1~img_5가 중첩된 구조
         image_url = self._text_nested(product, "img_l", "img_1") or None
 
-        # 옵션 파싱
+        # 옵션 파싱 → 표준 문자열 형식 변환
         options = self._parse_options(self._text(product, "options"))
+        options_text = "\n".join(o["option_name"] for o in options) if options else None
+        option_diffs = "\n".join(str(o["price"] or 0) for o in options) if options else None
 
         # XML 전체 필드 extra에 저장
         extra = {}
-        extra["옵션"] = options
+        extra["옵션"] = options_text
+        extra["옵션가"] = option_diffs
 
         # 추가이미지 표준 키로 저장 (추가이미지1~5)
         imgs = self._collect_images(product)

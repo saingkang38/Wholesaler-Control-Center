@@ -200,14 +200,17 @@ class ZentraldeCollector(BaseCollector):
         # 상품명: <prdtname> CDATA 텍스트
         product_name = self._cdata_text(product, "prdtname")
 
-        # 옵션 파싱
+        # 옵션 파싱 → 표준 문자열 형식 변환
         option_el = product.find("option")
         options = self._parse_options(option_el.text if option_el is not None else None)
+        options_text = "\n".join(o["option_name"] for o in options) if options else None
+        option_diffs = "\n".join(str(o["price"] or 0) for o in options) if options else None
 
         # XML 전체 필드 extra에 저장
         extra = {}
         extra["소비자가"] = consumer_price
-        extra["옵션"] = options
+        extra["옵션"] = options_text
+        extra["옵션가"] = option_diffs
         extra["이미지목록"] = images
         extra["오픈일"] = status_el.get("opendate") if status_el is not None else None
         for child in product:
