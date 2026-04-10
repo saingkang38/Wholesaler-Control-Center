@@ -67,7 +67,16 @@ def calculate_option_pricing(base_price: int, option_diffs_text: str) -> dict:
     if not diffs:
         return {"list_price": sale_price, "discount": 0, "sale_price": sale_price, "additions": []}
 
-    additions = [apply_margin(base_price + d) - sale_price for d in diffs]
+    raw_additions = [apply_margin(base_price + d) - sale_price for d in diffs]
+
+    # 네이버 필수 조건: 옵션가 0원짜리 1개 이상 — 가장 저렴한 옵션을 기준(0원)으로 정규화
+    min_add = min(raw_additions)
+    if min_add != 0:
+        additions = [a - min_add for a in raw_additions]
+        sale_price = sale_price + min_add   # 실판매가 = 가장 저렴한 옵션의 마진 적용가
+    else:
+        additions = raw_additions
+
     max_add = max(additions)
     abs_min = abs(min(additions))   # 마이너스 최대 절대값 (양수면 0)
     abs_min = abs_min if min(additions) < 0 else 0
