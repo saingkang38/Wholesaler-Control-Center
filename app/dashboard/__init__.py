@@ -1,6 +1,6 @@
 from flask import Blueprint, render_template
 from flask_login import login_required
-from datetime import datetime, date
+from datetime import date
 from sqlalchemy import func
 from app.infrastructure import db
 from app.execution_logs.models import CollectionRun
@@ -36,15 +36,6 @@ def index():
     today_missing = event_counts.get("MISSING", 0)
     today_discontinued_candidate = event_counts.get("DISCONTINUED_CANDIDATE", 0)
 
-    # 오늘 이벤트 목록 (최근 50건)
-    recent_events = (
-        ProductEvent.query
-        .filter_by(event_date=today)
-        .order_by(ProductEvent.id.desc())
-        .limit(50)
-        .all()
-    )
-
     # 최근 수집 이력
     recent_runs = CollectionRun.query.order_by(CollectionRun.created_at.desc()).limit(5).all()
 
@@ -61,6 +52,5 @@ def index():
         today_name_change=today_name_change,
         today_missing=today_missing,
         today_discontinued_candidate=today_discontinued_candidate,
-        recent_events=recent_events,
         recent_runs=recent_runs,
     )

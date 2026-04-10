@@ -89,16 +89,6 @@ def actions_page():
             sale_price      = suggested.get("list_price")      # 조건 충족 정가
             discount        = suggested.get("discount", 0)
             option_count    = len(suggested.get("additions", []))
-            # 구형 시그널 폴백: list_price/additions 없으면 즉시 계산
-            if wholesale_price and not sale_price:
-                from app.settings import calculate_option_pricing
-                _diffs = suggested.get("option_diffs", "")
-                if _diffs:
-                    _p = calculate_option_pricing(wholesale_price, _diffs)
-                    margin_price = _p["sale_price"]
-                    sale_price   = _p["list_price"]
-                    discount     = _p["discount"]
-                    option_count = len(_p["additions"])
         elif s.signal_type == "OPTION_STOCK_CHANGE":
             wholesale_price = None
             margin_price    = None
@@ -362,6 +352,10 @@ def _execute_signal(signal: ActionSignal):
                             (j for j, n in enumerate(option_names) if n == name), None
                         )
                         if matched_idx is None and i < len(pricing["additions"]):
+                            logger.warning(
+                                f"[actions] 옵션명 매칭 실패 → 순서 폴백 사용 "
+                                f"(store_product_id={store.id}, combo_idx={i}, name='{name}')"
+                            )
                             matched_idx = i
                         if matched_idx is not None and matched_idx < len(pricing["additions"]):
                             combo["price"] = pricing["additions"][matched_idx]
@@ -439,6 +433,10 @@ def _execute_signal(signal: ActionSignal):
                         matched_idx = j
                         break
                 if matched_idx is None and i < len(option_stocks):
+                    logger.warning(
+                        f"[actions] 옵션명 매칭 실패 → 순서 폴백 사용 "
+                        f"(store_product_id={store.id}, combo_idx={i}, name='{name}')"
+                    )
                     matched_idx = i
                 if matched_idx is not None and matched_idx < len(option_stocks):
                     combo["stockQuantity"] = max(0, option_stocks[matched_idx])
@@ -487,6 +485,10 @@ def _execute_signal(signal: ActionSignal):
                         matched_idx = j
                         break
                 if matched_idx is None and i < len(additions):
+                    logger.warning(
+                        f"[actions] 옵션명 매칭 실패 → 순서 폴백 사용 "
+                        f"(store_product_id={store.id}, combo_idx={i}, name='{name}')"
+                    )
                     matched_idx = i
                 if matched_idx is not None and matched_idx < len(additions):
                     combo["price"] = additions[matched_idx]   # 음수 허용 (조건 충족 보장됨)

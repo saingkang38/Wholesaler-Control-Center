@@ -21,10 +21,14 @@ STATUS_LABELS = {
 }
 
 
+def _all_stores():
+    return NaverStore.query.order_by(NaverStore.store_name).all()
+
+
 @store_bp.route("/store-overview")
 @login_required
 def store_overview_page():
-    stores = NaverStore.query.order_by(NaverStore.store_name).all()
+    stores = _all_stores()
     store_id = request.args.get("store_id", type=int)
     if not store_id and stores:
         store_id = stores[0].id
@@ -206,7 +210,7 @@ def store_rematch_codes():
 def proposals_page():
     from app.store import propose_code_matches
     store_id = request.args.get("store_id", type=int)
-    stores = NaverStore.query.order_by(NaverStore.store_name).all()
+    stores = _all_stores()
     if not store_id and stores:
         store_id = stores[0].id
     selected_store = NaverStore.query.get(store_id) if store_id else None
@@ -285,7 +289,7 @@ def push_codes():
 @store_bp.route("/stores/list-json")
 @login_required
 def stores_list_json():
-    stores = NaverStore.query.order_by(NaverStore.store_name).all()
+    stores = _all_stores()
     return jsonify([{"id": s.id, "store_name": s.store_name} for s in stores])
 
 
@@ -369,7 +373,7 @@ def store_products_page():
     page = request.args.get("page", 1, type=int)
     per_page = 100
 
-    stores = NaverStore.query.order_by(NaverStore.store_name).all()
+    stores = _all_stores()
 
     query = StoreProduct.query
     if naver_store_id:

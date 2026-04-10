@@ -1,8 +1,13 @@
+import threading
 from flask import Blueprint, jsonify
 from flask_login import login_required, current_user
 from app.collectors.orchestrator import run_collection
 
 collections_bp = Blueprint("collections", __name__)
+
+# 동시 수집 요청 차단 — DB 조회보다 먼저 잠금 획득
+_running: set = set()
+_running_lock = threading.Lock()
 
 
 @collections_bp.route("/api/collect/<wholesaler_code>", methods=["POST"])
@@ -11,26 +16,39 @@ def trigger_collection(wholesaler_code):
     from app.execution_logs.models import CollectionRun
     from app.wholesalers.models import Wholesaler
 
-    wholesaler = Wholesaler.query.filter_by(code=wholesaler_code, is_active=True).first()
-    if wholesaler:
-        already = CollectionRun.query.filter_by(
-            wholesaler_id=wholesaler.id,
-            status="running",
-        ).first()
-        if already:
-            started = already.started_at.strftime("%H:%M") if already.started_at else "?"
+    with _running_lock:
+        if wholesaler_code in _running:
             return jsonify({
                 "success": False,
                 "already_running": True,
-                "error": f"{wholesaler.name} 수집이 이미 진행 중입니다 ({started} 시작)",
+                "error": f"{wholesaler_code} 수집이 이미 진행 중입니다",
             }), 409
+        _running.add(wholesaler_code)
 
-    result = run_collection(
-        wholesaler_code=wholesaler_code,
-        trigger_type="manual",
-        user_id=current_user.id,
-    )
-    return jsonify(result)
+    try:
+        wholesaler = Wholesaler.query.filter_by(code=wholesaler_code, is_active=True).first()
+        if wholesaler:
+            already = CollectionRun.query.filter_by(
+                wholesaler_id=wholesaler.id,
+                status="running",
+            ).first()
+            if already:
+                started = already.started_at.strftime("%H:%M") if already.started_at else "?"
+                return jsonify({
+                    "success": False,
+                    "already_running": True,
+                    "error": f"{wholesaler.name} 수집이 이미 진행 중입니다 ({started} 시작)",
+                }), 409
+
+        result = run_collection(
+            wholesaler_code=wholesaler_code,
+            trigger_type="manual",
+            user_id=current_user.id,
+        )
+        return jsonify(result)
+    finally:
+        with _running_lock:
+            _running.discard(wholesaler_code)
 
 
 @collections_bp.route("/api/collection-status")
