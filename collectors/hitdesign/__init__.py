@@ -54,6 +54,9 @@ class HitdesignCollector(BaseCollector):
             try:
                 detail = self._fetch_detail(session, item["source_product_code"], item["detail_url"])
                 item.update(detail)
+                # 상세페이지 "상품코드" 테이블값이 있으면 source_product_code로 교체
+                if item.get("own_code"):
+                    item["source_product_code"] = item["own_code"]
             except Exception as e:
                 logger.warning(f"[hitdesign] 상세 오류 (product_no={item['source_product_code']}): {e}")
             if (i + 1) % 100 == 0:
