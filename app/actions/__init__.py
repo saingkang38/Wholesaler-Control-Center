@@ -21,6 +21,7 @@ SIGNAL_LABELS = {
     "DISCONTINUE_NEEDED":  {"label": "단종 처리 필요", "badge": "dark"},
     "OPTION_PRICE_CHANGE": {"label": "옵션가 변동", "badge": "warning"},
     "OPTION_STOCK_CHANGE": {"label": "옵션 재고 변동", "badge": "secondary"},
+    "OPTION_ADD":          {"label": "옵션 추가/변경", "badge": "primary"},
 }
 
 
@@ -493,6 +494,83 @@ def _execute_signal(signal: ActionSignal):
             store.option_list_price = list_price
             store.option_discount_amount = discount if discount > 0 else None
 
+        elif signal.signal_type == "OPTION_ADD":
+            from store.naver.products import get_origin_product, update_origin_product
+            from app.settings import calculate_option_pricing
+
+            base_price   = suggested.get("base_price")
+            option_diffs = suggested.get("option_diffs", "")
+            options_text = suggested.get("options_text", "")
+
+            if not base_price or not option_diffs or not options_text:
+                raise ValueError("OPTION_ADD: 옵션 데이터 부족")
+
+            master_names = [n.strip() for n in options_text.split("\n") if n.strip()]
+            master_diffs = [int(d.strip()) for d in option_diffs.split("\n") if d.strip()]
+
+            product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
+            origin = product_data.get("originProduct", {})
+            option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
+            combinations = option_info.get("optionCombinations", [])
+
+            store_names = [
+                (c.get("optionName1") or c.get("optionName2") or "").strip()
+                for c in combinations
+            ]
+
+            # 스토어 옵션명과 도매처 옵션명의 교집합 비율로 전체교체 vs 추가 결정
+            matched = sum(1 for n in store_names if n in master_names)
+            replace_all = len(store_names) == 0 or matched < len(store_names) * 0.5
+
+            pricing = calculate_option_pricing(base_price, option_diffs)
+            additions = pricing["additions"]
+
+            if replace_all:
+                # 옵션 전체 교체: 도매처 옵션명으로 새로 구성
+                new_combos = []
+                for i, name in enumerate(master_names):
+                    add = additions[i] if i < len(additions) else 0
+                    new_combos.append({
+                        "optionName1": name,
+                        "price": add,
+                        "stockQuantity": 999,
+                        "usable": True,
+                    })
+                logger.info(f"[actions] OPTION_ADD 전체교체: {len(new_combos)}개")
+            else:
+                # 기존 옵션 유지 + 없는 옵션만 추가
+                new_combos = list(combinations)
+                for i, name in enumerate(master_names):
+                    if name not in store_names:
+                        add = additions[i] if i < len(additions) else 0
+                        new_combos.append({
+                            "optionName1": name,
+                            "price": add,
+                            "stockQuantity": 999,
+                            "usable": True,
+                        })
+                        logger.info(f"[actions] OPTION_ADD 신규옵션 추가: {name} ({add:+})")
+
+            option_info["optionCombinations"] = new_combos
+            origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
+            origin["salePrice"] = pricing["list_price"]
+            if pricing["discount"] > 0:
+                origin["customerBenefit"] = {
+                    "immediateDiscountPolicy": {
+                        "discountMethod": {"value": pricing["discount"], "unitType": "WON"}
+                    }
+                }
+            else:
+                origin["customerBenefit"] = {}
+
+            payload = {
+                "originProduct": origin,
+                "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
+            }
+            update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+            store.option_list_price = pricing["list_price"]
+            store.option_discount_amount = pricing["discount"] if pricing["discount"] > 0 else None
+
         signal.status = "executed"
         signal.error_message = None
         signal.resolved_at = kst_now()
@@ -520,6 +598,7 @@ def detect_action_signals(wholesaler_id: int) -> dict:
         "DISCONTINUE_NEEDED": 0,
         "OPTION_PRICE_CHANGE": 0,
         "OPTION_STOCK_CHANGE": 0,
+        "OPTION_ADD": 0,
     }
 
     # 해당 도매처의 매칭된 스토어 상품만 조회 — 전체 로드 방지, 관계 미리 로드
@@ -561,6 +640,7 @@ def detect_action_signals(wholesaler_id: int) -> dict:
         _check_status_signals(master, store, stats, existing_pending)
         _check_option_signals(master, store, stats, existing_pending)
         _check_option_stock_signals(master, store, stats, existing_pending)
+        _check_option_add_signals(master, store, stats, existing_pending)
 
     db.session.commit()
     logger.info(f"[actions] 시그널 감지 완료: {stats}")
@@ -676,6 +756,42 @@ def _check_option_stock_signals(master: MasterProduct, store: StoreProduct, stat
         ))
         pending.add((master.id, store.id, "OPTION_STOCK_CHANGE"))
         stats["OPTION_STOCK_CHANGE"] += 1
+
+
+def _check_option_add_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set):
+    """도매처에 새 옵션이 추가되었거나 옵션 구성이 바뀐 경우 감지"""
+    if not master.options_text or not master.option_diffs:
+        return
+    if not store.origin_product_no:
+        return
+
+    # 마지막 실행된 OPTION_ADD의 options_text와 비교
+    last_executed = (
+        ActionSignal.query
+        .filter_by(store_product_id=store.id, signal_type="OPTION_ADD")
+        .filter(ActionSignal.status.in_(["executed", "reverted"]))
+        .order_by(ActionSignal.resolved_at.desc())
+        .first()
+    )
+    if last_executed:
+        last_suggested = json.loads(last_executed.suggested_value or "{}")
+        if last_suggested.get("options_text") == master.options_text:
+            return
+
+    if (master.id, store.id, "OPTION_ADD") not in pending:
+        db.session.add(ActionSignal(
+            master_product_id=master.id,
+            store_product_id=store.id,
+            signal_type="OPTION_ADD",
+            current_value=json.dumps({"options_text": master.options_text}),
+            suggested_value=json.dumps({
+                "base_price":   master.price,
+                "option_diffs": master.option_diffs,
+                "options_text": master.options_text,
+            }),
+        ))
+        pending.add((master.id, store.id, "OPTION_ADD"))
+        stats["OPTION_ADD"] += 1
 
 
 def _check_status_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set):
