@@ -203,8 +203,19 @@ class ZentraldeCollector(BaseCollector):
         # 옵션 파싱 → 표준 문자열 형식 변환
         option_el = product.find("option")
         options = self._parse_options(option_el.text if option_el is not None else None)
-        options_text = "\n".join(o["option_name"] for o in options) if options else None
-        option_diffs = "\n".join(str(o["price"] or 0) for o in options) if options else None
+        if options:
+            raw_prices = [o["price"] or 0 for o in options]
+            if min(raw_prices) == 0:
+                # 이미 기준가 대비 차액 형식 (0=기준 옵션)
+                diffs = raw_prices
+            else:
+                # 절대 가격 형식 → 상품 기준가 대비 차액으로 변환
+                diffs = [(p - price) if price else p for p in raw_prices]
+            options_text = "\n".join(o["option_name"] for o in options)
+            option_diffs = "\n".join(str(d) for d in diffs)
+        else:
+            options_text = None
+            option_diffs = None
 
         # XML 전체 필드 extra에 저장
         extra = {}

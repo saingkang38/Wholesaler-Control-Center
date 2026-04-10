@@ -755,6 +755,19 @@ def _check_option_add_signals(master: MasterProduct, store: StoreProduct, stats:
         if last_suggested.get("options_text") == master.options_text:
             return
 
+    # OPTION_PRICE_CHANGE가 같은 options_text로 이미 실행된 경우 → 옵션 구성 변동 없음
+    last_price_exec = (
+        ActionSignal.query
+        .filter_by(store_product_id=store.id, signal_type="OPTION_PRICE_CHANGE")
+        .filter(ActionSignal.status.in_(["executed", "reverted"]))
+        .order_by(ActionSignal.resolved_at.desc())
+        .first()
+    )
+    if last_price_exec:
+        last_p = json.loads(last_price_exec.suggested_value or "{}")
+        if last_p.get("options_text") == master.options_text:
+            return
+
     if (master.id, store.id, "OPTION_ADD") not in pending:
         db.session.add(ActionSignal(
             master_product_id=master.id,
