@@ -281,6 +281,32 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
                 master.shipping_fee = item.get("shipping_fee")
             if item.get("shipping_condition"):
                 master.shipping_condition = item.get("shipping_condition")
+            extra = item.get("extra") or {}
+            if item.get("brand_name") or extra.get("브랜드"):
+                master.brand_name = item.get("brand_name") or extra.get("브랜드")
+            if item.get("manufacturer") or extra.get("제조사"):
+                master.manufacturer = item.get("manufacturer") or extra.get("제조사")
+            if item.get("model_name") or extra.get("모델명"):
+                master.model_name = item.get("model_name") or extra.get("모델명")
+            if item.get("keywords") or extra.get("키워드"):
+                master.keywords = item.get("keywords") or extra.get("키워드")
+            if item.get("tax_type") or extra.get("과세여부"):
+                master.tax_type = item.get("tax_type") or extra.get("과세여부")
+            if item.get("certification") or extra.get("인증정보"):
+                import json as _json
+                val = item.get("certification") or extra.get("인증정보")
+                master.certification = _json.dumps(val, ensure_ascii=False) if isinstance(val, (list, dict)) else str(val)
+            # 추가이미지: extra["추가이미지1"..5] → 줄바꿈 구분 문자열
+            add_imgs = [
+                extra.get("추가이미지1") or extra.get("additional_image_1"),
+                extra.get("추가이미지2") or extra.get("additional_image_2"),
+                extra.get("추가이미지3") or extra.get("additional_image_3"),
+                extra.get("추가이미지4") or extra.get("additional_image_4"),
+                extra.get("추가이미지5") or extra.get("additional_image_5"),
+            ]
+            add_imgs = [u for u in add_imgs if u]
+            if add_imgs:
+                master.additional_images = "\n".join(add_imgs)
             master.options_text = new_options
             master.option_diffs = new_diffs
 

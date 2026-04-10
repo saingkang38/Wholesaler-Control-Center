@@ -19,6 +19,13 @@ class MasterProduct(db.Model):
     product_url        = db.Column(db.String(1024))                # 도매처 상품 링크
     detail_description = db.Column(db.Text)                       # 본문상세설명 (HTML)
     origin             = db.Column(db.String(128))                # 원산지
+    brand_name         = db.Column(db.String(256), nullable=True) # 브랜드
+    manufacturer       = db.Column(db.String(256), nullable=True) # 제조사
+    model_name         = db.Column(db.String(256), nullable=True) # 모델명
+    keywords           = db.Column(db.Text, nullable=True)        # 키워드 (줄바꿈 구분)
+    tax_type           = db.Column(db.String(32), nullable=True)  # 과세유형 (taxable/tax_free)
+    certification      = db.Column(db.Text, nullable=True)        # 인증정보 (JSON)
+    additional_images  = db.Column(db.Text, nullable=True)        # 추가이미지 URL (줄바꿈 구분)
     shipping_fee       = db.Column(db.Integer)                    # 배송비
     shipping_condition = db.Column(db.String(256))                # 무료배송조건
     edited_name        = db.Column(db.String(512))                # 가공된 상품명 (NULL = 미가공)
