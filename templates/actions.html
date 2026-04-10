@@ -124,11 +124,30 @@
     <a href="/actions?status=pending&per_page={{ per_page }}&signal_type=PRICE{{ sq }}"
        style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none;
               background:{{ '#dc2626' if signal_type_filter == 'PRICE' else '#fee2e2' }}; color:{{ 'white' if signal_type_filter == 'PRICE' else '#991b1b' }};">가격변동</a>
+    <a href="/actions?status=pending&per_page={{ per_page }}&signal_type=OPTION{{ sq }}"
+       style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none;
+              background:{{ '#1d4ed8' if signal_type_filter == 'OPTION' else '#dbeafe' }}; color:{{ 'white' if signal_type_filter == 'OPTION' else '#1e40af' }};">옵션변동</a>
     <a href="/actions?status=pending&per_page={{ per_page }}&signal_type=RESUME_POSSIBLE{{ sq }}"
        style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none;
               background:{{ '#059669' if signal_type_filter == 'RESUME_POSSIBLE' else '#d1fae5' }}; color:{{ 'white' if signal_type_filter == 'RESUME_POSSIBLE' else '#065f46' }};">판매재개</a>
   </div>
   {% endif %}
+
+  <!-- 상품 검색 -->
+  <form method="get" action="/actions" style="margin-bottom:14px; display:flex; gap:8px; align-items:center;">
+    <input type="hidden" name="status" value="{{ status_filter }}">
+    <input type="hidden" name="per_page" value="{{ per_page }}">
+    {% if store_filter %}<input type="hidden" name="store_id" value="{{ store_filter }}">{% endif %}
+    {% if signal_type_filter %}<input type="hidden" name="signal_type" value="{{ signal_type_filter }}">{% endif %}
+    <input type="text" name="q" value="{{ search_q }}"
+           placeholder="상품명 또는 관리코드 검색..."
+           style="padding:7px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; width:260px;">
+    <button type="submit" style="padding:7px 14px; background:#2c3e50; color:white; border:none; border-radius:6px; font-size:13px; cursor:pointer;">검색</button>
+    {% if search_q %}
+    <a href="/actions?status={{ status_filter }}&per_page={{ per_page }}{% if store_filter %}&store_id={{ store_filter }}{% endif %}"
+       style="font-size:13px; color:#6b7280; text-decoration:none;">✕ 초기화</a>
+    {% endif %}
+  </form>
 
   <!-- 스토어 필터 -->
   <div style="margin-bottom:14px;">

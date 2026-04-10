@@ -65,6 +65,7 @@ def start_sync_background(store_id: int, flask_app) -> bool:
                            f"매칭 {stats['matched']}건 / 미매칭 {stats['unmatched']}건")
                 log_cb(summary, 100)
 
+                SyncLog.query.filter_by(naver_store_id=store_id, action="FULL_SYNC").delete()
                 db.session.add(SyncLog(
                     naver_store_id=store_id,
                     action="FULL_SYNC",
@@ -79,6 +80,7 @@ def start_sync_background(store_id: int, flask_app) -> bool:
             _push_log(store_id, f"오류 발생: {e}", 100)
             with _sync_lock:
                 _sync_progress[store_id]["error"] = str(e)
+                SyncLog.query.filter_by(naver_store_id=store_id, action="FULL_SYNC").delete()
                 db.session.add(SyncLog(naver_store_id=store_id, action="FULL_SYNC", result="error", detail=str(e)))
                 db.session.commit()
         finally:

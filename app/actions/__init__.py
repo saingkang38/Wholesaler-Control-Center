@@ -38,6 +38,7 @@ def actions_page():
 
     store_filter = request.args.get("store_id", 0, type=int)
     signal_type_filter = request.args.get("signal_type", "")
+    search_q = request.args.get("q", "").strip()
 
     from app.store.models import StoreProduct, NaverStore
     query = ActionSignal.query.filter_by(status=status_filter)
@@ -46,8 +47,18 @@ def actions_page():
         query = query.filter(ActionSignal.store_product_id.in_(sub))
     if signal_type_filter == "PRICE":
         query = query.filter(ActionSignal.signal_type.in_(["PRICE_UP_NEEDED", "PRICE_DOWN_POSSIBLE"]))
+    elif signal_type_filter == "OPTION":
+        query = query.filter(ActionSignal.signal_type.in_(["OPTION_PRICE_CHANGE", "OPTION_ADD", "OPTION_STOCK_CHANGE"]))
     elif signal_type_filter:
         query = query.filter(ActionSignal.signal_type == signal_type_filter)
+    if search_q:
+        sp_sub = db.session.query(StoreProduct.id).filter(
+            db.or_(
+                StoreProduct.product_name.ilike(f"%{search_q}%"),
+                StoreProduct.seller_management_code.ilike(f"%{search_q}%"),
+            )
+        ).subquery()
+        query = query.filter(ActionSignal.store_product_id.in_(sp_sub))
     query = query.order_by(ActionSignal.detected_at.desc())
 
     all_stores = NaverStore.query.order_by(NaverStore.store_name).all()
@@ -128,7 +139,8 @@ def actions_page():
                            pagination=pagination,
                            per_page=per_page, total=total,
                            all_stores=all_stores, store_filter=store_filter,
-                           signal_type_filter=signal_type_filter)
+                           signal_type_filter=signal_type_filter,
+                           search_q=search_q)
 
 
 @actions_bp.route("/exclusions")
@@ -374,6 +386,17 @@ def _execute_signal(signal: ActionSignal):
                     store.sale_price = new_price
                     store.option_list_price = pricing["list_price"]
                     store.option_discount_amount = pricing["discount"] or None
+
+                    # 옵션 가격도 함께 처리됐으므로 pending OPTION_PRICE_CHANGE 자동 스킵
+                    pending_opt = ActionSignal.query.filter_by(
+                        store_product_id=store.id,
+                        signal_type="OPTION_PRICE_CHANGE",
+                        status="pending",
+                    ).first()
+                    if pending_opt:
+                        pending_opt.status = "skipped"
+                        pending_opt.error_message = "가격변동 시그널 실행 시 옵션가도 함께 처리됨"
+                        pending_opt.resolved_at = kst_now()
 
                 else:
                     # 옵션 없는 일반 상품: 판매가만 업데이트

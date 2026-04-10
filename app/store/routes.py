@@ -190,9 +190,11 @@ def store_rematch_codes():
         stats = _rematch_by_codes(store_id, codes)
         detail = f"매칭 {stats['matched']} / 미매칭 {stats['unmatched']} / DB없음 {stats['not_found']}"
         flash(f"부분 재매칭 완료 — {detail}", "success")
+        SyncLog.query.filter_by(naver_store_id=store_id, action="REMATCH").delete()
         db.session.add(SyncLog(naver_store_id=store_id, action="REMATCH", result="success", detail=detail))
         db.session.commit()
     except Exception as e:
+        SyncLog.query.filter_by(naver_store_id=store_id, action="REMATCH").delete()
         db.session.add(SyncLog(naver_store_id=store_id, action="REMATCH", result="error", detail=str(e)))
         db.session.commit()
         flash(f"재매칭 실패: {e}", "error")
