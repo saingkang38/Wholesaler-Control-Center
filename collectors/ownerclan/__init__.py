@@ -326,6 +326,11 @@ class OwnerclanCollector(BaseCollector):
                     for i, h in enumerate(headers):
                         if i not in standard_cols and h:
                             extra[h] = self._cell(row, i)
+                    # 추가이미지 표준 키로 extra에 저장
+                    for n in range(1, 6):
+                        v = self._cell(row, col.get(f"추가이미지{n}"))
+                        if v:
+                            extra[f"추가이미지{n}"] = v
                     items.append({
                         "source_product_code": str(code),
                         "product_name": self._cell(row, col.get("name")),
@@ -337,6 +342,14 @@ class OwnerclanCollector(BaseCollector):
                         "stock_qty": self._parse_int(self._cell(row, col.get("stock_qty"))),
                         "category_name": self._cell(row, col.get("category_name")),
                         "detail_description": self._cell(row, col.get("detail_description")),
+                        "origin": self._cell(row, col.get("origin")),
+                        "brand_name": self._cell(row, col.get("brand_name")),
+                        "manufacturer": self._cell(row, col.get("manufacturer")),
+                        "model_name": self._cell(row, col.get("model_name")),
+                        "keywords": self._cell(row, col.get("keywords")),
+                        "tax_type": self._cell(row, col.get("tax_type")),
+                        "certification": self._cell(row, col.get("certification")),
+                        "shipping_fee": self._parse_price(self._cell(row, col.get("shipping_fee"))),
                         "extra": extra,
                     })
 
@@ -359,7 +372,9 @@ class OwnerclanCollector(BaseCollector):
                 mapping["stock_qty"] = i
             elif "상태" in h and "status" not in mapping:
                 mapping["status"] = i
-            elif "이미지" in h and "image_url" not in mapping:
+            elif any(k in h for k in ["대표이미지", "메인이미지"]) and "image_url" not in mapping:
+                mapping["image_url"] = i
+            elif "이미지" in h and "추가" not in h and "image_url" not in mapping:
                 mapping["image_url"] = i
             elif ("상세" in h and ("url" in h_lower or "주소" in h or "링크" in h)) and "detail_url" not in mapping:
                 mapping["detail_url"] = i
@@ -367,6 +382,28 @@ class OwnerclanCollector(BaseCollector):
                 mapping["category_name"] = i
             elif "본문상세설명" in h and "detail_description" not in mapping:
                 mapping["detail_description"] = i
+            elif any(k in h for k in ["브랜드", "brand"]) and "brand_name" not in mapping:
+                mapping["brand_name"] = i
+            elif any(k in h for k in ["제조사", "메이커", "maker"]) and "manufacturer" not in mapping:
+                mapping["manufacturer"] = i
+            elif any(k in h for k in ["모델명", "모델번호", "model"]) and "model_name" not in mapping:
+                mapping["model_name"] = i
+            elif any(k in h for k in ["키워드", "keyword"]) and "keywords" not in mapping:
+                mapping["keywords"] = i
+            elif any(k in h for k in ["원산지", "생산지"]) and "origin" not in mapping:
+                mapping["origin"] = i
+            elif any(k in h for k in ["배송비"]) and "shipping_fee" not in mapping:
+                mapping["shipping_fee"] = i
+            elif any(k in h for k in ["과세"]) and "tax_type" not in mapping:
+                mapping["tax_type"] = i
+            elif "인증" in h and "certification" not in mapping:
+                mapping["certification"] = i
+            # 추가이미지 1~5
+            elif "추가이미지" in h:
+                for n in range(1, 6):
+                    if str(n) in h and f"추가이미지{n}" not in mapping:
+                        mapping[f"추가이미지{n}"] = i
+                        break
         return mapping
 
     def _cell(self, row, idx):

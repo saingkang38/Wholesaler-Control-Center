@@ -197,14 +197,27 @@ class ChingudomeCollector(BaseCollector):
         # XML 전체 필드 extra에 저장
         extra = {}
         extra["옵션"] = options
-        extra["이미지목록"] = self._collect_images(product)
+
+        # 추가이미지 표준 키로 저장 (추가이미지1~5)
+        imgs = self._collect_images(product)
+        for i, url in enumerate(imgs[1:], start=2):  # img_1은 image_url로, img_2~5는 추가이미지
+            extra[f"추가이미지{i - 1}"] = url
+
+        # XML 태그 매핑 (브랜드/제조사/모델명/키워드)
+        _TAG_MAP = {
+            "brand": "브랜드", "brandnm": "브랜드", "goodsbrand": "브랜드",
+            "maker": "제조사", "makernm": "제조사", "goodsmaker": "제조사", "goodsmakernm": "제조사",
+            "modelnm": "모델명", "model": "모델명",
+            "keyword": "키워드", "keywords": "키워드",
+        }
         for child in product:
             tag = child.tag
             if tag in ("img_l",):
                 continue
             val = (child.text or "").strip()
             if val:
-                extra[tag] = val
+                std_key = _TAG_MAP.get(tag.lower())
+                extra[std_key if std_key else tag] = val
         for attr, val in product.attrib.items():
             if attr != "goodsno":
                 extra[f"attr_{attr}"] = val
