@@ -161,6 +161,8 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
                     master_product_id=master.id,
                     event_type="IMAGE_CHANGE",
                     event_date=snapshot_date,
+                    before_value=json.dumps({"image_url": master.image_url}, ensure_ascii=False),
+                    after_value=json.dumps({"image_url": new_img}, ensure_ascii=False),
                 ))
                 stats["image_change"] += 1
 
@@ -183,6 +185,8 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
                     master_product_id=master.id,
                     event_type="DETAIL_CHANGE",
                     event_date=snapshot_date,
+                    before_value=json.dumps({"chars": len(master.detail_description)}, ensure_ascii=False),
+                    after_value=json.dumps({"chars": len(new_detail), "url": master.product_url or ""}, ensure_ascii=False),
                 ))
                 stats["detail_change"] += 1
 
