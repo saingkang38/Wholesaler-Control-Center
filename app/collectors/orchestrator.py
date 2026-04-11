@@ -218,7 +218,7 @@ def _save_raw_json(wholesaler_code: str, items: list):
         logger.warning(f"[orchestrator] 원본 저장 실패 (무시): {e}")
 
 
-def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: int = None):
+def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: int = None, phase: str = None):
     wholesaler = Wholesaler.query.filter_by(code=wholesaler_code, is_active=True).first()
     if not wholesaler:
         return {"success": False, "error": f"도매처를 찾을 수 없음: {wholesaler_code}"}
@@ -244,7 +244,7 @@ def run_collection(wholesaler_code: str, trigger_type: str = "manual", user_id: 
     master_stats = {}  # try 블록 외부 선언 — 예외 발생 시에도 반환값 안전
     try:
         collector = collector_class()
-        result = collector.run()
+        result = collector.run(phase=phase) if phase is not None else collector.run()
 
         # 설정 미완료로 수집 자체를 건너뛴 경우 — 알림 없이 로그만
         error_msg = result.get("error_summary") or result.get("error") or ""
