@@ -210,10 +210,16 @@ class OwnerclanCollector(BaseCollector):
         page.check("input[name='is_search_vender'][value='D']")
         time.sleep(0.5)
 
-        page.on("dialog", lambda d: (logger.info(f"[ownerclan] 팝업: {d.message[:80]}"), d.accept()))
+        _dialog_msg = []
+        page.on("dialog", lambda d: (_dialog_msg.append(d.message), logger.info(f"[ownerclan] 팝업: {d.message[:80]}"), d.accept()))
         page.click("button#btn_submit2")
         page.wait_for_load_state("networkidle")
         time.sleep(2)
+
+        # 팝업 메시지로 다운로드 세트 초과 감지
+        for msg in _dialog_msg:
+            if any(kw in msg for kw in ["30", "초과", "가득", "한도", "최대", "삭제"]):
+                raise Exception(f"다운로드 세트 가득 참 (30개 한도) — 오너클랜 사이트에서 기존 세트를 삭제 후 재시도하세요. 팝업: {msg[:100]}")
 
         page.goto(DOWNLOAD_LIST_URL)
         page.wait_for_load_state("networkidle")
@@ -331,6 +337,31 @@ class OwnerclanCollector(BaseCollector):
                         v = self._cell(row, col.get(f"추가이미지{n}"))
                         if v:
                             extra[f"추가이미지{n}"] = v
+                    # 옵션 표준 키로 정규화
+                    opt_names = self._cell(row, col.get("option_names"))
+                    opt_diffs = self._cell(row, col.get("option_diffs"))
+                    opt_stocks = self._cell(row, col.get("option_stocks"))
+                    combo = self._cell(row, col.get("combo_option"))
+                    if combo and not opt_names:
+                        # 조합형옵션: "옵션명,차액,재고\n..." 파싱
+                        names, diffs, stocks = [], [], []
+                        for line in combo.strip().split("\n"):
+                            parts = line.strip().split(",")
+                            if parts and parts[0].strip():
+                                names.append(parts[0].strip())
+                                diffs.append(parts[1].strip() if len(parts) > 1 else "0")
+                                stocks.append(parts[2].strip() if len(parts) > 2 else "")
+                        if names:
+                            opt_names = "\n".join(names)
+                            opt_diffs = "\n".join(diffs)
+                            if any(s for s in stocks):
+                                opt_stocks = "\n".join(stocks)
+                    if opt_names:
+                        extra["옵션"] = opt_names
+                    if opt_diffs is not None:
+                        extra["옵션가"] = opt_diffs
+                    if opt_stocks:
+                        extra["옵션재고"] = opt_stocks
                     items.append({
                         "source_product_code": str(code),
                         "product_name": self._cell(row, col.get("name")),
@@ -368,6 +399,8 @@ class OwnerclanCollector(BaseCollector):
                 mapping["supply_price"] = i
             elif ("판매가" in h or "소비자가" in h) and "price" not in mapping:
                 mapping["price"] = i
+            elif "옵션재고" in h and "option_stocks" not in mapping:
+                mapping["option_stocks"] = i
             elif "재고" in h and "stock_qty" not in mapping:
                 mapping["stock_qty"] = i
             elif "상태" in h and "status" not in mapping:
@@ -398,6 +431,12 @@ class OwnerclanCollector(BaseCollector):
                 mapping["tax_type"] = i
             elif "인증" in h and "certification" not in mapping:
                 mapping["certification"] = i
+            elif ("옵션명목록" in h or h == "AP.옵션명목록") and "option_names" not in mapping:
+                mapping["option_names"] = i
+            elif ("옵션가차액" in h or h == "AQ.옵션가차액") and "option_diffs" not in mapping:
+                mapping["option_diffs"] = i
+            elif "조합형옵션" in h and "combo_option" not in mapping:
+                mapping["combo_option"] = i
             # 추가이미지 1~5
             elif "추가이미지" in h:
                 for n in range(1, 6):
