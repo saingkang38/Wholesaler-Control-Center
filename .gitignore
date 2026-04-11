@@ -17,3 +17,4 @@ test_*.py
 *_response.html
 zentrade_debug.txt
 where
+scheduler_out.txt
