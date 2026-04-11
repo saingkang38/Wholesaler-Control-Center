@@ -3,6 +3,7 @@ logger = logging.getLogger(__name__)
 import os
 import re
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 from bs4 import BeautifulSoup
@@ -12,12 +13,14 @@ from app.collectors.base import BaseCollector
 BASE_URL = "https://www.onch3.co.kr"
 LOGIN_URL = BASE_URL + "/login/login_web.php"
 LIST_URL = BASE_URL + "/mypage/sale_products.php"
+DETAIL_URL_TEMPLATE = BASE_URL + "/dbcenter_renewal/dbcenter_view.html?num={}"
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
     "Referer": BASE_URL,
 }
 
 CODE_PATTERN = re.compile(r'CH\d+')
+STOCK_PATTERN = re.compile(r'^\((\d+)\)$')
 
 
 class Onch3Collector(BaseCollector):
@@ -98,6 +101,10 @@ class Onch3Collector(BaseCollector):
                 "items": items,
             }
 
+        # 3. 상세 페이지 수집 (옵션/고시/재고)
+        if items:
+            self._enrich_with_details(session, items)
+
         logger.info(f"[onch3] 수집 완료: {len(items)}건")
         return {
             "success": True,
@@ -152,24 +159,31 @@ class Onch3Collector(BaseCollector):
             if not product_name:
                 continue
 
-            # td[3]: 가격 (첫 번째 div, "(0)" 제외)
+            # td[3]: 가격 + 재고수량 (N)
             td_price = tds[3]
             price = None
+            stock_qty = None
             for div in td_price.find_all("div"):
                 t = div.get_text(strip=True)
-                m = re.match(r'^[\d,]+$', t)
-                if m:
+                # 재고 패턴: (숫자)
+                m_stock = STOCK_PATTERN.match(t)
+                if m_stock:
+                    stock_qty = int(m_stock.group(1))
+                    continue
+                # 가격 패턴: 숫자,숫자 형태
+                if re.match(r'^[\d,]+$', t):
                     p = self._parse_price(t)
-                    if p and 100 <= p <= 50_000_000:
+                    if p and price is None and 100 <= p <= 50_000_000:
                         price = p
-                        break
 
             # td[4]: 상태
             status_text = tds[4].get_text(strip=True)
-            if status_text == "정상판매":
-                status = "active"
-            else:
-                status = "out_of_stock"
+            status = "active" if status_text == "정상판매" else "out_of_stock"
+
+            # prd_num (상세 URL 구성용)
+            btn = tr.find("button", class_="baljuProcBtn")
+            prd_num = btn.get("data-prd_num", "").strip() if btn else ""
+            detail_url = DETAIL_URL_TEMPLATE.format(prd_num) if prd_num else ""
 
             items.append({
                 "source_product_code": source_code,
@@ -178,15 +192,108 @@ class Onch3Collector(BaseCollector):
                 "supply_price": None,
                 "status": status,
                 "image_url": img_url,
-                "detail_url": "",
-                "stock_qty": None,
+                "detail_url": detail_url,
+                "stock_qty": stock_qty,
                 "category_name": category or None,
+                "_prd_num": prd_num,  # 상세 수집 후 제거
             })
 
         return items
 
+    def _enrich_with_details(self, session: requests.Session, items: list):
+        fetch_detail = os.getenv("ONCH3_FETCH_DETAIL", "true").lower() != "false"
+        if not fetch_detail:
+            for item in items:
+                item.pop("_prd_num", None)
+            return
+
+        fetchable = [item for item in items if item.get("_prd_num")]
+        logger.info(f"[onch3] 상세 페이지 수집 시작 ({len(fetchable)}건)")
+
+        def _fetch(item):
+            prd_num = item["_prd_num"]
+            try:
+                resp = session.get(
+                    DETAIL_URL_TEMPLATE.format(prd_num),
+                    headers=HEADERS,
+                    timeout=20,
+                )
+                if resp.ok:
+                    self._parse_detail(item, BeautifulSoup(resp.text, "html.parser"))
+            except Exception as e:
+                logger.debug(f"[onch3] 상세 수집 실패 {prd_num}: {e}")
+
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            futures = [executor.submit(_fetch, item) for item in fetchable]
+            done = 0
+            for _ in as_completed(futures):
+                done += 1
+                if done % 200 == 0:
+                    logger.info(f"[onch3] 상세 수집 진행: {done}/{len(fetchable)}")
+
+        logger.info(f"[onch3] 상세 수집 완료")
+        for item in items:
+            item.pop("_prd_num", None)
+
+    def _parse_detail(self, item: dict, soup: BeautifulSoup):
+        # 상세설명 HTML (content_section 내 이미지/설명 전체)
+        content_section = soup.find("div", class_="content_section")
+        if content_section:
+            detail_html = content_section.decode_contents().strip()
+            if detail_html:
+                item["detail_description"] = detail_html
+
+        # 옵션 파싱
+        # detail_page_price_3 는 절대가격 → item["price"](기준가) 대비 차액으로 변환
+        opt_container = soup.find("div", class_="detail_page_option")
+        if opt_container:
+            li_list = opt_container.select("ul li")
+            names = []
+            abs_prices = []
+            for li in li_list:
+                name_span = li.find("span", class_="detail_page_name")
+                price_span = li.find("span", class_="detail_page_price_3")
+                if not name_span:
+                    continue
+                name = name_span.get_text(strip=True)
+                abs_price = self._parse_price(price_span.get_text(strip=True) if price_span else "0") or 0
+                names.append(name)
+                abs_prices.append(abs_price)
+
+            # 단일 "상품" / "기본" 은 실제 옵션 없음
+            is_real_option = len(names) > 1 or (
+                len(names) == 1 and names[0] not in ("상품", "기본", "")
+            )
+            if is_real_option and abs_prices:
+                # 기준가: item["price"] (목록 페이지 가격) 또는 최저 옵션가
+                base = item.get("price") or min(abs_prices)
+                diffs = [str(p - base) for p in abs_prices]
+                if not item.get("extra"):
+                    item["extra"] = {}
+                item["extra"]["옵션"] = "\n".join(names)
+                item["extra"]["옵션가"] = "\n".join(diffs)
+
+        # 고시 정보 파싱 (원산지, 제조사, 모델명)
+        gosi = soup.find("div", class_="prod_gosi")
+        if gosi:
+            skip_vals = {"-", "해당없음", "상세페이지참고", "상세페이지 참고", ""}
+            for row in gosi.find_all("tr"):
+                th = row.find("th")
+                td = row.find("td")
+                if not th or not td:
+                    continue
+                key = th.get_text(strip=True)
+                val = td.get_text(strip=True)
+                if val in skip_vals:
+                    continue
+                if "원산지" in key:
+                    item["origin"] = val
+                elif "제조사" in key or "제조업체" in key:
+                    item["manufacturer"] = val
+                elif "모델" in key:
+                    item["model_name"] = val
+
     def _has_next_page(self, soup: BeautifulSoup, current_page: int) -> bool:
-        # 다음 페이지 링크 탐색
         for a in soup.find_all("a"):
             href = a.get("href", "")
             text = a.get_text(strip=True)
@@ -206,6 +313,19 @@ class Onch3Collector(BaseCollector):
         if val > 100_000_000:
             return None
         return val
+
+    def _parse_price_diff(self, text: str) -> int:
+        if not text:
+            return 0
+        text = text.strip().replace(",", "")
+        sign = 1
+        if text.startswith("-"):
+            sign = -1
+            text = text[1:]
+        elif text.startswith("+"):
+            text = text[1:]
+        digits = "".join(c for c in text if c.isdigit())
+        return sign * int(digits) if digits else 0
 
     def _error(self, msg: str) -> dict:
         return {
