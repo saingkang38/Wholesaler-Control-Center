@@ -656,25 +656,28 @@ def _check_price_signals(master: MasterProduct, store: StoreProduct, stats: dict
     from app.settings import apply_margin
     margin_price = apply_margin(master.price)  # 마진 적용 기준가
 
-    if margin_price > store.sale_price:
+    # 즉시할인이 있는 상품은 실효 판매가 = 정가 - 즉시할인액으로 비교
+    effective_price = store.sale_price - (store.option_discount_amount or 0)
+
+    if margin_price > effective_price:
         if (master.id, store.id, "PRICE_UP_NEEDED") not in pending:
             db.session.add(ActionSignal(
                 master_product_id=master.id,
                 store_product_id=store.id,
                 signal_type="PRICE_UP_NEEDED",
-                current_value=json.dumps({"sale_price": store.sale_price}),
+                current_value=json.dumps({"sale_price": effective_price}),
                 suggested_value=json.dumps({"sale_price": master.price}),  # 도매가 저장, 실행 시 마진 재적용
             ))
             pending.add((master.id, store.id, "PRICE_UP_NEEDED"))
             stats["PRICE_UP_NEEDED"] += 1
 
-    elif margin_price < store.sale_price:
+    elif margin_price < effective_price:
         if (master.id, store.id, "PRICE_DOWN_POSSIBLE") not in pending:
             db.session.add(ActionSignal(
                 master_product_id=master.id,
                 store_product_id=store.id,
                 signal_type="PRICE_DOWN_POSSIBLE",
-                current_value=json.dumps({"sale_price": store.sale_price}),
+                current_value=json.dumps({"sale_price": effective_price}),
                 suggested_value=json.dumps({"sale_price": master.price}),  # 도매가 저장, 실행 시 마진 재적용
             ))
             pending.add((master.id, store.id, "PRICE_DOWN_POSSIBLE"))
