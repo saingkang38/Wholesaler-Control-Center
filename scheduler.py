@@ -128,7 +128,7 @@ def run_match_and_signal(flask_app, run_time: str):
 
 def run_noon_pipeline():
     """
-    00:01 전체 수집 파이프라인 (순차 실행)
+    23:00 전체 수집 파이프라인 (순차 실행)
 
     순서:
       1. 오너클랜 트리거 (다운로드 세트 요청)
@@ -173,7 +173,7 @@ def run_noon_pipeline():
 
 
 def run_ownerclan_retry():
-    """18:00 — 오너클랜 오늘 성공 기록 없으면 재시도"""
+    """04:59 — 오너클랜 오늘 성공 기록 없으면 재시도"""
     run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
     logger.info(f"[scheduler] 오너클랜 재시도 확인 ({run_time})")
 
@@ -208,6 +208,57 @@ def run_ownerclan_retry():
 
     logger.info("[scheduler] 오너클랜 오늘 성공 기록 없음 — 재시도 시작")
     _collect_wholesaler("ownerclan", "오너클랜(18시재시도)", flask_app, run_time)
+
+
+def run_db_cleanup():
+    """매일 03:00 — 오래된 데이터 정리"""
+    from app import create_app
+    from datetime import timedelta
+
+    flask_app = create_app()
+    today_kst = datetime.now(ZoneInfo("Asia/Seoul")).date()
+
+    cutoffs = {
+        "NormalizedProduct": today_kst - timedelta(days=7),
+        "CollectionRun":     today_kst - timedelta(days=60),
+        "ProductEvent":      today_kst - timedelta(days=90),
+        "ActionSignal":      today_kst - timedelta(days=30),
+    }
+
+    try:
+        with flask_app.app_context():
+            from app.infrastructure import db
+            from app.normalization.models import NormalizedProduct
+            from app.execution_logs.models import CollectionRun
+            from app.master.models import ProductEvent
+            from app.actions.models import ActionSignal
+
+            # NormalizedProduct: 7일 이상 지난 것
+            n = NormalizedProduct.query.filter(
+                NormalizedProduct.collected_at < cutoffs["NormalizedProduct"]
+            ).delete(synchronize_session=False)
+
+            # CollectionRun: 60일 이상 지난 것
+            c = CollectionRun.query.filter(
+                CollectionRun.started_at < cutoffs["CollectionRun"]
+            ).delete(synchronize_session=False)
+
+            # ProductEvent: 90일 이상 지난 것
+            e = ProductEvent.query.filter(
+                ProductEvent.event_date < cutoffs["ProductEvent"]
+            ).delete(synchronize_session=False)
+
+            # ActionSignal: 처리 완료된 것 중 30일 이상 지난 것
+            a = ActionSignal.query.filter(
+                ActionSignal.status.in_(["executed", "reverted", "rejected", "skipped", "failed"]),
+                ActionSignal.detected_at < cutoffs["ActionSignal"],
+            ).delete(synchronize_session=False)
+
+            db.session.commit()
+            logger.info(f"[scheduler] DB 정리 완료 — NormalizedProduct:{n} CollectionRun:{c} ProductEvent:{e} ActionSignal:{a}")
+
+    except Exception as ex:
+        logger.error(f"[scheduler] DB 정리 실패: {ex}")
 
 
 def run_db_backup():
@@ -267,29 +318,29 @@ if __name__ == "__main__":
     scheduler.add_job(
         run_noon_pipeline,
         trigger="cron",
-        hour=0,
-        minute=1,
+        hour=23,
+        minute=0,
         id="daily_pipeline",
         timezone=TIMEZONE,
     )
     scheduler.add_job(
         run_ownerclan_retry,
         trigger="cron",
-        hour=6,
-        minute=0,
+        hour=4,
+        minute=59,
         id="ownerclan_retry",
         timezone=TIMEZONE,
     )
     scheduler.add_job(
-        run_db_backup,
+        lambda: (run_db_backup(), run_db_cleanup()),
         trigger="cron",
-        hour=3,
-        minute=0,
+        hour=1,
+        minute=59,
         id="db_backup",
         timezone=TIMEZONE,
     )
 
-    logger.info(f"[scheduler] 시작 — 매일 00:01 파이프라인 / 06:00 오너클랜 재시도 / 03:00 DB백업 ({TIMEZONE})")
+    logger.info(f"[scheduler] 시작 — 매일 23:00 파이프라인 / 04:59 오너클랜 재시도 / 01:59 DB백업+정리 ({TIMEZONE})")
     logger.info("[scheduler] Ctrl+C로 중단")
 
     try:
