@@ -226,7 +226,16 @@
         </td>
         {% else %}
         <td>{{ '{:,}'.format(row.wholesale_price) if row.wholesale_price else '-' }}</td>
-        <td>{{ '{:,}'.format(row.margin_price) if row.margin_price else '-' }}</td>
+        <td>
+          {{ '{:,}'.format(row.margin_price) if row.margin_price else '-' }}
+          {% if row.option_details %}
+          <div style="margin-top:4px; font-size:11px; color:#555; line-height:1.7;">
+            {% for name, price in row.option_details %}
+            <span style="display:inline-block; background:#f0f4ff; border:1px solid #c7d7f7; border-radius:3px; padding:0 5px; margin:1px;">{{ name }} <b>{{ '{:,}'.format(price) }}</b></span>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </td>
         <td>{{ '{:,}'.format(row.sale_price) if row.sale_price else '-' }}</td>
         {% endif %}
         <td>{{ row.detected_at }}</td>
