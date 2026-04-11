@@ -323,6 +323,7 @@ if __name__ == "__main__":
         id="daily_pipeline",
         timezone=TIMEZONE,
     )
+
     scheduler.add_job(
         run_ownerclan_retry,
         trigger="cron",
