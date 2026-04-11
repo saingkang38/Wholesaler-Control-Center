@@ -54,6 +54,8 @@ def calculate_option_pricing(base_price: int, option_diffs_text: str) -> dict:
         sale_price  : 실판매가 = apply_margin(base_price)
         additions   : 각 옵션 추가금 리스트 (int, 음수 가능)
     """
+    if not base_price or base_price <= 0:
+        return {"list_price": 0, "discount": 0, "sale_price": 0, "additions": []}
     sale_price = apply_margin(base_price)
 
     diffs = []

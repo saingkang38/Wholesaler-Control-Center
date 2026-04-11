@@ -103,6 +103,24 @@ def actions_page():
             discount        = 0
             option_count    = None
 
+        # PRICE 시그널 + 옵션 상품인 경우: 승인 시 적용될 옵션별 가격 계산
+        option_details = []
+        if s.signal_type in ("PRICE_UP_NEEDED", "PRICE_DOWN_POSSIBLE") and wholesale_price:
+            master = s.master
+            if master and master.option_diffs and master.options_text:
+                try:
+                    from app.settings import calculate_option_pricing
+                    opt_p = calculate_option_pricing(wholesale_price, master.option_diffs)
+                    names = [n.strip() for n in master.options_text.split("\n") if n.strip()]
+                    adds  = opt_p["additions"]
+                    base  = opt_p["sale_price"]
+                    option_details = [
+                        (names[i] if i < len(names) else f"옵션{i+1}", base + (adds[i] if i < len(adds) else 0))
+                        for i in range(len(names))
+                    ]
+                except Exception:
+                    pass
+
         rows.append({
             "id": s.id,
             "store_product_id": s.store_product_id,
@@ -118,6 +136,7 @@ def actions_page():
             "sale_price": sale_price,
             "discount": discount,
             "option_count": option_count,
+            "option_details": option_details,
             "detected_at": s.detected_at.strftime("%Y-%m-%d %H:%M") if s.detected_at else "-",
             "status": s.status,
             "error_message": s.error_message,
@@ -516,6 +535,7 @@ def _execute_signal(signal: ActionSignal):
             update_origin_product(store.origin_product_no, payload, client_id, client_secret)
 
             # DB에 적용 가격 기록
+            store.sale_price = list_price - discount  # 실효가 (정가 - 즉시할인)
             store.option_list_price = list_price
             store.option_discount_amount = discount if discount > 0 else None
 
@@ -570,6 +590,7 @@ def _execute_signal(signal: ActionSignal):
                 "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
             }
             update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+            store.sale_price = pricing["sale_price"]  # 실효가 (apply_margin 결과)
             store.option_list_price = pricing["list_price"]
             store.option_discount_amount = pricing["discount"] if pricing["discount"] > 0 else None
 
@@ -656,8 +677,12 @@ def _check_price_signals(master: MasterProduct, store: StoreProduct, stats: dict
     from app.settings import apply_margin
     margin_price = apply_margin(master.price)  # 마진 적용 기준가
 
-    # 즉시할인이 있는 상품은 실효 판매가 = 정가 - 즉시할인액으로 비교
-    effective_price = store.sale_price - (store.option_discount_amount or 0)
+    # 옵션 상품(option_list_price 있음): 정가 - 즉시할인 = 실효가 (sale_price 시점과 무관하게 일관됨)
+    # 일반 즉시할인 상품(option_list_price 없음): sale_price(정가) - 즉시할인 = 실효가
+    if store.option_list_price:
+        effective_price = store.option_list_price - (store.option_discount_amount or 0)
+    else:
+        effective_price = store.sale_price - (store.option_discount_amount or 0)
 
     if margin_price > effective_price:
         if (master.id, store.id, "PRICE_UP_NEEDED") not in pending:
@@ -687,7 +712,14 @@ def _check_price_signals(master: MasterProduct, store: StoreProduct, stats: dict
 def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set):
     if not master.option_diffs or not master.options_text:
         return
+    if not master.price:
+        return
     if not store.origin_product_no:
+        return
+
+    # PRICE 시그널이 이미 생성된 경우 OPTION_PRICE_CHANGE 생성 안 함
+    # (PRICE 실행 시 옵션추가금 함께 갱신되므로 중복/순서 충돌 방지)
+    if (master.id, store.id, "PRICE_UP_NEEDED") in pending or (master.id, store.id, "PRICE_DOWN_POSSIBLE") in pending:
         return
 
     # 마지막 실행된 OPTION_PRICE_CHANGE 시그널의 suggested option_diffs와 비교
@@ -766,6 +798,8 @@ def _check_option_stock_signals(master: MasterProduct, store: StoreProduct, stat
 def _check_option_add_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set):
     """도매처에 새 옵션이 추가되었거나 옵션 구성이 바뀐 경우 감지"""
     if not master.options_text or not master.option_diffs:
+        return
+    if not master.price:
         return
     if not store.origin_product_no:
         return
