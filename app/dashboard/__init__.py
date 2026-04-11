@@ -1,10 +1,11 @@
-from flask import Blueprint, render_template
+from flask import Blueprint, render_template, jsonify
 from flask_login import login_required
 from datetime import date
 from sqlalchemy import func
 from app.infrastructure import db
 from app.execution_logs.models import CollectionRun
 from app.master.models import MasterProduct, ProductEvent
+from app.wholesalers.models import Wholesaler
 
 dashboard_bp = Blueprint("dashboard", __name__)
 
@@ -37,7 +38,7 @@ def index():
     today_discontinued_candidate = event_counts.get("DISCONTINUED_CANDIDATE", 0)
 
     # 최근 수집 이력
-    recent_runs = CollectionRun.query.order_by(CollectionRun.created_at.desc()).limit(5).all()
+    recent_runs = CollectionRun.query.order_by(CollectionRun.created_at.desc()).limit(10).all()
 
     return render_template("dashboard.html",
         today=today,
@@ -54,3 +55,29 @@ def index():
         today_discontinued_candidate=today_discontinued_candidate,
         recent_runs=recent_runs,
     )
+
+
+@dashboard_bp.route("/api/dashboard/events/<event_type>")
+@login_required
+def event_list(event_type):
+    today = date.today()
+    events = (
+        db.session.query(ProductEvent, MasterProduct, Wholesaler)
+        .join(MasterProduct, ProductEvent.master_product_id == MasterProduct.id)
+        .join(Wholesaler, MasterProduct.wholesaler_id == Wholesaler.id)
+        .filter(ProductEvent.event_date == today, ProductEvent.event_type == event_type)
+        .order_by(ProductEvent.id.desc())
+        .limit(500)
+        .all()
+    )
+    rows = []
+    for ev, master, ws in events:
+        rows.append({
+            "wholesaler": ws.name,
+            "code": master.supplier_product_code,
+            "name": master.product_name,
+            "product_url": master.product_url or "",
+            "before": ev.before_value,
+            "after": ev.after_value,
+        })
+    return jsonify({"event_type": event_type, "count": len(rows), "rows": rows})
