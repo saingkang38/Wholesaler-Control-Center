@@ -196,10 +196,8 @@ class ChingudomeCollector(BaseCollector):
         if options:
             raw_prices = [o["price"] or 0 for o in options]
             price_val = self._parse_price(self._text(product, "goods_price"))
-            if min(raw_prices) == 0:
-                diffs = raw_prices
-            else:
-                diffs = [(p - price_val) if price_val else p for p in raw_prices]
+            # 절대 가격 → 상품 기준가 대비 차액으로 변환
+            diffs = [(p - price_val) if price_val else p for p in raw_prices]
             options_text = "\n".join(o["option_name"] for o in options)
             option_diffs = "\n".join(str(d) for d in diffs)
         else:
