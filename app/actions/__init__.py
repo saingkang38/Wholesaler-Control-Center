@@ -735,6 +735,17 @@ def _execute_signal(signal: ActionSignal):
             store.option_list_price = pricing["list_price"]
             store.option_discount_amount = pricing["discount"] if pricing["discount"] > 0 else None
 
+            # 옵션 구조+가격 함께 처리됐으므로 pending OPTION_PRICE_CHANGE 자동 스킵
+            pending_price = ActionSignal.query.filter_by(
+                store_product_id=store.id,
+                signal_type="OPTION_PRICE_CHANGE",
+                status="pending",
+            ).first()
+            if pending_price:
+                pending_price.status = "skipped"
+                pending_price.error_message = "OPTION_ADD 실행 시 옵션 가격도 함께 처리됨"
+                pending_price.resolved_at = kst_now()
+
         signal.status = "executed"
         signal.error_message = None
         signal.resolved_at = kst_now()
@@ -860,6 +871,11 @@ def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dic
     # PRICE 시그널이 이미 생성된 경우 OPTION_PRICE_CHANGE 생성 안 함
     # (PRICE 실행 시 옵션추가금 함께 갱신되므로 중복/순서 충돌 방지)
     if (master.id, store.id, "PRICE_UP_NEEDED") in pending or (master.id, store.id, "PRICE_DOWN_POSSIBLE") in pending:
+        return
+
+    # OPTION_ADD가 이미 생성된 경우 OPTION_PRICE_CHANGE 생성 안 함
+    # (OPTION_ADD는 옵션 구조 + 가격을 함께 반영하므로 중복)
+    if (master.id, store.id, "OPTION_ADD") in pending:
         return
 
     # 마지막 실행된 OPTION_PRICE_CHANGE 시그널의 suggested option_diffs와 비교
