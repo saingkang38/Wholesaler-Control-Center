@@ -1,0 +1,334 @@
+{% extends "base.html" %}
+{% block title %}옵션 구조 검토{% endblock %}
+
+{% block content %}
+<style>
+    h2 { margin-bottom: 4px; font-size: 20px; }
+    .subtitle { font-size: 13px; color: #888; margin-bottom: 20px; }
+
+    /* 탭 */
+    .tab-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 14px; }
+    .tab-btn {
+        padding: 6px 14px; border-radius: 20px; font-size: 13px; font-weight: 600;
+        border: 2px solid transparent; cursor: pointer; text-decoration: none;
+        background: #f0f0f0; color: #555;
+    }
+    .tab-btn:hover { background: #e0e0e0; color: #333; }
+    .tab-btn.active { background: #2c3e50; color: white; border-color: #2c3e50; }
+    .tab-btn.grade-urgent  { border-color: #FF4444; }
+    .tab-btn.grade-suspect { border-color: #FF9900; }
+    .tab-btn.grade-review  { border-color: #FFAA00; }
+    .tab-btn.grade-urgent.active  { background: #FF4444; color: white; }
+    .tab-btn.grade-suspect.active { background: #FF9900; color: white; }
+    .tab-btn.grade-review.active  { background: #e6a800; color: white; }
+
+    /* 상태 탭 */
+    .status-row { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 18px; align-items: center; }
+    .status-btn {
+        padding: 5px 12px; border-radius: 5px; font-size: 13px;
+        border: 1px solid #ccc; cursor: pointer; text-decoration: none;
+        background: #fff; color: #555;
+    }
+    .status-btn.active { background: #2c3e50; color: white; border-color: #2c3e50; }
+
+    /* 검색 + 새로분석 */
+    .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 16px; }
+    .toolbar input[type=text] {
+        padding: 7px 12px; border: 1px solid #ccc; border-radius: 5px;
+        font-size: 13px; width: 260px;
+    }
+    .btn { padding: 7px 14px; border-radius: 5px; font-size: 13px; cursor: pointer; border: none; }
+    .btn-dark   { background: #2c3e50; color: white; }
+    .btn-outline{ background: white; color: #555; border: 1px solid #ccc; }
+    .btn-outline:hover { background: #f5f5f5; }
+    .btn-refresh { background: #17a2b8; color: white; }
+    .btn-sm { padding: 4px 10px; font-size: 12px; border-radius: 4px; border: none; cursor: pointer; }
+    .btn-keep    { background: #28a745; color: white; }
+    .btn-addon   { background: #fd7e14; color: white; }
+    .btn-exclude { background: #6c757d; color: white; }
+    .btn-undo    { background: #e0e0e0; color: #555; }
+
+    /* 일괄 처리 바 */
+    .bulk-bar {
+        display: none; background: #fff3cd; border: 1px solid #ffc107;
+        border-radius: 6px; padding: 10px 16px; margin-bottom: 14px;
+        align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    .bulk-bar.visible { display: flex; }
+    .bulk-label { font-size: 13px; font-weight: 600; color: #856404; }
+
+    /* 테이블 */
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { background: #f0f0f0; padding: 9px 10px; text-align: left; border-bottom: 2px solid #ddd; white-space: nowrap; }
+    td { padding: 8px 10px; border-bottom: 1px solid #eee; vertical-align: middle; }
+    tr:hover td { background: #fafafa; }
+    td.product-group { background: #f8f9fa; font-weight: 600; font-size: 12px; color: #444; }
+
+    /* 배지 */
+    .grade-badge {
+        display: inline-block; padding: 2px 8px; border-radius: 10px;
+        font-size: 11px; font-weight: bold; white-space: nowrap;
+    }
+    .badge-urgent  { background: #FF4444; color: white; }
+    .badge-suspect { background: #FF9900; color: white; }
+    .badge-review  { background: #e6a800; color: white; }
+
+    .decision-badge {
+        display: inline-block; padding: 2px 8px; border-radius: 10px;
+        font-size: 11px; font-weight: bold;
+    }
+    .dec-pending { background: #e9ecef; color: #555; }
+    .dec-keep    { background: #d4edda; color: #155724; }
+    .dec-addon   { background: #fff3cd; color: #856404; }
+    .dec-exclude { background: #f5f5f5; color: #888; }
+
+    .diff-pct { font-weight: 700; }
+    .diff-high  { color: #cc0000; }
+    .diff-mid   { color: #e65100; }
+    .diff-low   { color: #f57f17; }
+    .kw-tag { background: #e3f2fd; color: #1565c0; padding: 1px 6px; border-radius: 10px; font-size: 11px; margin: 1px; display: inline-block; }
+
+    .pager { display: flex; gap: 8px; justify-content: center; margin-top: 20px; }
+    .pager a { padding: 6px 12px; border: 1px solid #ccc; border-radius: 4px; text-decoration: none; color: #333; font-size: 13px; }
+    .pager a:hover { background: #f0f0f0; }
+    .pager .current { padding: 6px 12px; font-weight: bold; color: #2c3e50; }
+
+    .empty { text-align: center; padding: 48px; color: #999; }
+
+    /* 노트 입력 */
+    .note-input {
+        font-size: 12px; border: 1px solid #ddd; border-radius: 4px;
+        padding: 2px 6px; width: 110px;
+    }
+</style>
+
+<h2>옵션 구조 검토</h2>
+<div class="subtitle">메인옵션 대비 지나치게 저렴한 옵션 후보 — 유지 / 추가상품 / 제외 결정</div>
+
+<!-- 추가상품 정책 현황 -->
+<div class="card" style="padding:14px 20px; margin-bottom:16px; display:flex; gap:24px; align-items:center; flex-wrap:wrap;">
+    <div style="font-size:13px; font-weight:600; color:#444;">추가상품(addon) 정책 현황</div>
+    <div style="display:flex; gap:20px; font-size:13px;">
+        <span>확정 <strong style="color:#fd7e14;">{{ addon_total }}</strong>건</span>
+        <span>네이버 ID 확인 <strong style="color:#28a745;">{{ addon_synced }}</strong>건</span>
+        {% if addon_unsynced > 0 %}
+        <span style="color:#dc3545;">미동기 <strong>{{ addon_unsynced }}</strong>건 — 다음 시그널 실행 시 자동 생성</span>
+        {% endif %}
+    </div>
+    <div style="font-size:12px; color:#888; margin-left:auto;">
+        ℹ 추가상품으로 결정한 옵션은 다음 액션 시그널 실행 시 네이버 <em>supplementProductInfo</em>로 자동 반영됩니다.
+        재수집 후에도 정책이 유지되어 옵션 재설정이 필요 없습니다.
+    </div>
+</div>
+
+<!-- 위험등급 탭 -->
+<div class="tab-row">
+    {% set gq = build_qs(grade='', decision=decision_filter, page=1) %}
+    <a href="?{{ gq }}" class="tab-btn {% if not grade_filter %}active{% endif %}">
+        전체 미검토 <strong>{{ grade_counts['전체'] }}</strong>
+    </a>
+    {% set gq2 = build_qs(grade='최우선확인', decision=decision_filter, page=1) %}
+    <a href="?{{ gq2 }}" class="tab-btn grade-urgent {% if grade_filter=='최우선확인' %}active{% endif %}">
+        🔴 최우선확인 <strong>{{ grade_counts['최우선확인'] }}</strong>
+    </a>
+    {% set gq3 = build_qs(grade='강한의심', decision=decision_filter, page=1) %}
+    <a href="?{{ gq3 }}" class="tab-btn grade-suspect {% if grade_filter=='강한의심' %}active{% endif %}">
+        🟠 강한의심 <strong>{{ grade_counts['강한의심'] }}</strong>
+    </a>
+    {% set gq4 = build_qs(grade='검토필요', decision=decision_filter, page=1) %}
+    <a href="?{{ gq4 }}" class="tab-btn grade-review {% if grade_filter=='검토필요' %}active{% endif %}">
+        🟡 검토필요 <strong>{{ grade_counts['검토필요'] }}</strong>
+    </a>
+</div>
+
+<!-- 결정 상태 탭 -->
+<div class="status-row">
+    <span style="font-size:13px; color:#666; margin-right:4px;">결정상태:</span>
+    {% for dkey, dlabel in decision_label.items() %}
+    {% set dq = build_qs(decision=dkey, page=1) %}
+    <a href="?{{ dq }}" class="status-btn {% if decision_filter==dkey %}active{% endif %}">
+        {{ dlabel }} ({{ decision_counts[dkey] }})
+    </a>
+    {% endfor %}
+    {% set dq_all = build_qs(decision='', page=1) %}
+    <a href="?{{ dq_all }}" class="status-btn {% if not decision_filter %}active{% endif %}">전체</a>
+</div>
+
+<!-- 툴바 -->
+<div class="toolbar">
+    <form method="get" style="display:flex; gap:8px; align-items:center;">
+        <input type="hidden" name="grade"    value="{{ grade_filter }}">
+        <input type="hidden" name="decision" value="{{ decision_filter }}">
+        <input type="text" name="q" value="{{ search }}" placeholder="상품명 / 상품ID / 옵션명 검색">
+        <button type="submit" class="btn btn-dark">검색</button>
+        {% if search %}
+        <a href="?grade={{ grade_filter }}&decision={{ decision_filter }}" class="btn btn-outline">초기화</a>
+        {% endif %}
+    </form>
+    <button class="btn btn-refresh" onclick="doRefresh()">새로 분석</button>
+    <span style="font-size:12px; color:#888;">— 수집 데이터 기준으로 재분석합니다</span>
+</div>
+
+<!-- 일괄 처리 바 -->
+<div class="bulk-bar" id="bulkBar">
+    <span class="bulk-label" id="bulkLabel">0건 선택</span>
+    <button class="btn btn-sm btn-keep"    onclick="bulkDecide('keep')">유지</button>
+    <button class="btn btn-sm btn-addon"   onclick="bulkDecide('addon')">추가상품</button>
+    <button class="btn btn-sm btn-exclude" onclick="bulkDecide('exclude')">제외</button>
+    <button class="btn btn-sm btn-undo"    onclick="bulkDecide('pending')">미검토로 되돌리기</button>
+</div>
+
+<!-- 테이블 -->
+<div class="card" style="padding:0; overflow-x:auto;">
+{% if items %}
+<table>
+    <thead>
+        <tr>
+            <th><input type="checkbox" id="chkAll" onchange="toggleAll(this)"></th>
+            <th>상품ID</th>
+            <th>상품명</th>
+            <th>메인옵션</th>
+            <th style="text-align:right;">메인가격</th>
+            <th>문제옵션</th>
+            <th style="text-align:right;">옵션가격</th>
+            <th style="text-align:right;">차이율</th>
+            <th>저가수</th>
+            <th>키워드</th>
+            <th>점수</th>
+            <th>등급</th>
+            <th>결정</th>
+            <th>액션</th>
+        </tr>
+    </thead>
+    <tbody>
+    {% set ns = namespace(prev_pid='') %}
+    {% for item in items %}
+    {% if item.product_id != ns.prev_pid %}
+    {% set ns.prev_pid = item.product_id %}
+    {% endif %}
+    <tr data-id="{{ item.id }}" data-decision="{{ item.decision }}">
+        <td><input type="checkbox" class="row-chk" value="{{ item.id }}" onchange="updateBulkBar()"></td>
+        <td style="font-size:11px; color:#666;">{{ item.product_id }}</td>
+        <td style="max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" title="{{ item.product_name }}">{{ item.product_name }}</td>
+        <td style="font-size:12px; color:#555;">{{ item.main_name }}</td>
+        <td style="text-align:right; font-size:12px;">{{ '{:,}'.format(item.main_price) }}원</td>
+        <td style="font-size:12px;">{{ item.opt_name }}</td>
+        <td style="text-align:right; font-size:12px;">{{ '{:,}'.format(item.opt_price) }}원</td>
+        <td style="text-align:right;">
+            <span class="diff-pct {% if item.diff_pct <= -50 %}diff-high{% elif item.diff_pct <= -35 %}diff-mid{% else %}diff-low{% endif %}">
+                {{ item.diff_pct }}%
+            </span>
+        </td>
+        <td style="text-align:center;">{{ item.cheap_count }}</td>
+        <td>
+            {% if item.keywords %}
+                {% for kw in item.keywords.split(',') %}
+                <span class="kw-tag">{{ kw.strip() }}</span>
+                {% endfor %}
+            {% else %}—{% endif %}
+        </td>
+        <td style="text-align:center; font-weight:700;">{{ item.risk_score }}</td>
+        <td>
+            {% if item.grade == '최우선확인' %}
+            <span class="grade-badge badge-urgent">최우선확인</span>
+            {% elif item.grade == '강한의심' %}
+            <span class="grade-badge badge-suspect">강한의심</span>
+            {% else %}
+            <span class="grade-badge badge-review">검토필요</span>
+            {% endif %}
+        </td>
+        <td>
+            <span class="decision-badge dec-{{ item.decision }}">{{ item.decision_label }}</span>
+        </td>
+        <td style="white-space:nowrap;">
+            <button class="btn btn-sm btn-keep"    onclick="decide({{ item.id }}, 'keep')">유지</button>
+            <button class="btn btn-sm btn-addon"   onclick="decide({{ item.id }}, 'addon')">추가상품</button>
+            <button class="btn btn-sm btn-exclude" onclick="decide({{ item.id }}, 'exclude')">제외</button>
+        </td>
+    </tr>
+    {% endfor %}
+    </tbody>
+</table>
+
+{% if pagination.pages > 1 %}
+<div class="pager">
+    {% if pagination.has_prev %}
+    <a href="?{{ build_qs(page=pagination.prev_num) }}">이전</a>
+    {% endif %}
+    <span class="current">{{ pagination.page }} / {{ pagination.pages }}</span>
+    {% if pagination.has_next %}
+    <a href="?{{ build_qs(page=pagination.next_num) }}">다음</a>
+    {% endif %}
+</div>
+{% endif %}
+
+{% else %}
+<div class="empty">해당 조건의 검토 항목이 없습니다.</div>
+{% endif %}
+</div>
+
+<script>
+function buildQs(overrides) {
+    const params = new URLSearchParams(window.location.search);
+    for (const [k, v] of Object.entries(overrides)) {
+        if (v === null || v === undefined) params.delete(k);
+        else params.set(k, v);
+    }
+    return params.toString();
+}
+
+function decide(id, decision) {
+    fetch('/option-review/decide', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ids: [id], decision}),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) location.reload();
+        else alert('오류: ' + (data.error || '알 수 없는 오류'));
+    });
+}
+
+function toggleAll(chk) {
+    document.querySelectorAll('.row-chk').forEach(c => c.checked = chk.checked);
+    updateBulkBar();
+}
+
+function updateBulkBar() {
+    const checked = document.querySelectorAll('.row-chk:checked');
+    const bar = document.getElementById('bulkBar');
+    document.getElementById('bulkLabel').textContent = checked.length + '건 선택';
+    bar.classList.toggle('visible', checked.length > 0);
+}
+
+function bulkDecide(decision) {
+    const ids = Array.from(document.querySelectorAll('.row-chk:checked')).map(c => parseInt(c.value));
+    if (ids.length === 0) return;
+    fetch('/option-review/decide', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ids, decision}),
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) location.reload();
+        else alert('오류: ' + (data.error || '알 수 없는 오류'));
+    });
+}
+
+function doRefresh() {
+    if (!confirm('수집된 DB 데이터를 기준으로 분석을 새로 실행합니다.\n기존 결정(유지/추가상품/제외)은 유지됩니다. 계속할까요?')) return;
+    fetch('/option-review/refresh', {method: 'POST'})
+    .then(r => r.json())
+    .then(data => {
+        if (data.ok) {
+            alert(`분석 완료 — 신규 ${data.new}건, 갱신 ${data.updated}건`);
+            location.reload();
+        } else {
+            alert('오류: ' + (data.error || '알 수 없는 오류'));
+        }
+    });
+}
+</script>
+{% endblock %}

@@ -502,10 +502,12 @@ def _execute_price_option_with_extra(store, master, suggested: dict, client_id: 
     """
     옵션도 있고 옵션간 추가금 차이도 있는 상품의 가격 변동 반영.
     정가 + 즉시할인 + 옵션추가금을 세트로 업데이트한다.
+    addon 정책이 설정된 옵션은 supplementProductInfo 로 별도 반영.
     처리 후 같은 상품의 pending OPTION_PRICE_CHANGE 시그널을 자동 스킵한다.
     """
     from store.naver.products import get_origin_product, update_origin_product
     from app.settings import apply_margin, calculate_option_pricing
+    from app.option_review import get_option_policies, build_supplement_payload, sync_addon_supplement_ids
 
     wholesale_price = suggested.get("sale_price")
     if not wholesale_price or wholesale_price <= 0:
@@ -514,17 +516,24 @@ def _execute_price_option_with_extra(store, master, suggested: dict, client_id: 
     new_price = apply_margin(wholesale_price)
     pricing = calculate_option_pricing(wholesale_price, master.option_diffs)
     option_names = [n.strip() for n in master.options_text.split("\n") if n.strip()]
+    policies = get_option_policies(master.id)  # {name: keep/addon/exclude}
 
     product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
     origin = product_data.get("originProduct", {})
-    option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
+    detail = origin.setdefault("detailAttribute", {})
+    option_info = detail.get("optionInfo", {})
     combinations = option_info.get("optionCombinations", [])
 
     if not combinations:
         raise ValueError("스토어 상품에 옵션 없음 (option_with_extra 경로)")
 
+    # keep 정책 옵션만 combo 업데이트; addon/exclude 는 제외
+    new_combos = []
     for i, combo in enumerate(combinations):
         name = combo.get("optionName1") or combo.get("optionName2") or ""
+        decision = policies.get(name, "keep")
+        if decision in ("addon", "exclude"):
+            continue
         matched_idx = next((j for j, n in enumerate(option_names) if n == name), None)
         if matched_idx is None and i < len(pricing["additions"]):
             logger.warning(
@@ -534,9 +543,19 @@ def _execute_price_option_with_extra(store, master, suggested: dict, client_id: 
             matched_idx = i
         if matched_idx is not None and matched_idx < len(pricing["additions"]):
             combo["price"] = pricing["additions"][matched_idx]
+        new_combos.append(combo)
 
-    option_info["optionCombinations"] = combinations
-    origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
+    if not new_combos:  # 안전장치: 모두 addon/exclude인 경우 전체 유지
+        new_combos = combinations
+
+    option_info["optionCombinations"] = new_combos
+    detail["optionInfo"] = option_info
+
+    # addon 옵션 → supplementProductInfo
+    supplement_products = build_supplement_payload(master, wholesale_price, policies, product_data)
+    if supplement_products:
+        detail.setdefault("supplementProductInfo", {})["supplementProducts"] = supplement_products
+
     origin["salePrice"] = pricing["list_price"]
     if pricing["discount"] > 0:
         origin["customerBenefit"] = {
@@ -551,14 +570,24 @@ def _execute_price_option_with_extra(store, master, suggested: dict, client_id: 
         "originProduct": origin,
         "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
     }
-    update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+    resp_data = update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+
+    # supplement ID 동기화 (신규 생성 시 Naver가 ID 부여)
+    if supplement_products:
+        has_new = any("id" not in s for s in supplement_products)
+        if has_new or not isinstance(resp_data, dict) or not resp_data:
+            fresh = get_origin_product(store.origin_product_no, client_id, client_secret)
+            sync_addon_supplement_ids(master.id, fresh)
+        else:
+            sync_addon_supplement_ids(master.id, resp_data)
 
     store.sale_price = new_price
     store.option_list_price = pricing["list_price"]
     store.option_discount_amount = pricing["discount"] or None
     logger.info(
         f"[actions][option_with_extra] 가격 반영: store_id={store.id}, "
-        f"list_price={pricing['list_price']}, discount={pricing['discount']}"
+        f"list_price={pricing['list_price']}, discount={pricing['discount']}, "
+        f"addon_count={len(supplement_products)}"
     )
 
     # 옵션가도 함께 처리됐으므로 pending OPTION_PRICE_CHANGE 자동 스킵
@@ -646,34 +675,43 @@ def _execute_signal(signal: ActionSignal):
         # ── 옵션 추가금 변동: 추가금 있는 상품 전용 ──────────────────────
         elif signal.signal_type == "OPTION_PRICE_CHANGE":
             from store.naver.products import get_origin_product, update_origin_product
+            from app.option_review import get_option_policies, build_supplement_payload, sync_addon_supplement_ids
 
             list_price   = suggested.get("list_price")
             discount     = suggested.get("discount", 0)
             additions    = suggested.get("additions", [])
             option_names = [n.strip() for n in suggested.get("options_text", "").split("\n") if n.strip()]
+            base_price   = suggested.get("base_price")
 
             # 구형 시그널 폴백
             if not list_price or not additions:
                 from app.settings import calculate_option_pricing
-                _base  = suggested.get("base_price")
                 _diffs = suggested.get("option_diffs", "")
-                if not _base or not _diffs:
+                if not base_price or not _diffs:
                     raise ValueError("옵션 가격 데이터 부족 (base_price/option_diffs 없음)")
-                _p = calculate_option_pricing(_base, _diffs)
+                _p = calculate_option_pricing(base_price, _diffs)
                 list_price = _p["list_price"]
                 discount   = _p["discount"]
                 additions  = _p["additions"]
 
+            policies = get_option_policies(master.id)
+
             product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
             origin = product_data.get("originProduct", {})
-            option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
+            detail = origin.setdefault("detailAttribute", {})
+            option_info = detail.get("optionInfo", {})
             combinations = option_info.get("optionCombinations", [])
 
             if not combinations:
                 raise ValueError("스토어 상품에 옵션 없음")
 
+            # keep 옵션만 combo 업데이트
+            new_combos = []
             for i, combo in enumerate(combinations):
                 name = combo.get("optionName1") or combo.get("optionName2") or ""
+                decision = policies.get(name, "keep")
+                if decision in ("addon", "exclude"):
+                    continue
                 matched_idx = next((j for j, n in enumerate(option_names) if n == name), None)
                 if matched_idx is None and i < len(additions):
                     logger.warning(
@@ -683,9 +721,20 @@ def _execute_signal(signal: ActionSignal):
                     matched_idx = i
                 if matched_idx is not None and matched_idx < len(additions):
                     combo["price"] = additions[matched_idx]
+                new_combos.append(combo)
 
-            option_info["optionCombinations"] = combinations
-            origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
+            if not new_combos:
+                new_combos = combinations
+
+            option_info["optionCombinations"] = new_combos
+            detail["optionInfo"] = option_info
+
+            # addon 옵션 → supplementProductInfo
+            wholesale_base = base_price or list_price
+            supplement_products = build_supplement_payload(master, wholesale_base, policies, product_data)
+            if supplement_products:
+                detail.setdefault("supplementProductInfo", {})["supplementProducts"] = supplement_products
+
             origin["salePrice"] = list_price
             if discount > 0:
                 origin["customerBenefit"] = {
@@ -700,7 +749,16 @@ def _execute_signal(signal: ActionSignal):
                 "originProduct": origin,
                 "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
             }
-            update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+            resp_data = update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+
+            if supplement_products:
+                has_new = any("id" not in s for s in supplement_products)
+                if has_new or not isinstance(resp_data, dict) or not resp_data:
+                    fresh = get_origin_product(store.origin_product_no, client_id, client_secret)
+                    sync_addon_supplement_ids(master.id, fresh)
+                else:
+                    sync_addon_supplement_ids(master.id, resp_data)
+
             store.sale_price = list_price - discount
             store.option_list_price = list_price
             store.option_discount_amount = discount if discount > 0 else None
@@ -709,6 +767,7 @@ def _execute_signal(signal: ActionSignal):
         elif signal.signal_type == "OPTION_ADD":
             from store.naver.products import get_origin_product, update_origin_product
             from app.settings import calculate_option_pricing
+            from app.option_review import get_option_policies, build_supplement_payload, sync_addon_supplement_ids
 
             base_price   = suggested.get("base_price")
             option_diffs = suggested.get("option_diffs", "")
@@ -720,24 +779,50 @@ def _execute_signal(signal: ActionSignal):
             master_names = [n.strip() for n in options_text.split("\n") if n.strip()]
             pricing = calculate_option_pricing(base_price, option_diffs)
             additions = pricing["additions"]
+            policies = get_option_policies(master.id)  # {name: keep/addon/exclude}
 
             product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
             origin = product_data.get("originProduct", {})
-            option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
+            detail = origin.setdefault("detailAttribute", {})
+            option_info = detail.get("optionInfo", {})
 
-            new_combos = [
-                {
-                    "optionName1": name,
-                    "price": additions[i] if i < len(additions) else 0,
+            # keep 정책 옵션만 combo 생성; addon/exclude 제외
+            new_combos = []
+            for i, name in enumerate(master_names):
+                decision = policies.get(name, "keep")
+                if decision in ("addon", "exclude"):
+                    continue
+                new_combos.append({
+                    "optionName1":  name,
+                    "price":        additions[i] if i < len(additions) else 0,
                     "stockQuantity": 999,
-                    "usable": True,
-                }
-                for i, name in enumerate(master_names)
-            ]
-            logger.info(f"[actions][option_add] 전체교체: store_id={store.id}, {len(new_combos)}개")
+                    "usable":       True,
+                })
+
+            if not new_combos:  # 안전장치: 모두 addon/exclude인 경우 전체 유지
+                new_combos = [
+                    {
+                        "optionName1": name,
+                        "price": additions[i] if i < len(additions) else 0,
+                        "stockQuantity": 999,
+                        "usable": True,
+                    }
+                    for i, name in enumerate(master_names)
+                ]
+
+            logger.info(
+                f"[actions][option_add] 전체교체: store_id={store.id}, "
+                f"combo={len(new_combos)}개 (addon/exclude 제외)"
+            )
 
             option_info["optionCombinations"] = new_combos
-            origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
+            detail["optionInfo"] = option_info
+
+            # addon 옵션 → supplementProductInfo
+            supplement_products = build_supplement_payload(master, base_price, policies, product_data)
+            if supplement_products:
+                detail.setdefault("supplementProductInfo", {})["supplementProducts"] = supplement_products
+
             origin["salePrice"] = pricing["list_price"]
             if pricing["discount"] > 0:
                 origin["customerBenefit"] = {
@@ -752,7 +837,16 @@ def _execute_signal(signal: ActionSignal):
                 "originProduct": origin,
                 "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
             }
-            update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+            resp_data = update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+
+            if supplement_products:
+                has_new = any("id" not in s for s in supplement_products)
+                if has_new or not isinstance(resp_data, dict) or not resp_data:
+                    fresh = get_origin_product(store.origin_product_no, client_id, client_secret)
+                    sync_addon_supplement_ids(master.id, fresh)
+                else:
+                    sync_addon_supplement_ids(master.id, resp_data)
+
             store.sale_price = pricing["sale_price"]
             store.option_list_price = pricing["list_price"]
             store.option_discount_amount = pricing["discount"] if pricing["discount"] > 0 else None

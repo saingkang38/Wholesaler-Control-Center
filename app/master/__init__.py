@@ -10,6 +10,18 @@ master_bp = Blueprint("master", __name__)
 logger = logging.getLogger(__name__)
 
 
+def _normalize_diffs(diffs: str | None) -> str | None:
+    """option_diffs가 전부 0이면 None 반환 (추가금 없음으로 분류)."""
+    if not diffs or not diffs.strip():
+        return None
+    try:
+        if all(int(v.strip()) == 0 for v in diffs.split("\n") if v.strip()):
+            return None
+    except ValueError:
+        pass
+    return diffs
+
+
 @master_bp.route("/changes")
 def changes():
     from flask_login import login_required, current_user
@@ -106,7 +118,7 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
                 shipping_fee=item.get("shipping_fee"),
                 shipping_condition=item.get("shipping_condition"),
                 options_text=_opt_text if isinstance(_opt_text, str) else None,
-                option_diffs=_opt_diffs if isinstance(_opt_diffs, str) else None,
+                option_diffs=_normalize_diffs(_opt_diffs if isinstance(_opt_diffs, str) else None),
                 option_stocks=_opt_stocks if isinstance(_opt_stocks, str) else None,
                 current_status=_init_status,
                 first_seen_date=snapshot_date,
@@ -225,7 +237,7 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
             _raw_diffs = extra.get("옵션가")
             _raw_stocks = extra.get("옵션재고")
             new_options = _raw_options if isinstance(_raw_options, str) else None
-            new_diffs = _raw_diffs if isinstance(_raw_diffs, str) else None
+            new_diffs = _normalize_diffs(_raw_diffs if isinstance(_raw_diffs, str) else None)
             new_option_stocks = _raw_stocks if isinstance(_raw_stocks, str) else None
 
             if master.option_diffs and new_diffs and master.option_diffs != new_diffs:

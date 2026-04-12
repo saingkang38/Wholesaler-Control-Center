@@ -40,6 +40,8 @@ def create_app():
     from app.actions.models import ActionSignal  # noqa: F401 - 테이블 생성용
     from app.settings import settings_bp
     from app.settings.models import MarginRule  # noqa: F401 - 테이블 생성용
+    from app.option_review import option_review_bp
+    from app.option_review.models import OptionReviewPolicy, AddonProduct  # noqa: F401 - 테이블 생성용
     # PrepSetting, SmartStoreSetting 삭제됨
 
     app.register_blueprint(auth_bp)
@@ -52,6 +54,7 @@ def create_app():
     app.register_blueprint(store_bp)
     app.register_blueprint(actions_bp)
     app.register_blueprint(settings_bp)
+    app.register_blueprint(option_review_bp)
 
     with app.app_context():
         db.create_all()
