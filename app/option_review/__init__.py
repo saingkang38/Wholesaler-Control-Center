@@ -2,8 +2,9 @@ import logging
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, render_template, request, jsonify, redirect, url_for
+from flask import Blueprint, render_template, request, jsonify
 from flask_login import login_required
+from sqlalchemy import func
 
 from app.infrastructure import db
 from app.option_review.models import OptionReviewPolicy, AddonProduct
@@ -11,251 +12,533 @@ from app.master.models import MasterProduct
 
 option_review_bp = Blueprint("option_review", __name__)
 logger = logging.getLogger(__name__)
-
-
-@option_review_bp.app_template_global("build_qs")
-def build_qs(**overrides):
-    """현재 URL 쿼리파라미터에 overrides 를 적용해 새 쿼리스트링 반환."""
-    from flask import request as _req
-    from urllib.parse import urlencode
-    params = dict(_req.args)
-    params.update({k: v for k, v in overrides.items() if v is not None})
-    params = {k: v for k, v in params.items() if v != ""}
-    return urlencode(params)
-
 KST = ZoneInfo("Asia/Seoul")
 
-# ── 분석 상수 ────────────────────────────────────────────────
+# ── 상수 ─────────────────────────────────────────────────────
 ACCESSORY_KW = [
-    "노즐", "스티커", "뚜껑", "빨대", "파우치", "케이스", "리필", "추가", "캡", "부속",
-    "구성품", "교체용", "부품", "악세서리", "액세서리", "호스", "필터", "받침", "받침대",
-    "걸이", "고리", "클립", "끈", "스트랩", "배터리", "충전", "어댑터", "아답터", "커버",
-    "덮개", "망사", "그물", "체인", "잠금", "자물쇠", "너트", "볼트", "나사", "패드",
-    "가스켓", "실링", "오링", "세제", "청소", "닦이", "와이퍼", "패킹", "씰",
-    "소모품", "부자재", "별도", "선택", "추가구매", "따로", "분리", "단품",
+    "노즐","스티커","뚜껑","빨대","파우치","케이스","리필","추가","캡","부속",
+    "구성품","교체용","부품","악세서리","액세서리","호스","필터","받침","받침대",
+    "걸이","고리","클립","끈","스트랩","배터리","충전","어댑터","아답터","커버",
+    "덮개","망사","그물","체인","잠금","자물쇠","너트","볼트","나사","패드",
+    "가스켓","실링","오링","세제","청소","닦이","와이퍼","패킹","씰",
+    "소모품","부자재","별도","선택","추가구매","따로","분리","단품",
 ]
-
-GRADE_SCORE = {
-    "최우선확인": (6, 999),
-    "강한의심":   (4, 5),
-    "검토필요":   (1, 3),
-}
-
-DECISION_LABEL = {
-    "pending": "미검토",
-    "keep":    "유지",
-    "addon":   "추가상품",
-    "exclude": "제외",
-}
+DECISION_LABEL = {"pending":"미검토","keep":"옵션유지","addon":"추가상품","exclude":"제외"}
 
 
 # ── 내부 헬퍼 ────────────────────────────────────────────────
-def _find_kw(name: str) -> list[str]:
+def _find_kw(name):
     return [kw for kw in ACCESSORY_KW if kw in name] if name else []
 
+def _calc_risk(min_pct, cheap_count, has_kw):
+    s = 0
+    if min_pct <= -60:   s += 5
+    elif min_pct <= -50: s += 3
+    elif min_pct <= -35: s += 2
+    elif min_pct <= -20: s += 1
+    if cheap_count >= 3: s += 2
+    elif cheap_count >= 2: s += 1
+    if has_kw: s += 3
+    return s
 
-def _calc_risk(min_pct: float, cheap_count: int, has_kw: bool) -> int:
-    score = 0
-    if min_pct <= -60:   score += 5
-    elif min_pct <= -50: score += 3
-    elif min_pct <= -35: score += 2
-    elif min_pct <= -20: score += 1
-    if cheap_count >= 3: score += 2
-    elif cheap_count >= 2: score += 1
-    if has_kw:           score += 3
-    return score
-
-
-def _grade(score: int) -> str | None:
+def _grade(score):
     if score >= 6: return "최우선확인"
     if score >= 4: return "강한의심"
     if score >= 1: return "검토필요"
     return None
 
-
-def _run_analysis() -> dict:
-    """DB의 option_with_extra 상품을 분석하고 OptionReviewPolicy 에 upsert.
-    반환: {'new': int, 'updated': int, 'skipped': int}"""
+def _run_analysis():
     products = MasterProduct.query.filter(
-        MasterProduct.options_text != None,
-        MasterProduct.options_text != "",
-        MasterProduct.option_diffs != None,
-        MasterProduct.option_diffs != "",
+        MasterProduct.options_text != None, MasterProduct.options_text != "",
+        MasterProduct.option_diffs != None, MasterProduct.option_diffs != "",
     ).all()
-
-    stats = {"new": 0, "updated": 0, "skipped": 0}
-
+    stats = {"new": 0, "updated": 0}
     for p in products:
         try:
-            opt_names = [x.strip() for x in p.options_text.split("\n") if x.strip()]
-            diffs     = [int(x.strip()) for x in p.option_diffs.split("\n") if x.strip()]
+            names = [x.strip() for x in p.options_text.split("\n") if x.strip()]
+            diffs = [int(x.strip()) for x in p.option_diffs.split("\n") if x.strip()]
         except Exception:
             continue
-
-        n = min(len(opt_names), len(diffs))
-        if n < 2:
-            continue
-        opt_names = opt_names[:n]
-        diffs = diffs[:n]
-
+        n = min(len(names), len(diffs))
+        if n < 2: continue
+        names, diffs = names[:n], diffs[:n]
         base = p.price or 0
-        if base <= 0:
-            continue
+        if base <= 0: continue
         main_price = base + diffs[0]
-        if main_price <= 0:
-            continue
+        if main_price <= 0: continue
 
-        cheap_opts = []
+        cheap = []
         for i in range(1, n):
-            opt_price = base + diffs[i]
-            if opt_price < main_price:
-                pct  = (opt_price - main_price) / main_price * 100
-                kws  = _find_kw(opt_names[i])
-                cheap_opts.append({
-                    "name":  opt_names[i],
-                    "price": opt_price,
-                    "pct":   round(pct, 1),
-                    "kws":   kws,
-                })
+            op = base + diffs[i]
+            if op < main_price:
+                pct = (op - main_price) / main_price * 100
+                cheap.append({"name": names[i], "price": op, "pct": round(pct,1), "kws": _find_kw(names[i])})
+        if not cheap: continue
 
-        if not cheap_opts:
-            continue
+        cnt = len(cheap); min_pct = min(x["pct"] for x in cheap)
+        any_kw = any(x["kws"] for x in cheap)
+        rs = _calc_risk(min_pct, cnt, any_kw); g = _grade(rs)
+        if not g: continue
 
-        cheap_count = len(cheap_opts)
-        min_pct     = min(x["pct"] for x in cheap_opts)
-        any_kw      = any(x["kws"] for x in cheap_opts)
-        rs          = _calc_risk(min_pct, cheap_count, any_kw)
-        g           = _grade(rs)
-
-        if g is None:
-            continue
-
-        for opt in cheap_opts:
-            existing = OptionReviewPolicy.query.filter_by(
-                master_product_id=p.id,
-                option_name=opt["name"],
-            ).first()
-
-            kw_str = ", ".join(opt["kws"]) if opt["kws"] else ""
-
-            if existing:
-                # 가격/점수 갱신 (결정은 유지)
-                existing.option_price       = opt["price"]
-                existing.main_option_name   = opt_names[0]
-                existing.main_option_price  = main_price
-                existing.diff_pct           = opt["pct"]
-                existing.cheap_option_count = cheap_count
-                existing.accessory_keywords = kw_str
-                existing.risk_score         = rs
-                existing.risk_grade         = g
+        for opt in cheap:
+            kw_str = ", ".join(opt["kws"])
+            ex = OptionReviewPolicy.query.filter_by(master_product_id=p.id, option_name=opt["name"]).first()
+            if ex:
+                ex.option_price = opt["price"]; ex.main_option_name = names[0]
+                ex.main_option_price = main_price; ex.diff_pct = opt["pct"]
+                ex.cheap_option_count = cnt; ex.accessory_keywords = kw_str
+                ex.risk_score = rs; ex.risk_grade = g
                 stats["updated"] += 1
             else:
                 db.session.add(OptionReviewPolicy(
-                    master_product_id = p.id,
-                    option_name       = opt["name"],
-                    option_price      = opt["price"],
-                    main_option_name  = opt_names[0],
-                    main_option_price = main_price,
-                    diff_pct          = opt["pct"],
-                    cheap_option_count= cheap_count,
-                    accessory_keywords= kw_str,
-                    risk_score        = rs,
-                    risk_grade        = g,
+                    master_product_id=p.id, option_name=opt["name"],
+                    option_price=opt["price"], main_option_name=names[0],
+                    main_option_price=main_price, diff_pct=opt["pct"],
+                    cheap_option_count=cnt, accessory_keywords=kw_str,
+                    risk_score=rs, risk_grade=g,
                 ))
                 stats["new"] += 1
-
     db.session.commit()
     return stats
 
 
-# ── 라우트 ────────────────────────────────────────────────────
+def _product_option_rows(master):
+    """master 의 전체 옵션을 파싱해 row list 반환."""
+    if not master.options_text:
+        return []
+    names = [x.strip() for x in master.options_text.split("\n") if x.strip()]
+    diffs = []
+    if master.option_diffs:
+        try: diffs = [int(x.strip()) for x in master.option_diffs.split("\n") if x.strip()]
+        except ValueError: pass
+    base = master.price or 0
+    n = min(len(names), len(diffs)) if diffs else len(names)
+    main_price = (base + diffs[0]) if diffs else base
+
+    # 현재 policy 로드
+    policies = {r.option_name: r for r in OptionReviewPolicy.query.filter_by(master_product_id=master.id).all()}
+
+    rows = []
+    for i in range(len(names)):
+        nm = names[i]
+        diff = diffs[i] if i < len(diffs) else 0
+        abs_price = base + diff
+        pct = round((abs_price - main_price) / main_price * 100, 1) if main_price else 0
+        pol = policies.get(nm)
+        rows.append({
+            "idx":       i,
+            "name":      nm,
+            "abs_price": abs_price,
+            "diff":      diff,
+            "pct":       pct,
+            "is_main":   i == 0,
+            "is_cheap":  pct < -20 and i > 0,
+            "keywords":  _find_kw(nm),
+            "decision":  pol.decision if pol else ("keep" if i == 0 else "keep"),
+            "risk_grade": pol.risk_grade if pol else "",
+            "risk_score": pol.risk_score if pol else 0,
+            "policy_id": pol.id if pol else None,
+        })
+    return rows
+
+
+def _find_store(master):
+    """MasterProduct → StoreProduct 탐색 (seller_management_code 매칭)."""
+    from app.store.models import StoreProduct
+    return StoreProduct.query.filter_by(
+        seller_management_code=master.supplier_product_code
+    ).first()
+
+
+# ═══════════════════════════════════════════════════════════════
+# 1. 메인 목록 — 상품별
+# ═══════════════════════════════════════════════════════════════
 @option_review_bp.route("/option-review")
 @login_required
 def option_review_page():
-    # 첫 방문 시 데이터 없으면 자동 분석
     if OptionReviewPolicy.query.count() == 0:
         _run_analysis()
 
-    grade_filter    = request.args.get("grade", "")
-    decision_filter = request.args.get("decision", "pending")
-    page            = request.args.get("page", 1, type=int)
-    per_page        = request.args.get("per_page", 50, type=int)
-    search          = request.args.get("q", "").strip()
+    status_filter = request.args.get("status", "pending")  # pending/done/all
+    grade_filter  = request.args.get("grade", "")
+    search        = request.args.get("q", "").strip()
+    page          = request.args.get("page", 1, type=int)
+    per_page      = 40
 
-    q = OptionReviewPolicy.query.join(MasterProduct)
+    # 상품별 집계 서브쿼리
+    sub = (
+        db.session.query(
+            OptionReviewPolicy.master_product_id.label("mid"),
+            func.count(OptionReviewPolicy.id).label("total"),
+            func.sum(db.case((OptionReviewPolicy.decision == "pending", 1), else_=0)).label("pending_cnt"),
+            func.max(OptionReviewPolicy.risk_score).label("max_score"),
+            func.max(OptionReviewPolicy.risk_grade).label("top_grade"),
+        )
+        .group_by(OptionReviewPolicy.master_product_id)
+        .subquery()
+    )
+
+    q = db.session.query(
+        MasterProduct,
+        sub.c.total,
+        sub.c.pending_cnt,
+        sub.c.max_score,
+        sub.c.top_grade,
+    ).join(sub, MasterProduct.id == sub.c.mid)
 
     if grade_filter:
-        q = q.filter(OptionReviewPolicy.risk_grade == grade_filter)
-    if decision_filter:
-        q = q.filter(OptionReviewPolicy.decision == decision_filter)
+        q = q.filter(sub.c.top_grade == grade_filter)
+    if status_filter == "pending":
+        q = q.filter(sub.c.pending_cnt > 0)
+    elif status_filter == "done":
+        q = q.filter(sub.c.pending_cnt == 0)
     if search:
         like = f"%{search}%"
-        q = q.filter(
-            db.or_(
-                MasterProduct.product_name.ilike(like),
-                MasterProduct.supplier_product_code.ilike(like),
-                OptionReviewPolicy.option_name.ilike(like),
-            )
-        )
+        q = q.filter(db.or_(
+            MasterProduct.product_name.ilike(like),
+            MasterProduct.supplier_product_code.ilike(like),
+        ))
 
-    q = q.order_by(OptionReviewPolicy.risk_score.desc(), OptionReviewPolicy.diff_pct.asc())
+    q = q.order_by(sub.c.pending_cnt.desc(), sub.c.max_score.desc())
     pagination = q.paginate(page=page, per_page=per_page, error_out=False)
 
-    # 탭 카운트
-    grade_counts = {}
-    for g in ["최우선확인", "강한의심", "검토필요"]:
-        grade_counts[g] = OptionReviewPolicy.query.filter_by(
-            risk_grade=g, decision="pending"
-        ).count()
-    grade_counts["전체"] = OptionReviewPolicy.query.filter_by(decision="pending").count()
-
-    decision_counts = {
-        k: OptionReviewPolicy.query.filter_by(decision=k).count()
-        for k in ["pending", "keep", "addon", "exclude"]
-    }
-
     items = []
-    for row in pagination.items:
+    for master, total, pending_cnt, max_score, top_grade in pagination.items:
+        done = total - pending_cnt
         items.append({
-            "id":          row.id,
-            "product_id":  row.master.supplier_product_code if row.master else "-",
-            "product_name":row.master.product_name if row.master else "-",
-            "main_name":   row.main_option_name or "-",
-            "main_price":  row.main_option_price or 0,
-            "opt_name":    row.option_name,
-            "opt_price":   row.option_price or 0,
-            "diff_pct":    row.diff_pct or 0,
-            "cheap_count": row.cheap_option_count or 0,
-            "keywords":    row.accessory_keywords or "",
-            "risk_score":  row.risk_score or 0,
-            "grade":       row.risk_grade or "",
-            "decision":    row.decision or "pending",
-            "decision_label": DECISION_LABEL.get(row.decision, row.decision),
-            "note":        row.note or "",
+            "master_id":    master.id,
+            "product_code": master.supplier_product_code,
+            "product_name": master.product_name or "-",
+            "total":        total,
+            "pending":      pending_cnt,
+            "done":         done,
+            "top_grade":    top_grade or "",
+            "is_complete":  pending_cnt == 0,
         })
 
-    # addon 확정 현황 (사이드 정보)
-    addon_total   = AddonProduct.query.count()
-    addon_synced  = AddonProduct.query.filter(AddonProduct.naver_supplement_id != None).count()
-    addon_unsynced= addon_total - addon_synced
+    # 탭 카운트
+    total_products  = db.session.query(func.count(func.distinct(OptionReviewPolicy.master_product_id))).scalar()
+    pending_products= db.session.query(func.count(func.distinct(OptionReviewPolicy.master_product_id))).filter(OptionReviewPolicy.decision == "pending").scalar()
+    done_products   = total_products - pending_products
 
     return render_template(
         "option_review.html",
         items=items,
         pagination=pagination,
+        status_filter=status_filter,
         grade_filter=grade_filter,
-        decision_filter=decision_filter,
-        grade_counts=grade_counts,
-        decision_counts=decision_counts,
-        decision_label=DECISION_LABEL,
         search=search,
-        per_page=per_page,
-        addon_total=addon_total,
-        addon_synced=addon_synced,
-        addon_unsynced=addon_unsynced,
+        total_products=total_products,
+        pending_products=pending_products,
+        done_products=done_products,
     )
 
 
+# ═══════════════════════════════════════════════════════════════
+# 2. 상품별 옵션 분류 화면
+# ═══════════════════════════════════════════════════════════════
+@option_review_bp.route("/option-review/product/<int:master_id>")
+@login_required
+def product_detail(master_id):
+    master = MasterProduct.query.get_or_404(master_id)
+    rows   = _product_option_rows(master)
+    store  = _find_store(master)
+
+    addon_records = {r.option_name: r for r in AddonProduct.query.filter_by(master_product_id=master_id).all()}
+    for row in rows:
+        ar = addon_records.get(row["name"])
+        row["naver_id"] = ar.naver_supplement_id if ar else None
+
+    # 다음/이전 상품 (미검토 상품 순서)
+    sub = (
+        db.session.query(OptionReviewPolicy.master_product_id)
+        .filter(OptionReviewPolicy.decision == "pending")
+        .distinct()
+        .subquery()
+    )
+    pending_ids = [r[0] for r in db.session.query(sub).all()]
+    try:
+        idx = pending_ids.index(master_id)
+        prev_id = pending_ids[idx - 1] if idx > 0 else None
+        next_id = pending_ids[idx + 1] if idx < len(pending_ids) - 1 else None
+    except ValueError:
+        prev_id = next_id = None
+
+    return render_template(
+        "option_review_product.html",
+        master=master,
+        rows=rows,
+        store=store,
+        prev_id=prev_id,
+        next_id=next_id,
+        total_pending=len(pending_ids),
+        DECISION_LABEL=DECISION_LABEL,
+    )
+
+
+@option_review_bp.route("/option-review/product/<int:master_id>/save", methods=["POST"])
+@login_required
+def save_decisions(master_id):
+    """각 옵션의 결정을 저장."""
+    master = MasterProduct.query.get_or_404(master_id)
+    data   = request.get_json()
+    if not data:
+        return jsonify({"ok": False, "error": "no data"}), 400
+
+    decisions = data.get("decisions", {})  # {option_name: decision}
+    now = datetime.now(KST)
+
+    opt_names = [x.strip() for x in (master.options_text or "").split("\n") if x.strip()]
+    opt_diffs_raw = [x.strip() for x in (master.option_diffs or "").split("\n") if x.strip()]
+    try: opt_diffs = [int(x) for x in opt_diffs_raw]
+    except ValueError: opt_diffs = []
+    base = master.price or 0
+    main_price = (base + opt_diffs[0]) if opt_diffs else base
+
+    for opt_name, decision in decisions.items():
+        if decision not in ("keep", "addon", "exclude"):
+            continue
+
+        # 해당 옵션의 절대가 계산
+        idx = next((i for i, n in enumerate(opt_names) if n == opt_name), None)
+        diff = opt_diffs[idx] if idx is not None and idx < len(opt_diffs) else 0
+        abs_price = base + diff
+        pct = round((abs_price - main_price) / main_price * 100, 1) if main_price else 0
+
+        pol = OptionReviewPolicy.query.filter_by(
+            master_product_id=master_id, option_name=opt_name
+        ).first()
+
+        if decision == "keep":
+            # keep 는 기본값이므로 기존 record 삭제 (있으면)
+            if pol:
+                db.session.delete(pol)
+            # AddonProduct 정리
+            AddonProduct.query.filter_by(master_product_id=master_id, option_name=opt_name).delete()
+        else:
+            kws = _find_kw(opt_name)
+            if pol:
+                pol.decision = decision
+                pol.reviewed_at = now
+                pol.option_price = abs_price
+                pol.diff_pct = pct
+                pol.accessory_keywords = ", ".join(kws)
+            else:
+                # OptionReviewPolicy 에 없던 옵션 (정상 옵션을 사용자가 addon/exclude 결정)
+                cheap_count = sum(1 for i, n in enumerate(opt_names)
+                                  if i > 0 and i < len(opt_diffs) and (base + opt_diffs[i]) < main_price)
+                rs = _calc_risk(pct, cheap_count, bool(kws))
+                g  = _grade(rs) or "검토필요"
+                db.session.add(OptionReviewPolicy(
+                    master_product_id=master_id, option_name=opt_name,
+                    option_price=abs_price, main_option_name=opt_names[0] if opt_names else "",
+                    main_option_price=main_price, diff_pct=pct,
+                    cheap_option_count=cheap_count,
+                    accessory_keywords=", ".join(kws),
+                    risk_score=rs, risk_grade=g, decision=decision, reviewed_at=now,
+                ))
+
+            # AddonProduct 동기화
+            if decision == "addon":
+                ar = AddonProduct.query.filter_by(master_product_id=master_id, option_name=opt_name).first()
+                if ar:
+                    ar.wholesaler_price = abs_price
+                else:
+                    db.session.add(AddonProduct(
+                        master_product_id=master_id, option_name=opt_name, wholesaler_price=abs_price
+                    ))
+            else:
+                AddonProduct.query.filter_by(master_product_id=master_id, option_name=opt_name).delete()
+
+    db.session.commit()
+    return jsonify({"ok": True})
+
+
+@option_review_bp.route("/option-review/product/<int:master_id>/apply", methods=["POST"])
+@login_required
+def apply_to_store(master_id):
+    """현재 정책을 네이버 스토어에 즉시 적용."""
+    master = MasterProduct.query.get_or_404(master_id)
+    store  = _find_store(master)
+    if not store:
+        return jsonify({"ok": False, "error": "연결된 스토어 상품 없음"}), 404
+    if not store.naver_store:
+        return jsonify({"ok": False, "error": "네이버 스토어 설정 없음"}), 404
+    if not store.origin_product_no:
+        return jsonify({"ok": False, "error": "원상품번호 없음"}), 404
+
+    cid    = store.naver_store.client_id
+    csec   = store.naver_store.client_secret
+    policies = get_option_policies(master_id)
+
+    try:
+        from store.naver.products import get_origin_product, update_origin_product
+        from app.settings import calculate_option_pricing
+
+        product_data = get_origin_product(store.origin_product_no, cid, csec)
+        origin  = product_data.get("originProduct", {})
+        detail  = origin.setdefault("detailAttribute", {})
+        opt_info = detail.get("optionInfo", {})
+        combos  = opt_info.get("optionCombinations", [])
+
+        base_price = master.price or 0
+        opt_names = [x.strip() for x in (master.options_text or "").split("\n") if x.strip()]
+        opt_diffs_raw = []
+        if master.option_diffs:
+            try:
+                opt_diffs_raw = [int(x.strip()) for x in master.option_diffs.split("\n") if x.strip()]
+            except ValueError:
+                pass
+
+        # keep 옵션만 추출해서 pricing 재계산 (addon 제거 후 0원짜리 보장)
+        keep_names, keep_diffs = [], []
+        for i, nm in enumerate(opt_names):
+            if policies.get(nm) not in ("addon", "exclude"):
+                keep_names.append(nm)
+                keep_diffs.append(opt_diffs_raw[i] if i < len(opt_diffs_raw) else 0)
+
+        pricing = {}
+        if keep_diffs:
+            keep_diffs_text = "\n".join(str(d) for d in keep_diffs)
+            pricing = calculate_option_pricing(base_price, keep_diffs_text)
+        additions = pricing.get("additions", [])
+
+        # keep 옵션만 combo 유지, 가격 업데이트
+        new_combos = []
+        for combo in combos:
+            nm = combo.get("optionName1") or combo.get("optionName2") or ""
+            if policies.get(nm) in ("addon", "exclude"):
+                continue
+            idx = next((j for j, n in enumerate(keep_names) if n == nm), None)
+            if idx is not None and idx < len(additions):
+                combo["price"] = additions[idx]
+            new_combos.append(combo)
+
+        if not new_combos:
+            new_combos = combos  # 안전장치
+
+        opt_info["optionCombinations"] = new_combos
+        detail["optionInfo"] = opt_info
+
+        # addon → supplementProductInfo
+        supps = build_supplement_payload(master, base_price, policies, product_data)
+        if supps:
+            detail["supplementProductInfo"] = {
+                "groupName": "추가상품",
+                "supplementProducts": supps,
+            }
+
+        if pricing.get("list_price"):
+            origin["salePrice"] = pricing["list_price"]
+            if pricing.get("discount", 0) > 0:
+                origin["customerBenefit"] = {
+                    "immediateDiscountPolicy": {
+                        "discountMethod": {"value": pricing["discount"], "unitType": "WON"}
+                    }
+                }
+            else:
+                origin["customerBenefit"] = {}
+
+        payload = {
+            "originProduct": origin,
+            "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
+        }
+        resp = update_origin_product(store.origin_product_no, payload, cid, csec)
+
+        # supplement ID 동기화
+        if supps:
+            has_new = any("id" not in s for s in supps)
+            if has_new or not isinstance(resp, dict) or not resp:
+                fresh = get_origin_product(store.origin_product_no, cid, csec)
+                sync_addon_supplement_ids(master_id, fresh)
+            else:
+                sync_addon_supplement_ids(master_id, resp)
+
+        logger.info(f"[option-review] apply_to_store: master_id={master_id}, combo={len(new_combos)}, addon={len(supps)}")
+        return jsonify({"ok": True, "combo_count": len(new_combos), "addon_count": len(supps)})
+
+    except Exception as e:
+        logger.error(f"[option-review] apply_to_store 실패: {e}")
+        return jsonify({"ok": False, "error": str(e)[:300]}), 500
+
+
+# ═══════════════════════════════════════════════════════════════
+# 3. 확정 상품 관리
+# ═══════════════════════════════════════════════════════════════
+@option_review_bp.route("/option-review/managed")
+@login_required
+def managed_page():
+    page = request.args.get("page", 1, type=int)
+    search = request.args.get("q", "").strip()
+
+    # 확정(non-pending) 결정이 하나라도 있는 상품
+    sub = (
+        db.session.query(
+            OptionReviewPolicy.master_product_id.label("mid"),
+            func.sum(db.case((OptionReviewPolicy.decision == "keep",    1), else_=0)).label("keep_cnt"),
+            func.sum(db.case((OptionReviewPolicy.decision == "addon",   1), else_=0)).label("addon_cnt"),
+            func.sum(db.case((OptionReviewPolicy.decision == "exclude", 1), else_=0)).label("excl_cnt"),
+            func.sum(db.case((OptionReviewPolicy.decision == "pending", 1), else_=0)).label("pend_cnt"),
+        )
+        .group_by(OptionReviewPolicy.master_product_id)
+        .having(db.or_(
+            func.sum(db.case((OptionReviewPolicy.decision == "addon",   1), else_=0)) > 0,
+            func.sum(db.case((OptionReviewPolicy.decision == "exclude", 1), else_=0)) > 0,
+        ))
+        .subquery()
+    )
+
+    q = db.session.query(
+        MasterProduct,
+        sub.c.keep_cnt,
+        sub.c.addon_cnt,
+        sub.c.excl_cnt,
+        sub.c.pend_cnt,
+    ).join(sub, MasterProduct.id == sub.c.mid)
+    if search:
+        like = f"%{search}%"
+        q = q.filter(db.or_(
+            MasterProduct.product_name.ilike(like),
+            MasterProduct.supplier_product_code.ilike(like),
+        ))
+    q = q.order_by(sub.c.addon_cnt.desc())
+    pagination = q.paginate(page=page, per_page=40, error_out=False)
+
+    items = []
+    for master, keep_cnt, addon_cnt, excl_cnt, pend_cnt in pagination.items:
+        store = _find_store(master)
+        addon_recs = AddonProduct.query.filter_by(master_product_id=master.id).all()
+        synced = sum(1 for a in addon_recs if a.naver_supplement_id)
+
+        opt_count = len([x for x in (master.options_text or "").split("\n") if x.strip()])
+        items.append({
+            "master_id":    master.id,
+            "product_code": master.supplier_product_code,
+            "product_name": master.product_name or "-",
+            "total_opts":   opt_count,
+            "keep_cnt":     keep_cnt,
+            "addon_cnt":    addon_cnt,
+            "excl_cnt":     excl_cnt,
+            "pend_cnt":     pend_cnt,
+            "store_status": store.store_status if store else "-",
+            "sale_price":   store.sale_price if store else 0,
+            "has_store":    store is not None,
+            "addon_synced": synced,
+            "addon_total":  addon_cnt,
+            "naver_link":   f"https://smartstore.naver.com/products/{store.channel_product_no}" if store and store.channel_product_no else "",
+        })
+
+    return render_template(
+        "option_review_managed.html",
+        items=items,
+        pagination=pagination,
+        search=search,
+    )
+
+
+# ═══════════════════════════════════════════════════════════════
+# 기타 API
+# ═══════════════════════════════════════════════════════════════
 @option_review_bp.route("/option-review/refresh", methods=["POST"])
 @login_required
 def refresh_analysis():
@@ -267,65 +550,8 @@ def refresh_analysis():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-# ── 결정 확정 후 AddonProduct 동기화 ─────────────────────────
-@option_review_bp.route("/option-review/decide", methods=["POST"])
-@login_required
-def decide():
-    data = request.get_json()
-    if not data:
-        return jsonify({"ok": False, "error": "no data"}), 400
-
-    ids      = data.get("ids", [])
-    decision = data.get("decision", "")
-    note     = data.get("note", "")
-
-    if decision not in ("keep", "addon", "exclude", "pending"):
-        return jsonify({"ok": False, "error": "invalid decision"}), 400
-
-    now = datetime.now(KST)
-    rows = OptionReviewPolicy.query.filter(OptionReviewPolicy.id.in_(ids)).all()
-    for row in rows:
-        row.decision    = decision
-        row.note        = note or row.note
-        row.reviewed_at = now if decision != "pending" else None
-
-        # addon 결정 시 AddonProduct 레코드 생성 (없으면)
-        if decision == "addon" and row.master_product_id:
-            _ensure_addon_record(row)
-        # 다른 결정으로 바뀌면 AddonProduct 삭제
-        elif decision in ("keep", "exclude", "pending") and row.master_product_id:
-            AddonProduct.query.filter_by(
-                master_product_id=row.master_product_id,
-                option_name=row.option_name,
-            ).delete()
-
-    db.session.commit()
-    return jsonify({"ok": True, "updated": len(rows)})
-
-
-def _ensure_addon_record(policy: OptionReviewPolicy):
-    """OptionReviewPolicy.decision=='addon' 확정 시 AddonProduct 레코드 보장."""
-    existing = AddonProduct.query.filter_by(
-        master_product_id=policy.master_product_id,
-        option_name=policy.option_name,
-    ).first()
-    if not existing:
-        # 절대가격 = main_price - |diff| (main_option_price 기준)
-        # option_price 는 이미 절대가격으로 저장되어 있음
-        db.session.add(AddonProduct(
-            master_product_id=policy.master_product_id,
-            option_name=policy.option_name,
-            wholesaler_price=policy.option_price,  # 절대 도매가
-        ))
-
-
 # ── 공개 헬퍼 (actions 모듈에서 import) ─────────────────────
-def get_option_policies(master_product_id: int) -> dict[str, str]:
-    """
-    master_product_id 기준으로 {옵션명: decision} 반환.
-    decision 없으면 빈 dict.
-    확정된 것(keep/addon/exclude)만 포함, pending 은 제외.
-    """
+def get_option_policies(master_product_id: int) -> dict:
     rows = OptionReviewPolicy.query.filter(
         OptionReviewPolicy.master_product_id == master_product_id,
         OptionReviewPolicy.decision.in_(["keep", "addon", "exclude"]),
@@ -333,17 +559,12 @@ def get_option_policies(master_product_id: int) -> dict[str, str]:
     return {r.option_name: r.decision for r in rows}
 
 
-def get_addon_products(master_product_id: int) -> dict[str, "AddonProduct"]:
-    """addon 결정된 옵션의 {옵션명: AddonProduct} 반환."""
+def get_addon_products(master_product_id: int) -> dict:
     rows = AddonProduct.query.filter_by(master_product_id=master_product_id).all()
     return {r.option_name: r for r in rows}
 
 
 def sync_addon_supplement_ids(master_product_id: int, product_data: dict):
-    """
-    Naver GET/PUT 응답의 supplementProductInfo 에서 ID를 읽어 AddonProduct 에 저장.
-    product_data: get_origin_product() 반환값
-    """
     supp_list = (
         product_data.get("originProduct", {})
         .get("detailAttribute", {})
@@ -352,14 +573,9 @@ def sync_addon_supplement_ids(master_product_id: int, product_data: dict):
     )
     changed = False
     for supp in supp_list:
-        sid  = supp.get("id")
-        name = supp.get("name", "")
-        if not sid or not name:
-            continue
-        addon = AddonProduct.query.filter_by(
-            master_product_id=master_product_id,
-            option_name=name,
-        ).first()
+        sid = supp.get("id"); name = supp.get("name", "")
+        if not sid or not name: continue
+        addon = AddonProduct.query.filter_by(master_product_id=master_product_id, option_name=name).first()
         if addon and addon.naver_supplement_id != sid:
             addon.naver_supplement_id = sid
             addon.last_synced_at = datetime.now(KST)
@@ -368,24 +584,14 @@ def sync_addon_supplement_ids(master_product_id: int, product_data: dict):
         db.session.commit()
 
 
-def build_supplement_payload(master, base_price: int, policies: dict,
-                              existing_product_data: dict) -> list:
-    """
-    addon 정책 옵션들을 네이버 supplementProducts 형식으로 변환.
-    기존 naver_supplement_id 가 있으면 id 필드 포함 (업데이트).
-    없으면 id 생략 (신규 생성).
-    """
+def build_supplement_payload(master, base_price: int, policies: dict, existing_product_data: dict) -> list:
     from app.settings import apply_margin
-
     opt_names = [x.strip() for x in (master.options_text or "").split("\n") if x.strip()]
-    opt_diffs: list[int] = []
+    opt_diffs = []
     if master.option_diffs:
-        try:
-            opt_diffs = [int(x.strip()) for x in master.option_diffs.split("\n") if x.strip()]
-        except ValueError:
-            pass
+        try: opt_diffs = [int(x.strip()) for x in master.option_diffs.split("\n") if x.strip()]
+        except ValueError: pass
 
-    # 기존 네이버 추가상품 이름→ID 매핑
     existing_supps = (
         existing_product_data.get("originProduct", {})
         .get("detailAttribute", {})
@@ -393,31 +599,15 @@ def build_supplement_payload(master, base_price: int, policies: dict,
         .get("supplementProducts", [])
     )
     existing_id_by_name = {s.get("name", ""): s.get("id") for s in existing_supps}
-
-    # AddonProduct 에서 이미 저장된 Naver ID
     addon_records = get_addon_products(master.id)
 
     supplements = []
     for i, name in enumerate(opt_names):
-        if policies.get(name) != "addon":
-            continue
+        if policies.get(name) != "addon": continue
         diff = opt_diffs[i] if i < len(opt_diffs) else 0
-        abs_wholesale = base_price + diff
-        selling_price = apply_margin(abs_wholesale)
-
-        entry: dict = {
-            "name":          name,
-            "price":         max(selling_price, 1),
-            "stockQuantity": 99,
-            "usable":        True,
-        }
-        # 기존 Naver ID 우선 사용
-        naver_id = (
-            existing_id_by_name.get(name)
-            or (addon_records[name].naver_supplement_id if name in addon_records else None)
-        )
-        if naver_id:
-            entry["id"] = naver_id
+        selling = apply_margin(base_price + diff)
+        entry = {"groupName": "추가상품", "name": name, "price": max(selling, 1), "stockQuantity": 99, "usable": True}
+        nid = existing_id_by_name.get(name) or (addon_records[name].naver_supplement_id if name in addon_records else None)
+        if nid: entry["id"] = nid
         supplements.append(entry)
-
     return supplements

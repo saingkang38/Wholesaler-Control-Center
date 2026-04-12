@@ -507,7 +507,12 @@ def _execute_price_option_with_extra(store, master, suggested: dict, client_id: 
     """
     from store.naver.products import get_origin_product, update_origin_product
     from app.settings import apply_margin, calculate_option_pricing
-    from app.option_review import get_option_policies, build_supplement_payload, sync_addon_supplement_ids
+    try:
+        from app.option_review import get_option_policies, build_supplement_payload, sync_addon_supplement_ids
+    except ImportError:
+        get_option_policies = lambda mid: {}
+        build_supplement_payload = lambda *a, **kw: []
+        sync_addon_supplement_ids = lambda *a, **kw: None
 
     wholesale_price = suggested.get("sale_price")
     if not wholesale_price or wholesale_price <= 0:
@@ -675,7 +680,12 @@ def _execute_signal(signal: ActionSignal):
         # ── 옵션 추가금 변동: 추가금 있는 상품 전용 ──────────────────────
         elif signal.signal_type == "OPTION_PRICE_CHANGE":
             from store.naver.products import get_origin_product, update_origin_product
-            from app.option_review import get_option_policies, build_supplement_payload, sync_addon_supplement_ids
+            try:
+                from app.option_review import get_option_policies, build_supplement_payload, sync_addon_supplement_ids
+            except ImportError:
+                get_option_policies = lambda mid: {}
+                build_supplement_payload = lambda *a, **kw: []
+                sync_addon_supplement_ids = lambda *a, **kw: None
 
             list_price   = suggested.get("list_price")
             discount     = suggested.get("discount", 0)
@@ -767,7 +777,12 @@ def _execute_signal(signal: ActionSignal):
         elif signal.signal_type == "OPTION_ADD":
             from store.naver.products import get_origin_product, update_origin_product
             from app.settings import calculate_option_pricing
-            from app.option_review import get_option_policies, build_supplement_payload, sync_addon_supplement_ids
+            try:
+                from app.option_review import get_option_policies, build_supplement_payload, sync_addon_supplement_ids
+            except ImportError:
+                get_option_policies = lambda mid: {}
+                build_supplement_payload = lambda *a, **kw: []
+                sync_addon_supplement_ids = lambda *a, **kw: None
 
             base_price   = suggested.get("base_price")
             option_diffs = suggested.get("option_diffs", "")

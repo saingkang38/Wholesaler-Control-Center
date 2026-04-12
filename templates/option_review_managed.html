@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}확정 상품 관리{% endblock %}
+{% block content %}
+<style>
+h2{margin-bottom:4px;font-size:20px}
+.subtitle{font-size:13px;color:#888;margin-bottom:18px}
+.toolbar{display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap}
+.toolbar input{padding:7px 12px;border:1px solid #ccc;border-radius:5px;font-size:13px;width:240px}
+.btn{padding:7px 14px;border-radius:5px;font-size:13px;cursor:pointer;border:none;text-decoration:none;display:inline-block}
+.btn-dark{background:#2c3e50;color:#fff}
+.btn-sm{padding:4px 10px;font-size:12px}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:#f0f0f0;padding:10px 12px;text-align:left;border-bottom:2px solid #ddd;white-space:nowrap}
+td{padding:10px 12px;border-bottom:1px solid #eee;vertical-align:middle}
+tr:hover td{background:#fafafa}
+.opt-pill{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;margin:1px}
+.pill-keep  {background:#e8f5e9;color:#155724}
+.pill-addon {background:#fff3e0;color:#7d3c00}
+.pill-excl  {background:#f5f5f5;color:#666}
+.pill-pend  {background:#fff3cd;color:#856404}
+.badge-sync{background:#d4edda;color:#155724;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700}
+.badge-nosync{background:#f8d7da;color:#721c24;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700}
+.badge-nostore{background:#e9ecef;color:#6c757d;padding:2px 8px;border-radius:10px;font-size:11px}
+.pager{display:flex;gap:8px;justify-content:center;margin-top:20px}
+.pager a{padding:6px 12px;border:1px solid #ccc;border-radius:4px;text-decoration:none;color:#333;font-size:13px}
+.pager a:hover{background:#f0f0f0}
+.pager .cur{padding:6px 12px;font-weight:700;color:#2c3e50}
+.empty{text-align:center;padding:48px;color:#999}
+.back-link{font-size:13px;color:#666;text-decoration:none;margin-bottom:14px;display:inline-block}
+.back-link:hover{color:#333}
+</style>
+
+<a href="/option-review" class="back-link">← 옵션 구조 검토 목록</a>
+<h2>확정 상품 관리</h2>
+<div class="subtitle">옵션 분류가 완료된 상품 — 가격변동·품단종 시에도 정책이 유지됩니다</div>
+
+<div class="toolbar">
+  <form method="get" style="display:flex;gap:8px;align-items:center">
+    <input type="text" name="q" value="{{ search }}" placeholder="상품명 / 상품코드 검색">
+    <button type="submit" class="btn btn-dark">검색</button>
+  </form>
+</div>
+
+<div class="card" style="padding:0;overflow-x:auto">
+{% if items %}
+<table>
+  <thead>
+    <tr>
+      <th>상품코드</th>
+      <th>상품명</th>
+      <th style="text-align:center">옵션유지</th>
+      <th style="text-align:center">추가상품</th>
+      <th style="text-align:center">제외</th>
+      <th style="text-align:center">미확정</th>
+      <th>스토어 상태</th>
+      <th style="text-align:right">판매가</th>
+      <th style="text-align:center">네이버 동기화</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for item in items %}
+  <tr>
+    <td style="font-size:11px;color:#666">{{ item.product_code }}</td>
+    <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="{{ item.product_name }}">{{ item.product_name }}</td>
+    <td style="text-align:center">
+      {% if item.keep_cnt > 0 %}<span class="opt-pill pill-keep">{{ item.keep_cnt }}</span>{% else %}<span style="color:#ccc">—</span>{% endif %}
+    </td>
+    <td style="text-align:center">
+      {% if item.addon_cnt > 0 %}<span class="opt-pill pill-addon">{{ item.addon_cnt }}</span>{% else %}<span style="color:#ccc">—</span>{% endif %}
+    </td>
+    <td style="text-align:center">
+      {% if item.excl_cnt > 0 %}<span class="opt-pill pill-excl">{{ item.excl_cnt }}</span>{% else %}<span style="color:#ccc">—</span>{% endif %}
+    </td>
+    <td style="text-align:center">
+      {% if item.pend_cnt > 0 %}<span class="opt-pill pill-pend">{{ item.pend_cnt }}</span>{% else %}<span style="color:#ccc">—</span>{% endif %}
+    </td>
+    <td>
+      {% if item.has_store %}
+        {{ item.store_status or '-' }}
+      {% else %}
+        <span style="color:#ccc;font-size:11px">스토어 없음</span>
+      {% endif %}
+    </td>
+    <td style="text-align:right;font-weight:600">
+      {% if item.sale_price %}{{ '{:,}'.format(item.sale_price) }}원{% else %}—{% endif %}
+    </td>
+    <td style="text-align:center">
+      {% if not item.has_store %}
+        <span class="badge-nostore">스토어 없음</span>
+      {% elif item.addon_total == 0 %}
+        <span style="color:#ccc;font-size:11px">추가상품 없음</span>
+      {% elif item.addon_synced == item.addon_total %}
+        <span class="badge-sync">동기화 {{ item.addon_synced }}/{{ item.addon_total }}</span>
+      {% else %}
+        <span class="badge-nosync">미동기화 {{ item.addon_synced }}/{{ item.addon_total }}</span>
+      {% endif %}
+    </td>
+    <td style="white-space:nowrap">
+      <a href="/option-review/product/{{ item.master_id }}" class="btn btn-dark btn-sm">재검토</a>
+      {% if item.naver_link %}
+        <a href="{{ item.naver_link }}" target="_blank" class="btn btn-sm" style="background:#03c75a;color:#fff;margin-left:4px">N ↗</a>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% if pagination.pages > 1 %}
+<div class="pager">
+  {% if pagination.has_prev %}<a href="?q={{ search }}&page={{ pagination.prev_num }}">이전</a>{% endif %}
+  <span class="cur">{{ pagination.page }} / {{ pagination.pages }}</span>
+  {% if pagination.has_next %}<a href="?q={{ search }}&page={{ pagination.next_num }}">다음</a>{% endif %}
+</div>
+{% endif %}
+{% else %}
+<div class="empty">검토 완료된 상품이 없습니다.</div>
+{% endif %}
+</div>
+{% endblock %}

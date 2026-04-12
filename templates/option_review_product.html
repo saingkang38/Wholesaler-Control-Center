@@ -1,0 +1,266 @@
+{% extends "base.html" %}
+{% block title %}옵션 분류 — {{ master.product_name }}{% endblock %}
+{% block content %}
+<style>
+.top-bar{display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-wrap:wrap}
+.top-bar h2{font-size:18px;margin:0}
+.nav-btn{padding:5px 12px;border:1px solid #ccc;border-radius:5px;font-size:12px;
+  text-decoration:none;color:#555;background:#fff}
+.nav-btn:hover{background:#f0f0f0}
+.nav-btn.done{background:#2c3e50;color:#fff;border-color:#2c3e50}
+
+.info-bar{display:flex;gap:20px;background:#f8f9fa;border-radius:6px;
+  padding:12px 16px;margin-bottom:18px;font-size:13px;flex-wrap:wrap}
+.info-bar .label{color:#888;font-size:12px}
+
+/* 옵션 테이블 */
+table{width:100%;border-collapse:collapse;font-size:13px}
+th{background:#f0f0f0;padding:10px 12px;text-align:left;border-bottom:2px solid #ddd;white-space:nowrap}
+td{padding:11px 12px;border-bottom:1px solid #eee;vertical-align:middle}
+tr.main-row td{background:#fffde7;font-weight:600}
+tr.cheap-row td{background:#fff8f8}
+tr:hover td{filter:brightness(.97)}
+
+/* 결정 버튼 */
+.dec-group{display:flex;gap:6px}
+.dec-btn{padding:5px 12px;border-radius:5px;font-size:12px;cursor:pointer;
+  border:2px solid #dee2e6;background:#fff;color:#555;font-weight:600;transition:.15s}
+.dec-btn:hover{border-color:#aaa}
+.dec-btn[data-val="keep"].selected    {background:#e8f5e9;border-color:#28a745;color:#155724}
+.dec-btn[data-val="addon"].selected   {background:#fff3e0;border-color:#fd7e14;color:#7d3c00}
+.dec-btn[data-val="exclude"].selected {background:#f5f5f5;border-color:#999;color:#555}
+
+.pct-high{color:#cc0000;font-weight:700}
+.pct-mid {color:#e65100;font-weight:700}
+.pct-low {color:#f57f17;font-weight:700}
+.pct-plus{color:#2e7d32}
+.kw-tag{background:#e3f2fd;color:#1565c0;padding:1px 6px;border-radius:10px;font-size:11px;margin:1px;display:inline-block}
+.naver-badge{background:#03c75a;color:#fff;padding:1px 6px;border-radius:10px;font-size:11px}
+
+/* 하단 액션 바 */
+.action-bar{position:sticky;bottom:0;background:#fff;border-top:1px solid #ddd;
+  padding:14px 20px;display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+  box-shadow:0 -2px 8px rgba(0,0,0,.08);margin-top:8px;border-radius:0 0 8px 8px}
+.btn{padding:8px 18px;border-radius:5px;font-size:13px;cursor:pointer;border:none;font-weight:600}
+.btn-save  {background:#2c3e50;color:#fff}
+.btn-apply {background:#03c75a;color:#fff}
+.btn-apply:disabled{background:#ccc;cursor:not-allowed}
+.save-msg{font-size:13px;color:#28a745;display:none}
+
+/* 범례 */
+.legend{display:flex;gap:14px;font-size:12px;color:#666;margin-bottom:12px;flex-wrap:wrap}
+.legend span{display:flex;align-items:center;gap:4px}
+.legend .dot{width:10px;height:10px;border-radius:50%;display:inline-block}
+</style>
+
+<!-- 상단 네비 -->
+<div class="top-bar">
+  <a href="/option-review" class="nav-btn">← 목록</a>
+  {% if prev_id %}<a href="/option-review/product/{{ prev_id }}" class="nav-btn">◀ 이전</a>{% endif %}
+  {% if next_id %}<a href="/option-review/product/{{ next_id }}" class="nav-btn done">다음 ▶</a>{% endif %}
+  <h2>{{ master.product_name }}</h2>
+  {% if total_pending > 0 %}<span style="font-size:12px;color:#e65100">미검토 {{ total_pending }}개 상품 남음</span>{% endif %}
+</div>
+
+<!-- 상품 정보 -->
+<div class="info-bar">
+  <div><div class="label">상품코드</div>{{ master.supplier_product_code }}</div>
+  <div><div class="label">기준가 (도매)</div>{{ '{:,}'.format(master.price or 0) }}원</div>
+  <div><div class="label">전체 옵션수</div>{{ rows|length }}개</div>
+  {% if store %}
+  <div><div class="label">스토어 판매가</div>{{ '{:,}'.format(store.sale_price or 0) }}원</div>
+  <div><div class="label">판매상태</div>{{ store.store_status or '-' }}</div>
+  {% if store.channel_product_no %}
+  <div><a href="https://smartstore.naver.com/products/{{ store.channel_product_no }}" target="_blank" style="color:#03c75a;font-size:12px">네이버 상품 보기 ↗</a></div>
+  {% endif %}
+  {% else %}
+  <div style="color:#999"><div class="label">스토어</div>매칭 없음</div>
+  {% endif %}
+</div>
+
+<!-- 범례 + 일괄 설정 -->
+<div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;margin-bottom:12px">
+  <div class="legend" style="margin-bottom:0">
+    <span><span class="dot" style="background:#fffde7;border:1px solid #e6a800"></span> 메인옵션 (기준)</span>
+    <span><span class="dot" style="background:#fff8f8;border:1px solid #ffcdd2"></span> 저렴한 옵션 (검토 대상)</span>
+    <span><span class="dot" style="background:#fff"></span> 일반 옵션</span>
+  </div>
+  <div style="display:flex;gap:6px">
+    <button type="button" onclick="bulkSet('keep')"
+            style="padding:5px 12px;border-radius:5px;font-size:12px;cursor:pointer;font-weight:600;
+                   border:2px solid #28a745;background:#e8f5e9;color:#155724">
+      전체 옵션유지
+    </button>
+    <button type="button" onclick="bulkSet('addon')"
+            style="padding:5px 12px;border-radius:5px;font-size:12px;cursor:pointer;font-weight:600;
+                   border:2px solid #fd7e14;background:#fff3e0;color:#7d3c00">
+      전체 추가상품
+    </button>
+    <button type="button" onclick="bulkSet(null)"
+            style="padding:5px 12px;border-radius:5px;font-size:12px;cursor:pointer;font-weight:600;
+                   border:2px solid #999;background:#f5f5f5;color:#555">
+      전체 해제
+    </button>
+  </div>
+</div>
+
+<!-- 옵션 분류 테이블 -->
+<div class="card" style="padding:0;overflow-x:auto">
+<table>
+  <thead>
+    <tr>
+      <th>#</th>
+      <th>옵션명</th>
+      <th style="text-align:right">도매가</th>
+      <th style="text-align:right">메인 대비</th>
+      <th>키워드</th>
+      <th>결정</th>
+      <th style="text-align:center">네이버</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+  <tr class="{% if row.is_main %}main-row{% elif row.is_cheap %}cheap-row{% endif %}"
+      data-name="{{ row.name }}">
+    <td style="color:#999;font-size:11px">{{ loop.index }}</td>
+    <td>
+      {{ row.name }}
+      {% if row.is_main %}<span style="font-size:11px;background:#f57f17;color:#fff;padding:1px 6px;border-radius:10px;margin-left:4px">메인</span>{% endif %}
+    </td>
+    <td style="text-align:right;font-weight:600">{{ '{:,}'.format(row.abs_price) }}원</td>
+    <td style="text-align:right">
+      {% if row.is_main %}
+        <span style="color:#888;font-size:12px">기준</span>
+      {% elif row.pct < 0 %}
+        <span class="{% if row.pct <= -50 %}pct-high{% elif row.pct <= -35 %}pct-mid{% else %}pct-low{% endif %}">
+          {{ row.pct }}%
+        </span>
+      {% else %}
+        <span class="pct-plus">+{{ row.pct }}%</span>
+      {% endif %}
+    </td>
+    <td>
+      {% for kw in row.keywords %}<span class="kw-tag">{{ kw }}</span>{% endfor %}
+      {% if not row.keywords %}<span style="color:#ccc;font-size:11px">—</span>{% endif %}
+    </td>
+    <td>
+      {% if row.is_main %}
+        <span style="font-size:12px;color:#888">옵션유지 (메인)</span>
+      {% else %}
+      <div class="dec-group" data-name="{{ row.name }}">
+        <button type="button" class="dec-btn {% if row.decision=='keep' %}selected{% endif %}"
+                data-val="keep" onclick="setDecision(this)">옵션유지</button>
+        <button type="button" class="dec-btn {% if row.decision=='addon' %}selected{% endif %}"
+                data-val="addon" onclick="setDecision(this)">추가상품</button>
+        <button type="button" class="dec-btn {% if row.decision=='exclude' %}selected{% endif %}"
+                data-val="exclude" onclick="setDecision(this)">제외</button>
+      </div>
+      {% endif %}
+    </td>
+    <td style="text-align:center">
+      {% if row.naver_id %}
+        <span class="naver-badge" title="네이버 추가상품 ID: {{ row.naver_id }}">ID확인</span>
+      {% else %}
+        <span style="color:#ccc;font-size:11px">—</span>
+      {% endif %}
+    </td>
+  </tr>
+  {% endfor %}
+  </tbody>
+</table>
+</div>
+
+<!-- 하단 액션 바 -->
+<div class="action-bar">
+  <button class="btn btn-save" onclick="saveDecisions()">저장</button>
+  <button class="btn btn-apply" id="applyBtn" onclick="applyToStore()"
+          {% if not store %}disabled title="연결된 스토어 없음"{% endif %}>
+    네이버에 적용
+  </button>
+  <span class="save-msg" id="saveMsg">✓ 저장됐습니다</span>
+  <div style="margin-left:auto;font-size:12px;color:#888">
+    저장: 정책만 DB에 기록 &nbsp;|&nbsp; 네이버에 적용: 실제 스토어 구조 변경
+  </div>
+</div>
+
+<script>
+const masterId = {{ master.id }};
+
+function setDecision(btn){
+  const group = btn.closest('.dec-group');
+  group.querySelectorAll('.dec-btn').forEach(b => b.classList.remove('selected'));
+  btn.classList.add('selected');
+}
+
+function bulkSet(val){
+  document.querySelectorAll('.dec-group').forEach(group => {
+    group.querySelectorAll('.dec-btn').forEach(b => b.classList.remove('selected'));
+    if(val){
+      const target = group.querySelector(`.dec-btn[data-val="${val}"]`);
+      if(target) target.classList.add('selected');
+    }
+  });
+}
+
+function collectDecisions(){
+  const decisions = {};
+  document.querySelectorAll('.dec-group').forEach(group => {
+    const name = group.dataset.name;
+    const sel  = group.querySelector('.dec-btn.selected');
+    if(sel) decisions[name] = sel.dataset.val;
+  });
+  return decisions;
+}
+
+function saveDecisions(){
+  const decisions = collectDecisions();
+  fetch(`/option-review/product/${masterId}/save`, {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({decisions}),
+  })
+  .then(r=>r.json())
+  .then(d=>{
+    if(d.ok){
+      const msg = document.getElementById('saveMsg');
+      msg.style.display='inline';
+      setTimeout(()=>msg.style.display='none', 2500);
+    } else {
+      alert('저장 실패: '+(d.error||'알 수 없음'));
+    }
+  });
+}
+
+function applyToStore(){
+  const btn = document.getElementById('applyBtn');
+  // 저장 먼저
+  const decisions = collectDecisions();
+  fetch(`/option-review/product/${masterId}/save`, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({decisions}),
+  })
+  .then(r=>r.json())
+  .then(d=>{
+    if(!d.ok){ alert('저장 실패'); return; }
+    if(!confirm('현재 정책을 네이버 스토어에 적용합니다.\n옵션 구조가 변경됩니다. 계속할까요?')) return;
+    btn.disabled = true; btn.textContent = '적용 중...';
+    return fetch(`/option-review/product/${masterId}/apply`,{method:'POST'});
+  })
+  .then(r => r ? r.json() : null)
+  .then(d=>{
+    if(!d) return;
+    btn.disabled = false; btn.textContent = '네이버에 적용';
+    if(d.ok){
+      alert(`적용 완료!\n옵션 ${d.combo_count}개, 추가상품 ${d.addon_count}개`);
+      location.reload();
+    } else {
+      alert('적용 실패: '+(d.error||'알 수 없음'));
+    }
+  })
+  .catch(e=>{
+    btn.disabled=false; btn.textContent='네이버에 적용';
+    alert('오류: '+e.message);
+  });
+}
+</script>
+{% endblock %}
