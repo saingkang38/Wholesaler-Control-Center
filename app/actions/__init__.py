@@ -141,6 +141,24 @@ def actions_page():
                 except Exception:
                     pass
 
+        # 판매상태 / 전시상태 파생
+        raw_status = s.store.store_status if s.store else ""
+        SALE_LABELS = {
+            "SALE":        ("판매중",   "success"),
+            "SUSPENSION":  ("판매중지", "warning"),
+            "CLOSE":       ("판매종료", "dark"),
+            "WAIT":        ("판매대기", "secondary"),
+            "SOLDOUT":     ("품절",     "danger"),
+            "PROHIBITION": ("판매금지", "danger"),
+        }
+        sale_label, sale_badge = SALE_LABELS.get(raw_status, ("-", "secondary"))
+        if raw_status in ("SALE", "SUSPENSION", "SOLDOUT"):
+            display_label, display_badge = "전시중", "info"
+        elif raw_status in ("CLOSE", "WAIT", "PROHIBITION"):
+            display_label, display_badge = "전시안함", "secondary"
+        else:
+            display_label, display_badge = "-", "secondary"
+
         rows.append({
             "id": s.id,
             "store_product_id": s.store_product_id,
@@ -160,6 +178,10 @@ def actions_page():
             "detected_at": s.detected_at.strftime("%Y-%m-%d %H:%M") if s.detected_at else "-",
             "status": s.status,
             "error_message": s.error_message,
+            "sale_label": sale_label,
+            "sale_badge": sale_badge,
+            "display_label": display_label,
+            "display_badge": display_badge,
         })
     pending_count = ActionSignal.query.filter_by(status="pending").count()
     failed_count = ActionSignal.query.filter_by(status="failed").count()

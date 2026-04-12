@@ -24,6 +24,7 @@
   .badge-warning { background: #fef3c7; color: #d97706; }
   .badge-success { background: #d1fae5; color: #059669; }
   .badge-dark { background: #e5e7eb; color: #374151; }
+  .badge-secondary { background: #f3f4f6; color: #6b7280; }
 
   .btn { padding: 5px 12px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
   .btn-approve { background: #059669; color: white; }
@@ -204,6 +205,8 @@
         <th>유형</th>
         <th>상품명</th>
         <th>판매자관리코드</th>
+        <th>판매상태</th>
+        <th>전시상태</th>
         <th>도매가격</th>
         <th>마진적용가격</th>
         <th>판매가격</th>
@@ -223,6 +226,8 @@
         <td><span class="badge badge-{{ row.badge }}">{{ row.label }}</span></td>
         <td>{{ row.product_name }}</td>
         <td>{{ row.seller_code }}</td>
+        <td><span class="badge badge-{{ row.sale_badge }}" style="font-size:11px;">{{ row.sale_label }}</span></td>
+        <td><span class="badge badge-{{ row.display_badge }}" style="font-size:11px;">{{ row.display_label }}</span></td>
         {% if row.signal_type == 'OPTION_PRICE_CHANGE' %}
         <td style="font-size:12px; color:#666;">{{ '{:,}'.format(row.wholesale_price) if row.wholesale_price else '-' }}<br><span style="color:#999;">도매기준가</span></td>
         <td style="font-size:12px;">{{ '{:,}'.format(row.margin_price) if row.margin_price else '-' }}<br><span style="color:#999;">실판매가</span></td>
