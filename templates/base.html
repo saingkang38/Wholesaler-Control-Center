@@ -57,7 +57,15 @@
             <a href="/dashboard">대시보드</a>
             <a href="/store-overview">스토어 현황</a>
             <a href="/store-products">스토어 상품</a>
-            <a href="/actions">품단종 관리</a>
+            <!-- 액션 관리 드롭다운 -->
+            <div class="nav-dropdown">
+                <span class="nav-dropdown-trigger">액션 관리</span>
+                <div class="nav-dropdown-menu">
+                    <a href="/actions?option_type=no_option">옵션 없음</a>
+                    <a href="/actions?option_type=option_no_extra">옵션·추가금 없음</a>
+                    <a href="/actions?option_type=option_with_extra">옵션·추가금 있음</a>
+                </div>
+            </div>
             <a href="/changes">변동 내역</a>
             <a href="/logs">로그</a>
 

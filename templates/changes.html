@@ -79,7 +79,8 @@
                 <td>
                     {% if p %}
                         {% if p.product_url %}
-                        <a href="{{ p.product_url }}" target="_blank" style="color:#1565c0;">{{ p.product_name or '-' }}</a>
+                        {% set purl = p.product_url if p.product_url.startswith('http') else 'https://' ~ p.product_url.lstrip('/') %}
+                        <a href="{{ purl }}" target="_blank" style="color:#1565c0;">{{ p.product_name or '-' }}</a>
                         {% else %}
                         {{ p.product_name or '-' }}
                         {% endif %}

@@ -38,6 +38,7 @@ def actions_page():
 
     store_filter = request.args.get("store_id", 0, type=int)
     signal_type_filter = request.args.get("signal_type", "")
+    option_type_filter = request.args.get("option_type", "no_option")
     search_q = request.args.get("q", "").strip()
 
     from app.store.models import StoreProduct, NaverStore
@@ -51,6 +52,25 @@ def actions_page():
         query = query.filter(ActionSignal.signal_type.in_(["OPTION_PRICE_CHANGE", "OPTION_ADD", "OPTION_STOCK_CHANGE"]))
     elif signal_type_filter:
         query = query.filter(ActionSignal.signal_type == signal_type_filter)
+    if option_type_filter:
+        query = query.join(MasterProduct, ActionSignal.master_product_id == MasterProduct.id)
+        if option_type_filter == "no_option":
+            query = query.filter(
+                db.or_(MasterProduct.options_text == None, MasterProduct.options_text == "")
+            )
+        elif option_type_filter == "option_no_extra":
+            query = query.filter(
+                MasterProduct.options_text != None,
+                MasterProduct.options_text != "",
+                db.or_(MasterProduct.option_diffs == None, MasterProduct.option_diffs == ""),
+            )
+        elif option_type_filter == "option_with_extra":
+            query = query.filter(
+                MasterProduct.options_text != None,
+                MasterProduct.options_text != "",
+                MasterProduct.option_diffs != None,
+                MasterProduct.option_diffs != "",
+            )
     if search_q:
         sp_sub = db.session.query(StoreProduct.id).filter(
             db.or_(
@@ -143,12 +163,43 @@ def actions_page():
         })
     pending_count = ActionSignal.query.filter_by(status="pending").count()
     failed_count = ActionSignal.query.filter_by(status="failed").count()
+
+    def _option_type_count(otype):
+        base = ActionSignal.query.filter_by(status="pending").join(
+            MasterProduct, ActionSignal.master_product_id == MasterProduct.id
+        )
+        if otype == "no_option":
+            return base.filter(
+                db.or_(MasterProduct.options_text == None, MasterProduct.options_text == "")
+            ).count()
+        elif otype == "option_no_extra":
+            return base.filter(
+                MasterProduct.options_text != None,
+                MasterProduct.options_text != "",
+                db.or_(MasterProduct.option_diffs == None, MasterProduct.option_diffs == ""),
+            ).count()
+        elif otype == "option_with_extra":
+            return base.filter(
+                MasterProduct.options_text != None,
+                MasterProduct.options_text != "",
+                MasterProduct.option_diffs != None,
+                MasterProduct.option_diffs != "",
+            ).count()
+
+    no_option_count = _option_type_count("no_option")
+    option_no_extra_count = _option_type_count("option_no_extra")
+    option_with_extra_count = _option_type_count("option_with_extra")
+
     return render_template("actions.html", rows=rows, status_filter=status_filter,
                            pending_count=pending_count, failed_count=failed_count,
                            pagination=pagination,
                            per_page=per_page, total=total,
                            all_stores=all_stores, store_filter=store_filter,
                            signal_type_filter=signal_type_filter,
+                           option_type_filter=option_type_filter,
+                           no_option_count=no_option_count,
+                           option_no_extra_count=option_no_extra_count,
+                           option_with_extra_count=option_with_extra_count,
                            search_q=search_q)
 
 
@@ -334,8 +385,178 @@ def _parse_naver_error(e) -> str:
     return str(e)
 
 
+# ---------------------------------------------------------------------------
+# 옵션 유형 판별 헬퍼
+# ---------------------------------------------------------------------------
+
+def _has_options(master) -> bool:
+    """도매처 마스터에 옵션이 있는 상품인지 판별"""
+    return bool(master and master.options_text and master.options_text.strip())
+
+
+def _has_extra_price(master) -> bool:
+    """옵션 추가금(0 이외 차액)이 실제로 존재하는지 판별"""
+    if not master or not master.option_diffs or not master.option_diffs.strip():
+        return False
+    try:
+        return any(int(v.strip()) != 0 for v in master.option_diffs.split("\n") if v.strip())
+    except ValueError:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# [유형 1] 옵션 없는 상품 — 가격 실행
+# ---------------------------------------------------------------------------
+
+def _execute_price_no_option(store, suggested: dict, client_id: str, client_secret: str):
+    """
+    옵션이 없는 상품의 가격 변동 반영.
+    sale_price 단일 업데이트만 수행한다.
+    """
+    from store.naver import update_price
+    from app.settings import apply_margin
+
+    wholesale_price = suggested.get("sale_price")
+    if not wholesale_price or wholesale_price <= 0:
+        raise ValueError("도매가 정보 없음")
+
+    new_price = apply_margin(wholesale_price)
+    update_price(store.origin_product_no, new_price, client_id=client_id, client_secret=client_secret)
+    store.sale_price = new_price
+    logger.info(f"[actions][no_option] 가격 반영: store_id={store.id}, price={new_price}")
+
+
+# ---------------------------------------------------------------------------
+# [유형 2] 옵션 있음·추가금 없음 — 가격 실행
+# ---------------------------------------------------------------------------
+
+def _execute_price_option_no_extra(store, master, suggested: dict, client_id: str, client_secret: str):
+    """
+    옵션은 있지만 옵션간 가격 차이가 없는 상품의 가격 변동 반영.
+    모든 옵션 combination.price = 0, salePrice = new_price 로 업데이트한다.
+    """
+    from store.naver.products import get_origin_product, update_origin_product
+    from app.settings import apply_margin
+
+    wholesale_price = suggested.get("sale_price")
+    if not wholesale_price or wholesale_price <= 0:
+        raise ValueError("도매가 정보 없음")
+
+    new_price = apply_margin(wholesale_price)
+
+    product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
+    origin = product_data.get("originProduct", {})
+    option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
+    combinations = option_info.get("optionCombinations", [])
+
+    if not combinations:
+        raise ValueError("스토어 상품에 옵션 없음 (option_no_extra 경로)")
+
+    for combo in combinations:
+        combo["price"] = 0  # 추가금 없음 — 전부 0원
+
+    option_info["optionCombinations"] = combinations
+    origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
+    origin["salePrice"] = new_price
+    origin["customerBenefit"] = {}  # 즉시할인 없음
+
+    payload = {
+        "originProduct": origin,
+        "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
+    }
+    update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+
+    store.sale_price = new_price
+    store.option_list_price = new_price
+    store.option_discount_amount = None
+    logger.info(f"[actions][option_no_extra] 가격 반영: store_id={store.id}, price={new_price}")
+
+
+# ---------------------------------------------------------------------------
+# [유형 3] 옵션 있음·추가금 있음 — 가격 실행
+# ---------------------------------------------------------------------------
+
+def _execute_price_option_with_extra(store, master, suggested: dict, client_id: str, client_secret: str, signal: "ActionSignal"):
+    """
+    옵션도 있고 옵션간 추가금 차이도 있는 상품의 가격 변동 반영.
+    정가 + 즉시할인 + 옵션추가금을 세트로 업데이트한다.
+    처리 후 같은 상품의 pending OPTION_PRICE_CHANGE 시그널을 자동 스킵한다.
+    """
+    from store.naver.products import get_origin_product, update_origin_product
+    from app.settings import apply_margin, calculate_option_pricing
+
+    wholesale_price = suggested.get("sale_price")
+    if not wholesale_price or wholesale_price <= 0:
+        raise ValueError("도매가 정보 없음")
+
+    new_price = apply_margin(wholesale_price)
+    pricing = calculate_option_pricing(wholesale_price, master.option_diffs)
+    option_names = [n.strip() for n in master.options_text.split("\n") if n.strip()]
+
+    product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
+    origin = product_data.get("originProduct", {})
+    option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
+    combinations = option_info.get("optionCombinations", [])
+
+    if not combinations:
+        raise ValueError("스토어 상품에 옵션 없음 (option_with_extra 경로)")
+
+    for i, combo in enumerate(combinations):
+        name = combo.get("optionName1") or combo.get("optionName2") or ""
+        matched_idx = next((j for j, n in enumerate(option_names) if n == name), None)
+        if matched_idx is None and i < len(pricing["additions"]):
+            logger.warning(
+                f"[actions][option_with_extra] 옵션명 매칭 실패 → 순서 폴백 "
+                f"(store_product_id={store.id}, combo_idx={i}, name='{name}')"
+            )
+            matched_idx = i
+        if matched_idx is not None and matched_idx < len(pricing["additions"]):
+            combo["price"] = pricing["additions"][matched_idx]
+
+    option_info["optionCombinations"] = combinations
+    origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
+    origin["salePrice"] = pricing["list_price"]
+    if pricing["discount"] > 0:
+        origin["customerBenefit"] = {
+            "immediateDiscountPolicy": {
+                "discountMethod": {"value": pricing["discount"], "unitType": "WON"}
+            }
+        }
+    else:
+        origin["customerBenefit"] = {}
+
+    payload = {
+        "originProduct": origin,
+        "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
+    }
+    update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+
+    store.sale_price = new_price
+    store.option_list_price = pricing["list_price"]
+    store.option_discount_amount = pricing["discount"] or None
+    logger.info(
+        f"[actions][option_with_extra] 가격 반영: store_id={store.id}, "
+        f"list_price={pricing['list_price']}, discount={pricing['discount']}"
+    )
+
+    # 옵션가도 함께 처리됐으므로 pending OPTION_PRICE_CHANGE 자동 스킵
+    pending_opt = ActionSignal.query.filter_by(
+        store_product_id=store.id,
+        signal_type="OPTION_PRICE_CHANGE",
+        status="pending",
+    ).first()
+    if pending_opt:
+        pending_opt.status = "skipped"
+        pending_opt.error_message = "가격변동 시그널 실행 시 옵션가도 함께 처리됨"
+        pending_opt.resolved_at = kst_now()
+
+
+# ---------------------------------------------------------------------------
+# 시그널 실행 디스패처
+# ---------------------------------------------------------------------------
+
 def _execute_signal(signal: ActionSignal):
-    from store.naver import update_price, change_status
+    from store.naver import change_status
 
     try:
         store = signal.store
@@ -347,90 +568,30 @@ def _execute_signal(signal: ActionSignal):
         client_id = store.naver_store.client_id
         client_secret = store.naver_store.client_secret
 
+        # ── 가격 변동: 옵션 유형별 독립 실행 ──────────────────────────────
         if signal.signal_type in ("PRICE_UP_NEEDED", "PRICE_DOWN_POSSIBLE"):
-            wholesale_price = suggested.get("sale_price")
-            if wholesale_price and wholesale_price > 0:
-                from app.settings import apply_margin, calculate_option_pricing
-                new_price = apply_margin(wholesale_price)
-                master = signal.master
+            master = signal.master
+            if not _has_options(master):
+                _execute_price_no_option(store, suggested, client_id, client_secret)
+            elif not _has_extra_price(master):
+                _execute_price_option_no_extra(store, master, suggested, client_id, client_secret)
+            else:
+                _execute_price_option_with_extra(store, master, suggested, client_id, client_secret, signal)
 
-                # 옵션 있는 상품: 정가+즉시할인+옵션추가금 세트로 업데이트
-                if master and master.option_diffs and master.options_text:
-                    from store.naver.products import get_origin_product, update_origin_product
-                    pricing = calculate_option_pricing(wholesale_price, master.option_diffs)
-                    option_names = [n.strip() for n in master.options_text.split("\n") if n.strip()]
-
-                    product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
-                    origin = product_data.get("originProduct", {})
-                    option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
-                    combinations = option_info.get("optionCombinations", [])
-
-                    for i, combo in enumerate(combinations):
-                        name = combo.get("optionName1") or combo.get("optionName2") or ""
-                        matched_idx = next(
-                            (j for j, n in enumerate(option_names) if n == name), None
-                        )
-                        if matched_idx is None and i < len(pricing["additions"]):
-                            logger.warning(
-                                f"[actions] 옵션명 매칭 실패 → 순서 폴백 사용 "
-                                f"(store_product_id={store.id}, combo_idx={i}, name='{name}')"
-                            )
-                            matched_idx = i
-                        if matched_idx is not None and matched_idx < len(pricing["additions"]):
-                            combo["price"] = pricing["additions"][matched_idx]
-
-                    option_info["optionCombinations"] = combinations
-                    origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
-                    origin["salePrice"] = pricing["list_price"]
-                    if pricing["discount"] > 0:
-                        origin["customerBenefit"] = {
-                            "immediateDiscountPolicy": {
-                                "discountMethod": {"value": pricing["discount"], "unitType": "WON"}
-                            }
-                        }
-                    else:
-                        origin["customerBenefit"] = {}
-
-                    payload = {
-                        "originProduct": origin,
-                        "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
-                    }
-                    update_origin_product(store.origin_product_no, payload, client_id, client_secret)
-                    store.sale_price = new_price
-                    store.option_list_price = pricing["list_price"]
-                    store.option_discount_amount = pricing["discount"] or None
-
-                    # 옵션 가격도 함께 처리됐으므로 pending OPTION_PRICE_CHANGE 자동 스킵
-                    pending_opt = ActionSignal.query.filter_by(
-                        store_product_id=store.id,
-                        signal_type="OPTION_PRICE_CHANGE",
-                        status="pending",
-                    ).first()
-                    if pending_opt:
-                        pending_opt.status = "skipped"
-                        pending_opt.error_message = "가격변동 시그널 실행 시 옵션가도 함께 처리됨"
-                        pending_opt.resolved_at = kst_now()
-
-                else:
-                    # 옵션 없는 일반 상품: 판매가만 업데이트
-                    update_price(store.origin_product_no, new_price, client_id=client_id, client_secret=client_secret)
-                    store.sale_price = new_price
-
+        # ── 상태 변동: 옵션 유형 무관 ─────────────────────────────────────
         elif signal.signal_type in ("SUSPEND_NEEDED", "RESUME_POSSIBLE", "DISCONTINUE_NEEDED"):
             new_status = suggested.get("store_status")
             if new_status:
                 change_status(store.origin_product_no, new_status, client_id=client_id, client_secret=client_secret)
                 store.store_status = new_status
 
+        # ── 옵션 재고 변동: 옵션 있는 상품 전용 ──────────────────────────
         elif signal.signal_type == "OPTION_STOCK_CHANGE":
             from store.naver.products import get_origin_product, update_origin_product
 
-            options_text = suggested.get("options_text", "")
-            option_stocks_text = suggested.get("option_stocks", "")
-
-            option_names = [n.strip() for n in options_text.split("\n") if n.strip()]
+            option_names = [n.strip() for n in suggested.get("options_text", "").split("\n") if n.strip()]
             option_stocks = []
-            for s in option_stocks_text.split("\n"):
+            for s in suggested.get("option_stocks", "").split("\n"):
                 try:
                     option_stocks.append(int(s.strip()))
                 except ValueError:
@@ -446,14 +607,10 @@ def _execute_signal(signal: ActionSignal):
 
             for i, combo in enumerate(combinations):
                 name = combo.get("optionName1") or combo.get("optionName2") or ""
-                matched_idx = None
-                for j, opt_name in enumerate(option_names):
-                    if opt_name == name:
-                        matched_idx = j
-                        break
+                matched_idx = next((j for j, n in enumerate(option_names) if n == name), None)
                 if matched_idx is None and i < len(option_stocks):
                     logger.warning(
-                        f"[actions] 옵션명 매칭 실패 → 순서 폴백 사용 "
+                        f"[actions][option_stock] 옵션명 매칭 실패 → 순서 폴백 "
                         f"(store_product_id={store.id}, combo_idx={i}, name='{name}')"
                     )
                     matched_idx = i
@@ -464,18 +621,19 @@ def _execute_signal(signal: ActionSignal):
             origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
             update_origin_product(store.origin_product_no, {"originProduct": origin}, client_id, client_secret)
 
+        # ── 옵션 추가금 변동: 추가금 있는 상품 전용 ──────────────────────
         elif signal.signal_type == "OPTION_PRICE_CHANGE":
             from store.naver.products import get_origin_product, update_origin_product
 
-            list_price    = suggested.get("list_price")
-            discount      = suggested.get("discount", 0)
-            additions     = suggested.get("additions", [])
-            options_text  = suggested.get("options_text", "")
+            list_price   = suggested.get("list_price")
+            discount     = suggested.get("discount", 0)
+            additions    = suggested.get("additions", [])
+            option_names = [n.strip() for n in suggested.get("options_text", "").split("\n") if n.strip()]
 
-            # 구형 시그널 폴백: list_price/additions 없으면 즉시 계산
+            # 구형 시그널 폴백
             if not list_price or not additions:
                 from app.settings import calculate_option_pricing
-                _base = suggested.get("base_price")
+                _base  = suggested.get("base_price")
                 _diffs = suggested.get("option_diffs", "")
                 if not _base or not _diffs:
                     raise ValueError("옵션 가격 데이터 부족 (base_price/option_diffs 없음)")
@@ -484,9 +642,6 @@ def _execute_signal(signal: ActionSignal):
                 discount   = _p["discount"]
                 additions  = _p["additions"]
 
-            option_names = [n.strip() for n in options_text.split("\n") if n.strip()]
-
-            # 네이버 상품 전체 조회
             product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
             origin = product_data.get("originProduct", {})
             option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
@@ -495,30 +650,21 @@ def _execute_signal(signal: ActionSignal):
             if not combinations:
                 raise ValueError("스토어 상품에 옵션 없음")
 
-            # 옵션 추가금 매칭 (이름 우선, 없으면 순서)
             for i, combo in enumerate(combinations):
                 name = combo.get("optionName1") or combo.get("optionName2") or ""
-                matched_idx = None
-                for j, opt_name in enumerate(option_names):
-                    if opt_name == name:
-                        matched_idx = j
-                        break
+                matched_idx = next((j for j, n in enumerate(option_names) if n == name), None)
                 if matched_idx is None and i < len(additions):
                     logger.warning(
-                        f"[actions] 옵션명 매칭 실패 → 순서 폴백 사용 "
+                        f"[actions][option_price] 옵션명 매칭 실패 → 순서 폴백 "
                         f"(store_product_id={store.id}, combo_idx={i}, name='{name}')"
                     )
                     matched_idx = i
                 if matched_idx is not None and matched_idx < len(additions):
-                    combo["price"] = additions[matched_idx]   # 음수 허용 (조건 충족 보장됨)
+                    combo["price"] = additions[matched_idx]
 
             option_info["optionCombinations"] = combinations
             origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
-
-            # 정가 설정
             origin["salePrice"] = list_price
-
-            # 즉시할인: originProduct.customerBenefit.immediateDiscountPolicy
             if discount > 0:
                 origin["customerBenefit"] = {
                     "immediateDiscountPolicy": {
@@ -533,12 +679,11 @@ def _execute_signal(signal: ActionSignal):
                 "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
             }
             update_origin_product(store.origin_product_no, payload, client_id, client_secret)
-
-            # DB에 적용 가격 기록
-            store.sale_price = list_price - discount  # 실효가 (정가 - 즉시할인)
+            store.sale_price = list_price - discount
             store.option_list_price = list_price
             store.option_discount_amount = discount if discount > 0 else None
 
+        # ── 옵션 구성 전체 교체: 추가금 있는 상품 전용 ───────────────────
         elif signal.signal_type == "OPTION_ADD":
             from store.naver.products import get_origin_product, update_origin_product
             from app.settings import calculate_option_pricing
@@ -551,27 +696,23 @@ def _execute_signal(signal: ActionSignal):
                 raise ValueError("OPTION_ADD: 옵션 데이터 부족")
 
             master_names = [n.strip() for n in options_text.split("\n") if n.strip()]
-            master_diffs = [int(d.strip()) for d in option_diffs.split("\n") if d.strip()]
+            pricing = calculate_option_pricing(base_price, option_diffs)
+            additions = pricing["additions"]
 
             product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
             origin = product_data.get("originProduct", {})
             option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
-            combinations = option_info.get("optionCombinations", [])
 
-            pricing = calculate_option_pricing(base_price, option_diffs)
-            additions = pricing["additions"]
-
-            # 도매처 옵션으로 무조건 전체 교체
-            new_combos = []
-            for i, name in enumerate(master_names):
-                add = additions[i] if i < len(additions) else 0
-                new_combos.append({
+            new_combos = [
+                {
                     "optionName1": name,
-                    "price": add,
+                    "price": additions[i] if i < len(additions) else 0,
                     "stockQuantity": 999,
                     "usable": True,
-                })
-            logger.info(f"[actions] OPTION_ADD 전체교체: {len(new_combos)}개")
+                }
+                for i, name in enumerate(master_names)
+            ]
+            logger.info(f"[actions][option_add] 전체교체: store_id={store.id}, {len(new_combos)}개")
 
             option_info["optionCombinations"] = new_combos
             origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
@@ -590,7 +731,7 @@ def _execute_signal(signal: ActionSignal):
                 "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
             }
             update_origin_product(store.origin_product_no, payload, client_id, client_secret)
-            store.sale_price = pricing["sale_price"]  # 실효가 (apply_margin 결과)
+            store.sale_price = pricing["sale_price"]
             store.option_list_price = pricing["list_price"]
             store.option_discount_amount = pricing["discount"] if pricing["discount"] > 0 else None
 
@@ -601,7 +742,6 @@ def _execute_signal(signal: ActionSignal):
 
     except Exception as e:
         db.session.rollback()
-        # 실패 상태로 저장 (pending에서 사라지고 실패 탭으로 이동)
         signal.status = "failed"
         signal.error_message = _parse_naver_error(e)
         signal.resolved_at = kst_now()

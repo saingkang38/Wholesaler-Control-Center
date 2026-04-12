@@ -88,48 +88,54 @@
 </div>
 
 <div class="card">
+
+  {# 공통 쿼리 파라미터 조각 #}
+  {% set otq = "&option_type=" ~ option_type_filter %}
+  {% set sq  = ("&store_id=" ~ store_filter) if store_filter else "" %}
+  {% set stq = ("&signal_type=" ~ signal_type_filter) if signal_type_filter else "" %}
+
+  {# 1. 현재 페이지 제목 #}
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
-    <h2 style="font-size:18px;">액션 관리
+    <h2 style="font-size:18px;">
+      {% if option_type_filter == 'no_option' %}옵션 없음
+      {% elif option_type_filter == 'option_no_extra' %}옵션·추가금 없음
+      {% elif option_type_filter == 'option_with_extra' %}옵션·추가금 있음
+      {% endif %}
       {% if pending_count > 0 %}
-      <span class="badge badge-danger" style="margin-left:8px;">{{ pending_count }}</span>
+      <span class="badge badge-danger" style="margin-left:8px; font-size:14px;">{{ pending_count }}</span>
       {% endif %}
     </h2>
   </div>
 
-  {% set store_qs = ("&store_id=" ~ store_filter) if store_filter else "" %}
-  <div class="tab-bar">
-    <a href="/actions?status=pending&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'pending' }}">대기중</a>
-    <a href="/actions?status=executed&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'executed' }}">실행완료</a>
-    <a href="/actions?status=failed&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'failed' }}" style="{{ 'color:white;' if status_filter == 'failed' else 'color:#dc2626;' }}">
+  {# 2. 상태 탭 #}
+  <div class="tab-bar" style="margin-bottom:14px;">
+    <a href="/actions?status=pending&per_page={{ per_page }}{{ otq }}{{ sq }}" class="{{ 'active' if status_filter == 'pending' }}">대기중</a>
+    <a href="/actions?status=executed&per_page={{ per_page }}{{ otq }}{{ sq }}" class="{{ 'active' if status_filter == 'executed' }}">실행완료</a>
+    <a href="/actions?status=failed&per_page={{ per_page }}{{ otq }}{{ sq }}" class="{{ 'active' if status_filter == 'failed' }}">
       실패{% if failed_count > 0 %} <span style="background:#dc2626;color:white;border-radius:10px;padding:1px 7px;font-size:11px;">{{ failed_count }}</span>{% endif %}
     </a>
-    <a href="/actions?status=reverted&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'reverted' }}">되돌림</a>
-    <a href="/actions?status=rejected&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'rejected' }}">거절</a>
-    <a href="/actions?status=skipped&per_page={{ per_page }}{{ store_qs }}" class="{{ 'active' if status_filter == 'skipped' }}">건너뜀</a>
+    <a href="/actions?status=reverted&per_page={{ per_page }}{{ otq }}{{ sq }}" class="{{ 'active' if status_filter == 'reverted' }}">되돌림</a>
+    <a href="/actions?status=rejected&per_page={{ per_page }}{{ otq }}{{ sq }}" class="{{ 'active' if status_filter == 'rejected' }}">거절</a>
+    <a href="/actions?status=skipped&per_page={{ per_page }}{{ otq }}{{ sq }}" class="{{ 'active' if status_filter == 'skipped' }}">건너뜀</a>
   </div>
 
-  <!-- 신호 타입 필터 -->
+  {# 3. 시그널 타입 필터 (대기중일 때만) #}
   {% if status_filter == 'pending' %}
-  {% set sq = ("&store_id=" ~ store_filter) if store_filter else "" %}
-  <div style="margin-bottom:14px; display:flex; gap:6px; flex-wrap:wrap;">
-    <a href="/actions?status=pending&per_page={{ per_page }}{{ sq }}"
-       style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none;
-              background:{{ '#2c3e50' if not signal_type_filter else '#e9ecef' }}; color:{{ 'white' if not signal_type_filter else '#333' }};">전체</a>
-    <a href="/actions?status=pending&per_page={{ per_page }}&signal_type=SUSPEND_NEEDED{{ sq }}"
-       style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none;
-              background:{{ '#d97706' if signal_type_filter == 'SUSPEND_NEEDED' else '#fef3c7' }}; color:{{ 'white' if signal_type_filter == 'SUSPEND_NEEDED' else '#92400e' }};">품절</a>
-    <a href="/actions?status=pending&per_page={{ per_page }}&signal_type=DISCONTINUE_NEEDED{{ sq }}"
-       style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none;
-              background:{{ '#374151' if signal_type_filter == 'DISCONTINUE_NEEDED' else '#f3f4f6' }}; color:{{ 'white' if signal_type_filter == 'DISCONTINUE_NEEDED' else '#374151' }};">단종</a>
-    <a href="/actions?status=pending&per_page={{ per_page }}&signal_type=PRICE{{ sq }}"
-       style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none;
-              background:{{ '#dc2626' if signal_type_filter == 'PRICE' else '#fee2e2' }}; color:{{ 'white' if signal_type_filter == 'PRICE' else '#991b1b' }};">가격변동</a>
-    <a href="/actions?status=pending&per_page={{ per_page }}&signal_type=OPTION{{ sq }}"
-       style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none;
-              background:{{ '#1d4ed8' if signal_type_filter == 'OPTION' else '#dbeafe' }}; color:{{ 'white' if signal_type_filter == 'OPTION' else '#1e40af' }};">옵션변동</a>
-    <a href="/actions?status=pending&per_page={{ per_page }}&signal_type=RESUME_POSSIBLE{{ sq }}"
-       style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none;
-              background:{{ '#059669' if signal_type_filter == 'RESUME_POSSIBLE' else '#d1fae5' }}; color:{{ 'white' if signal_type_filter == 'RESUME_POSSIBLE' else '#065f46' }};">판매재개</a>
+  <div style="margin-bottom:14px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+    {% set sig_items = [
+      ('', '전체'),
+      ('SUSPEND_NEEDED', '품절'),
+      ('DISCONTINUE_NEEDED', '단종'),
+      ('PRICE', '가격변동'),
+      ('OPTION', '옵션변동'),
+      ('RESUME_POSSIBLE', '판매재개'),
+    ] %}
+    {% for val, label in sig_items %}
+    <a href="/actions?status=pending&per_page={{ per_page }}{{ otq }}{{ sq }}{% if val %}&signal_type={{ val }}{% endif %}"
+       style="padding:5px 12px; border-radius:4px; font-size:13px; text-decoration:none;
+              background:{{ '#2c3e50' if signal_type_filter == val else '#e9ecef' }};
+              color:{{ 'white' if signal_type_filter == val else '#555' }};">{{ label }}</a>
+    {% endfor %}
   </div>
   {% endif %}
 
@@ -137,6 +143,7 @@
   <form method="get" action="/actions" style="margin-bottom:14px; display:flex; gap:8px; align-items:center;">
     <input type="hidden" name="status" value="{{ status_filter }}">
     <input type="hidden" name="per_page" value="{{ per_page }}">
+    <input type="hidden" name="option_type" value="{{ option_type_filter }}">
     {% if store_filter %}<input type="hidden" name="store_id" value="{{ store_filter }}">{% endif %}
     {% if signal_type_filter %}<input type="hidden" name="signal_type" value="{{ signal_type_filter }}">{% endif %}
     <input type="text" name="q" value="{{ search_q }}"
@@ -144,20 +151,20 @@
            style="padding:7px 12px; border:1px solid #d1d5db; border-radius:6px; font-size:13px; width:260px;">
     <button type="submit" style="padding:7px 14px; background:#2c3e50; color:white; border:none; border-radius:6px; font-size:13px; cursor:pointer;">검색</button>
     {% if search_q %}
-    <a href="/actions?status={{ status_filter }}&per_page={{ per_page }}{% if store_filter %}&store_id={{ store_filter }}{% endif %}"
+    <a href="/actions?status={{ status_filter }}&per_page={{ per_page }}{{ otq }}{% if store_filter %}&store_id={{ store_filter }}{% endif %}"
        style="font-size:13px; color:#6b7280; text-decoration:none;">✕ 초기화</a>
     {% endif %}
   </form>
 
   <!-- 스토어 필터 -->
   <div style="margin-bottom:14px;">
-    <a href="/actions?status={{ status_filter }}&per_page={{ per_page }}"
+    <a href="/actions?status={{ status_filter }}&per_page={{ per_page }}{{ otq }}{{ stq }}"
        style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none; margin-right:6px;
               background:{{ '#2c3e50' if store_filter == 0 else '#e9ecef' }}; color:{{ 'white' if store_filter == 0 else '#333' }};">
       전체 스토어
     </a>
     {% for st in all_stores %}
-    <a href="/actions?status={{ status_filter }}&per_page={{ per_page }}&store_id={{ st.id }}"
+    <a href="/actions?status={{ status_filter }}&per_page={{ per_page }}&store_id={{ st.id }}{{ otq }}{{ stq }}"
        style="padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none; margin-right:6px;
               background:{{ '#2c3e50' if store_filter == st.id else '#e9ecef' }}; color:{{ 'white' if store_filter == st.id else '#333' }};">
       {{ st.store_name }}
@@ -169,9 +176,9 @@
   <div class="toolbar">
     <span style="font-size:13px; color:#666;">페이지당:</span>
     {% for n in [30, 50, 100, 300, 500, 1000] %}
-    <a href="/actions?status={{ status_filter }}&per_page={{ n }}{{ store_qs }}" class="per-page-btn {{ 'active' if per_page == n }}">{{ n }}</a>
+    <a href="/actions?status={{ status_filter }}&per_page={{ n }}{{ otq }}{{ sq }}{{ stq }}" class="per-page-btn {{ 'active' if per_page == n }}">{{ n }}</a>
     {% endfor %}
-    <a href="/actions?status={{ status_filter }}&per_page=0{{ store_qs }}" class="per-page-btn {{ 'active' if per_page == 0 }}">전체</a>
+    <a href="/actions?status={{ status_filter }}&per_page=0{{ otq }}{{ sq }}{{ stq }}" class="per-page-btn {{ 'active' if per_page == 0 }}">전체</a>
 
     {% if status_filter == 'pending' %}
     <span style="margin-left:10px; font-size:13px; color:#666;">선택:</span>
