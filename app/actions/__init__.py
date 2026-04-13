@@ -801,9 +801,33 @@ def _execute_signal(signal: ActionSignal):
             detail = origin.setdefault("detailAttribute", {})
             option_info = detail.get("optionInfo", {})
 
-            # keep 정책 옵션만 combo 생성; addon/exclude 제외
+            # 기존 Naver 콤보를 기반으로 매칭 후 가격 업데이트
+            # (2차원 옵션 구조 보존 — optionName1/optionName2 그대로 유지)
+            existing_combos = option_info.get("optionCombinations", [])
             new_combos = []
+            handled_master_idx = set()
+
+            for combo in existing_combos:
+                n1 = combo.get("optionName1") or ""
+                n2 = combo.get("optionName2") or ""
+                # 마스터 옵션명이 optionName1 또는 optionName2 중 하나와 일치하면 매칭
+                matched_idx = next(
+                    (i for i, n in enumerate(master_names) if n == n1 or n == n2),
+                    None
+                )
+                if matched_idx is None:
+                    continue  # 마스터에 없는 옵션 → 제거
+                decision = policies.get(master_names[matched_idx], "keep")
+                if decision in ("addon", "exclude"):
+                    continue
+                combo["price"] = additions[matched_idx] if matched_idx < len(additions) else 0
+                new_combos.append(combo)
+                handled_master_idx.add(matched_idx)
+
+            # 기존 Naver에 없는 신규 마스터 옵션 추가
             for i, name in enumerate(master_names):
+                if i in handled_master_idx:
+                    continue
                 decision = policies.get(name, "keep")
                 if decision in ("addon", "exclude"):
                     continue
@@ -814,15 +838,11 @@ def _execute_signal(signal: ActionSignal):
                     "usable":       True,
                 })
 
-            if not new_combos:  # 안전장치: 모두 addon/exclude인 경우 전체 유지
-                new_combos = [
-                    {
-                        "optionName1": name,
-                        "price": additions[i] if i < len(additions) else 0,
-                        "stockQuantity": 999,
-                        "usable": True,
-                    }
-                    for i, name in enumerate(master_names)
+            if not new_combos:  # 안전장치
+                new_combos = existing_combos or [
+                    {"optionName1": n, "price": additions[i] if i < len(additions) else 0,
+                     "stockQuantity": 999, "usable": True}
+                    for i, n in enumerate(master_names)
                 ]
 
             logger.info(
