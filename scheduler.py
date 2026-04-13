@@ -1,6 +1,7 @@
 import os
 import sys
 import logging
+import concurrent.futures
 from datetime import datetime, date
 from zoneinfo import ZoneInfo
 
@@ -71,6 +72,26 @@ def _collect_wholesaler(wholesaler_code: str, name: str, flask_app, run_time: st
             logger.error(f"[scheduler] {name} 수집 예외: {e}")
             notify_failure(name, err_str[:300], run_time)
         return False
+
+
+COLLECTOR_TIMEOUT_SECS = 90 * 60  # 도매처별 최대 90분
+
+
+def _timed_collect(wholesaler_code: str, name: str, flask_app, run_time: str) -> bool:
+    """_collect_wholesaler를 최대 90분 타임아웃으로 실행. 초과 시 실패 알림 후 계속."""
+    from notifiers.telegram import notify_failure
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(_collect_wholesaler, wholesaler_code, name, flask_app, run_time)
+        try:
+            return future.result(timeout=COLLECTOR_TIMEOUT_SECS)
+        except concurrent.futures.TimeoutError:
+            logger.error(f"[scheduler] {name} 타임아웃 ({COLLECTOR_TIMEOUT_SECS // 60}분) — 건너뜀")
+            notify_failure(name, f"수집 타임아웃 ({COLLECTOR_TIMEOUT_SECS // 60}분 초과)", run_time)
+            return False
+        except Exception as e:
+            logger.error(f"[scheduler] {name} 타임아웃 래퍼 예외: {e}")
+            return False
 
 
 def _ownerclan_trigger(flask_app, run_time: str) -> bool:
@@ -148,22 +169,22 @@ def run_noon_pipeline():
     _ownerclan_trigger(flask_app, run_time)
 
     # 2. API 도매처 (오너클랜 파일 준비되는 동안 수집)
-    _collect_wholesaler("chingudome", "친구도매", flask_app, run_time)
-    _collect_wholesaler("zentrade",   "젠트레이드", flask_app, run_time)
-    _collect_wholesaler("mro3",       "3MRO",      flask_app, run_time)
+    _timed_collect("chingudome", "친구도매", flask_app, run_time)
+    _timed_collect("zentrade",   "젠트레이드", flask_app, run_time)
+    _timed_collect("mro3",       "3MRO",      flask_app, run_time)
 
     # 3. 오너클랜 다운로드 (API 수집 소요 시간 ≒ 20분 대기 완료)
-    _collect_wholesaler("ownerclan", "오너클랜", flask_app, run_time)
+    _timed_collect("ownerclan", "오너클랜", flask_app, run_time)
 
     # 4. 크롤링 도매처 (시간 오래 걸리는 순으로)
-    _collect_wholesaler("metaldiy",   "철물박사",   flask_app, run_time)
-    _collect_wholesaler("jtckorea",   "JTC코리아",  flask_app, run_time)
-    _collect_wholesaler("feelwoo",    "필우커머스", flask_app, run_time)
-    _collect_wholesaler("sikjaje",    "식자재마트", flask_app, run_time)
-    _collect_wholesaler("hitdesign",  "히트가구",   flask_app, run_time)
-    _collect_wholesaler("ds1008",     "DS도매",     flask_app, run_time)
-    _collect_wholesaler("dometopia",  "도매토피아", flask_app, run_time)
-    _collect_wholesaler("onch3",      "온채널",     flask_app, run_time)
+    _timed_collect("metaldiy",   "철물박사",   flask_app, run_time)
+    _timed_collect("jtckorea",   "JTC코리아",  flask_app, run_time)
+    _timed_collect("feelwoo",    "필우커머스", flask_app, run_time)
+    _timed_collect("sikjaje",    "식자재마트", flask_app, run_time)
+    _timed_collect("hitdesign",  "히트가구",   flask_app, run_time)
+    _timed_collect("ds1008",     "DS도매",     flask_app, run_time)
+    _timed_collect("dometopia",  "도매토피아", flask_app, run_time)
+    _timed_collect("onch3",      "온채널",     flask_app, run_time)
 
     # 5. 스토어 동기화 + 시그널
     run_store_sync(flask_app, run_time)
@@ -173,7 +194,7 @@ def run_noon_pipeline():
 
 
 def run_ownerclan_retry():
-    """04:59 — 오너클랜 오늘 성공 기록 없으면 재시도"""
+    """04:59 — 오너클랜 최근 10시간 내 성공 기록 없으면 재시도 (1회만)"""
     run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
     logger.info(f"[scheduler] 오너클랜 재시도 확인 ({run_time})")
 
@@ -184,30 +205,32 @@ def run_ownerclan_retry():
         with flask_app.app_context():
             from app.execution_logs.models import CollectionRun
             from app.wholesalers.models import Wholesaler
+            from datetime import timedelta
 
             ownerclan = Wholesaler.query.filter_by(code="ownerclan").first()
             if not ownerclan:
                 logger.warning("[scheduler] 오너클랜 도매처 DB 없음 — 재시도 건너뜀")
                 return
 
-            today_kst = datetime.now(ZoneInfo("Asia/Seoul")).date()
-            today_start = datetime.combine(today_kst, datetime.min.time())
-            success_today = CollectionRun.query.filter(
+            # 파이프라인은 23:00 시작, 오너클랜 수집은 자정 전 완료 → 날짜 기준 아닌 시간 기준 체크
+            # 04:59 기준 최근 10시간(= 전날 18:59 이후) 내 성공 기록 확인
+            cutoff = datetime.now(ZoneInfo("Asia/Seoul")).replace(tzinfo=None) - timedelta(hours=10)
+            success_recent = CollectionRun.query.filter(
                 CollectionRun.wholesaler_id == ownerclan.id,
-                CollectionRun.started_at >= today_start,
+                CollectionRun.started_at >= cutoff,
                 CollectionRun.status == "success",
             ).first()
 
-            if success_today:
-                logger.info("[scheduler] 오너클랜 오늘 이미 성공 — 재시도 건너뜀")
+            if success_recent:
+                logger.info(f"[scheduler] 오너클랜 최근 수집 성공({str(success_recent.started_at)[:19]}) — 재시도 건너뜀")
                 return
 
     except Exception as e:
         logger.error(f"[scheduler] 오너클랜 재시도 확인 중 오류: {e}")
         return
 
-    logger.info("[scheduler] 오너클랜 오늘 성공 기록 없음 — 재시도 시작")
-    _collect_wholesaler("ownerclan", "오너클랜(18시재시도)", flask_app, run_time)
+    logger.info("[scheduler] 오너클랜 최근 수집 성공 없음 — 재시도 시작")
+    _collect_wholesaler("ownerclan", "오너클랜(재시도)", flask_app, run_time)
 
 
 def run_db_cleanup():
