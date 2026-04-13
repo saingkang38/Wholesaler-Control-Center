@@ -15,7 +15,7 @@ def _normalize_diffs(diffs: str | None) -> str | None:
     if not diffs or not diffs.strip():
         return None
     try:
-        if all(int(v.strip()) == 0 for v in diffs.split("\n") if v.strip()):
+        if all(float(v.strip()) == 0 for v in diffs.split("\n") if v.strip()):
             return None
     except ValueError:
         pass

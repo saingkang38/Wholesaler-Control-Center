@@ -616,6 +616,7 @@ def _execute_signal(signal: ActionSignal):
 
     try:
         store = signal.store
+        master = signal.master
         suggested = json.loads(signal.suggested_value) if signal.suggested_value else {}
 
         if not store or not store.naver_store:
@@ -626,7 +627,6 @@ def _execute_signal(signal: ActionSignal):
 
         # ── 가격 변동: 옵션 유형별 독립 실행 ──────────────────────────────
         if signal.signal_type in ("PRICE_UP_NEEDED", "PRICE_DOWN_POSSIBLE"):
-            master = signal.master
             if not _has_options(master):
                 _execute_price_no_option(store, suggested, client_id, client_secret)
             elif not _has_extra_price(master):
@@ -918,19 +918,40 @@ def detect_action_signals(wholesaler_id: int) -> dict:
 
     store_ids = [s.id for s in stores]
 
-    # 기존 pending 시그널 전부 삭제 → 현재 상태로 새로 감지 (중복/충돌 원천 차단)
-    # SQLite 파라미터 한계(999) 대비 500개씩 청크 처리
     CHUNK = 500
+
+    # 옵션 시그널(OPTION_ADD/OPTION_PRICE_CHANGE/OPTION_STOCK_CHANGE)은 값이 바뀔 때만 갱신.
+    # pending을 먼저 로드한 뒤 PRICE/STATUS 시그널만 삭제한다.
+    OPTION_TYPES = {"OPTION_ADD", "OPTION_PRICE_CHANGE", "OPTION_STOCK_CHANGE"}
+    PRICE_STATUS_TYPES = [
+        "PRICE_UP_NEEDED", "PRICE_DOWN_POSSIBLE",
+        "SUSPEND_NEEDED", "RESUME_POSSIBLE", "DISCONTINUE_NEEDED",
+    ]
+
+    # 기존 pending 옵션 시그널 로드 (master_id, store_id, type) → ActionSignal 객체
+    prev_opts: dict[tuple, ActionSignal] = {}
+    for i in range(0, len(store_ids), CHUNK):
+        chunk = store_ids[i:i + CHUNK]
+        for sig in ActionSignal.query.filter(
+            ActionSignal.store_product_id.in_(chunk),
+            ActionSignal.status == "pending",
+            ActionSignal.signal_type.in_(list(OPTION_TYPES)),
+        ).all():
+            prev_opts[(sig.master_product_id, sig.store_product_id, sig.signal_type)] = sig
+
+    # PRICE/STATUS pending만 삭제 → 현재 상태로 재생성
     for i in range(0, len(store_ids), CHUNK):
         chunk = store_ids[i:i + CHUNK]
         ActionSignal.query.filter(
             ActionSignal.store_product_id.in_(chunk),
             ActionSignal.status == "pending",
+            ActionSignal.signal_type.in_(PRICE_STATUS_TYPES),
         ).delete(synchronize_session=False)
     if store_ids:
         db.session.flush()
 
-    existing_pending = set()  # 삭제 후이므로 항상 빈 셋
+    # 현재 루프에서 이미 처리된 시그널 추적 (기존 pending 옵션 시그널 포함)
+    existing_pending = set(prev_opts.keys())
 
     for store in stores:
         master = store.master
@@ -943,9 +964,9 @@ def detect_action_signals(wholesaler_id: int) -> dict:
 
         _check_price_signals(master, store, stats, existing_pending)
         _check_status_signals(master, store, stats, existing_pending)
-        _check_option_signals(master, store, stats, existing_pending)
-        _check_option_stock_signals(master, store, stats, existing_pending)
-        _check_option_add_signals(master, store, stats, existing_pending)
+        _check_option_signals(master, store, stats, existing_pending, prev_opts)
+        _check_option_stock_signals(master, store, stats, existing_pending, prev_opts)
+        _check_option_add_signals(master, store, stats, existing_pending, prev_opts)
 
     db.session.commit()
     logger.info(f"[actions] 시그널 감지 완료: {stats}")
@@ -991,25 +1012,24 @@ def _check_price_signals(master: MasterProduct, store: StoreProduct, stats: dict
             stats["PRICE_DOWN_POSSIBLE"] += 1
 
 
-def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set):
+def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set, prev_opts: dict):
+    key = (master.id, store.id, "OPTION_PRICE_CHANGE")
+    existing = prev_opts.get(key)
+
     if not master.option_diffs or not master.options_text:
+        if existing:
+            db.session.delete(existing)
+            prev_opts.pop(key, None)
+            pending.discard(key)
         return
-    if not master.price:
-        return
-    if not store.origin_product_no:
+    if not master.price or not store.origin_product_no:
         return
 
-    # PRICE 시그널이 이미 생성된 경우 OPTION_PRICE_CHANGE 생성 안 함
-    # (PRICE 실행 시 옵션추가금 함께 갱신되므로 중복/순서 충돌 방지)
     if (master.id, store.id, "PRICE_UP_NEEDED") in pending or (master.id, store.id, "PRICE_DOWN_POSSIBLE") in pending:
         return
-
-    # OPTION_ADD가 이미 생성된 경우 OPTION_PRICE_CHANGE 생성 안 함
-    # (OPTION_ADD는 옵션 구조 + 가격을 함께 반영하므로 중복)
     if (master.id, store.id, "OPTION_ADD") in pending:
         return
 
-    # 마지막 실행된 OPTION_PRICE_CHANGE 시그널의 suggested option_diffs와 비교
     last_executed = (
         ActionSignal.query
         .filter_by(store_product_id=store.id, signal_type="OPTION_PRICE_CHANGE")
@@ -1020,37 +1040,57 @@ def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dic
     if last_executed:
         last_suggested = json.loads(last_executed.suggested_value or "{}")
         if last_suggested.get("option_diffs") == master.option_diffs:
-            return  # 이미 최신 옵션가로 적용됨
+            if existing:
+                db.session.delete(existing)
+                prev_opts.pop(key, None)
+                pending.discard(key)
+            return
 
-    if (master.id, store.id, "OPTION_PRICE_CHANGE") not in pending:
+    if key not in pending:
         from app.settings import calculate_option_pricing
         pricing = calculate_option_pricing(master.price, master.option_diffs)
-        db.session.add(ActionSignal(
-            master_product_id=master.id,
-            store_product_id=store.id,
-            signal_type="OPTION_PRICE_CHANGE",
-            current_value=json.dumps({
-                "options_text": master.options_text,
-                "store_list_price": store.option_list_price,
-                "store_discount": store.option_discount_amount,
-            }),
-            suggested_value=json.dumps({
-                "base_price":   master.price,
-                "option_diffs": master.option_diffs,
-                "options_text": master.options_text,
-                "list_price":   pricing["list_price"],
-                "discount":     pricing["discount"],
-                "sale_price":   pricing["sale_price"],
-                "additions":    pricing["additions"],
-            }),
-        ))
-        pending.add((master.id, store.id, "OPTION_PRICE_CHANGE"))
-        stats["OPTION_PRICE_CHANGE"] += 1
+        new_suggested = json.dumps({
+            "base_price":   master.price,
+            "option_diffs": master.option_diffs,
+            "options_text": master.options_text,
+            "list_price":   pricing["list_price"],
+            "discount":     pricing["discount"],
+            "sale_price":   pricing["sale_price"],
+            "additions":    pricing["additions"],
+        })
+        if existing:
+            old = json.loads(existing.suggested_value or "{}")
+            if old.get("option_diffs") == master.option_diffs:
+                return  # 값 동일, 기존 pending 유지
+            existing.suggested_value = new_suggested
+            existing.detected_at = kst_now()
+            stats["OPTION_PRICE_CHANGE"] += 1
+        else:
+            db.session.add(ActionSignal(
+                master_product_id=master.id,
+                store_product_id=store.id,
+                signal_type="OPTION_PRICE_CHANGE",
+                current_value=json.dumps({
+                    "options_text": master.options_text,
+                    "store_list_price": store.option_list_price,
+                    "store_discount": store.option_discount_amount,
+                }),
+                suggested_value=new_suggested,
+            ))
+            pending.add(key)
+            stats["OPTION_PRICE_CHANGE"] += 1
 
 
-def _check_option_stock_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set):
+def _check_option_stock_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set, prev_opts: dict):
     """옵션 재고 변동 감지 — 수집기가 extra["옵션재고"] 제공 시 동작"""
+    key = (master.id, store.id, "OPTION_STOCK_CHANGE")
+    existing = prev_opts.get(key)
+
     if not master.options_text or master.option_stocks is None:
+        if existing:
+            db.session.delete(existing)
+            prev_opts.pop(key, None)
+            pending.discard(key)
         return
     if not store.origin_product_no:
         return
@@ -1065,33 +1105,50 @@ def _check_option_stock_signals(master: MasterProduct, store: StoreProduct, stat
     if last_executed:
         last_suggested = json.loads(last_executed.suggested_value or "{}")
         if last_suggested.get("option_stocks") == master.option_stocks:
+            if existing:
+                db.session.delete(existing)
+                prev_opts.pop(key, None)
+                pending.discard(key)
             return
 
-    if (master.id, store.id, "OPTION_STOCK_CHANGE") not in pending:
-        db.session.add(ActionSignal(
-            master_product_id=master.id,
-            store_product_id=store.id,
-            signal_type="OPTION_STOCK_CHANGE",
-            current_value=json.dumps({"option_stocks": master.option_stocks}),
-            suggested_value=json.dumps({
-                "option_stocks": master.option_stocks,
-                "options_text": master.options_text,
-            }),
-        ))
-        pending.add((master.id, store.id, "OPTION_STOCK_CHANGE"))
-        stats["OPTION_STOCK_CHANGE"] += 1
+    if key not in pending:
+        new_suggested = json.dumps({
+            "option_stocks": master.option_stocks,
+            "options_text":  master.options_text,
+        })
+        if existing:
+            old = json.loads(existing.suggested_value or "{}")
+            if old.get("option_stocks") == master.option_stocks:
+                return  # 값 동일, 기존 pending 유지
+            existing.suggested_value = new_suggested
+            existing.detected_at = kst_now()
+            stats["OPTION_STOCK_CHANGE"] += 1
+        else:
+            db.session.add(ActionSignal(
+                master_product_id=master.id,
+                store_product_id=store.id,
+                signal_type="OPTION_STOCK_CHANGE",
+                current_value=json.dumps({"option_stocks": master.option_stocks}),
+                suggested_value=new_suggested,
+            ))
+            pending.add(key)
+            stats["OPTION_STOCK_CHANGE"] += 1
 
 
-def _check_option_add_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set):
+def _check_option_add_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set, prev_opts: dict):
     """도매처에 새 옵션이 추가되었거나 옵션 구성이 바뀐 경우 감지"""
+    key = (master.id, store.id, "OPTION_ADD")
+    existing = prev_opts.get(key)
+
     if not master.options_text or not master.option_diffs:
+        if existing:
+            db.session.delete(existing)
+            prev_opts.pop(key, None)
+            pending.discard(key)
         return
-    if not master.price:
-        return
-    if not store.origin_product_no:
+    if not master.price or not store.origin_product_no:
         return
 
-    # 마지막 실행된 OPTION_ADD의 options_text와 비교
     last_executed = (
         ActionSignal.query
         .filter_by(store_product_id=store.id, signal_type="OPTION_ADD")
@@ -1102,9 +1159,12 @@ def _check_option_add_signals(master: MasterProduct, store: StoreProduct, stats:
     if last_executed:
         last_suggested = json.loads(last_executed.suggested_value or "{}")
         if last_suggested.get("options_text") == master.options_text:
+            if existing:
+                db.session.delete(existing)
+                prev_opts.pop(key, None)
+                pending.discard(key)
             return
 
-    # OPTION_PRICE_CHANGE가 같은 options_text로 이미 실행된 경우 → 옵션 구성 변동 없음
     last_price_exec = (
         ActionSignal.query
         .filter_by(store_product_id=store.id, signal_type="OPTION_PRICE_CHANGE")
@@ -1115,22 +1175,36 @@ def _check_option_add_signals(master: MasterProduct, store: StoreProduct, stats:
     if last_price_exec:
         last_p = json.loads(last_price_exec.suggested_value or "{}")
         if last_p.get("options_text") == master.options_text:
+            if existing:
+                db.session.delete(existing)
+                prev_opts.pop(key, None)
+                pending.discard(key)
             return
 
-    if (master.id, store.id, "OPTION_ADD") not in pending:
-        db.session.add(ActionSignal(
-            master_product_id=master.id,
-            store_product_id=store.id,
-            signal_type="OPTION_ADD",
-            current_value=json.dumps({"options_text": master.options_text}),
-            suggested_value=json.dumps({
-                "base_price":   master.price,
-                "option_diffs": master.option_diffs,
-                "options_text": master.options_text,
-            }),
-        ))
-        pending.add((master.id, store.id, "OPTION_ADD"))
-        stats["OPTION_ADD"] += 1
+    if key not in pending:
+        new_suggested = json.dumps({
+            "base_price":   master.price,
+            "option_diffs": master.option_diffs,
+            "options_text": master.options_text,
+        })
+        if existing:
+            old = json.loads(existing.suggested_value or "{}")
+            if (old.get("options_text") == master.options_text and
+                    old.get("option_diffs") == master.option_diffs):
+                return  # 값 동일, 기존 pending 유지
+            existing.suggested_value = new_suggested
+            existing.detected_at = kst_now()
+            stats["OPTION_ADD"] += 1
+        else:
+            db.session.add(ActionSignal(
+                master_product_id=master.id,
+                store_product_id=store.id,
+                signal_type="OPTION_ADD",
+                current_value=json.dumps({"options_text": master.options_text}),
+                suggested_value=new_suggested,
+            ))
+            pending.add(key)
+            stats["OPTION_ADD"] += 1
 
 
 def _check_status_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set):
