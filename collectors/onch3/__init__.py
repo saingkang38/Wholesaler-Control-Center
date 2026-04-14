@@ -256,9 +256,9 @@ class Onch3Collector(BaseCollector):
                 if not name_span:
                     continue
                 name = name_span.get_text(strip=True)
-                abs_price = self._parse_price(price_span.get_text(strip=True) if price_span else "0") or 0
+                abs_price = self._parse_price(price_span.get_text(strip=True) if price_span else None)
                 names.append(name)
-                abs_prices.append(abs_price)
+                abs_prices.append(abs_price)  # None = 가격 정보 없음
 
             # 단일 "상품" / "기본" 은 실제 옵션 없음
             is_real_option = len(names) > 1 or (
@@ -266,8 +266,10 @@ class Onch3Collector(BaseCollector):
             )
             if is_real_option and abs_prices:
                 # 기준가: item["price"] (목록 페이지 가격) 또는 최저 옵션가
-                base = item.get("price") or min(abs_prices)
-                diffs = [str(p - base) for p in abs_prices]
+                known = [p for p in abs_prices if p is not None]
+                base = item.get("price") or (min(known) if known else 0)
+                # 가격 정보 없는 옵션은 추가금 0으로 처리
+                diffs = [str((p - base) if p is not None else 0) for p in abs_prices]
                 if not item.get("extra"):
                     item["extra"] = {}
                 item["extra"]["옵션"] = "\n".join(names)
