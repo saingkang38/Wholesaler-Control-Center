@@ -1,4 +1,5 @@
 from flask import Flask
+from sqlalchemy.pool import NullPool
 import os
 
 def create_app():
@@ -9,6 +10,7 @@ def create_app():
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {
         "connect_args": {"timeout": 60},
         "pool_pre_ping": True,
+        "poolclass": NullPool,
     }
 
     from app.infrastructure import db
@@ -17,6 +19,7 @@ def create_app():
     from flask_login import LoginManager
     login_manager = LoginManager()
     login_manager.login_view = "auth.login"
+    login_manager.session_protection = None
     login_manager.init_app(app)
 
     from app.auth.models import User
