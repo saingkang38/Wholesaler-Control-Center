@@ -94,8 +94,13 @@ def collection_status():
     running = CollectionRun.query.filter_by(status="running").all()
 
     _kst = ZoneInfo("Asia/Seoul")
-    today_kst = datetime.now(_kst).date()
-    today_start = datetime.combine(today_kst, datetime.min.time())
+    now_kst = datetime.now(_kst).replace(tzinfo=None)
+    # 파이프라인은 23:00 시작 → 23:00 이전이면 전날 23:00, 이후면 오늘 23:00 기준
+    from datetime import time as _time, timedelta as _td
+    if now_kst.hour < 23:
+        today_start = datetime.combine(now_kst.date() - _td(days=1), _time(23, 0))
+    else:
+        today_start = datetime.combine(now_kst.date(), _time(23, 0))
     recent_runs = (
         CollectionRun.query
         .filter(CollectionRun.started_at >= today_start)
