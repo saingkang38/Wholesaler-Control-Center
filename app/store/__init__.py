@@ -356,6 +356,152 @@ def push_seller_management_codes(naver_store: object, pairs: list) -> dict:
     return {"success_count": success_count, "fail_count": fail_count}
 
 
+# ── 스토어 옵션 상태 동기화 ───────────────────────────────
+# 목적: 스마트스토어 실제 옵션 추가금을 읽어 applied_option_diffs/base_price 초기화
+# 효과: 이미 올바르게 적용된 상품의 OPTION_ADD 중복 신호 방지
+
+def sync_store_option_state(flask_app=None) -> dict:
+    """
+    모든 활성 스토어의 옵션 상품에 대해 Naver API로 현재 옵션 추가금을 읽어
+    master 데이터와 일치하면 applied_option_diffs / applied_option_base_price 저장.
+    일치하지 않는 상품은 건드리지 않음 (→ OPTION_ADD 신호가 정상 생성됨).
+    """
+    import json
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from app.settings import calculate_option_pricing
+    from store.naver.products import get_origin_product
+
+    ctx = flask_app.app_context() if flask_app else None
+    if ctx:
+        ctx.push()
+
+    try:
+        stores = NaverStore.query.filter_by(is_active=True).all()
+        total_checked = 0
+        total_matched = 0
+        total_stores = len(stores)
+
+        for store_idx, naver_store in enumerate(stores, 1):
+            logger.info(
+                f"[option_sync] 스토어 {store_idx}/{total_stores}: {naver_store.store_name} 시작"
+            )
+            try:
+                token = _get_access_token(naver_store.client_id, naver_store.client_secret)
+            except Exception as e:
+                logger.error(f"[option_sync] 토큰 발급 실패 ({naver_store.store_name}): {e}")
+                continue
+
+            # 옵션 있는 매칭 상품만 대상
+            targets = (
+                db.session.query(StoreProduct)
+                .join(MasterProduct, StoreProduct.master_product_id == MasterProduct.id)
+                .filter(
+                    StoreProduct.naver_store_id == naver_store.id,
+                    StoreProduct.origin_product_no != None,
+                    MasterProduct.option_diffs != None,
+                    MasterProduct.option_diffs != "",
+                    MasterProduct.options_text != None,
+                    MasterProduct.options_text != "",
+                    MasterProduct.price != None,
+                )
+                .all()
+            )
+            logger.info(f"[option_sync] 대상 {len(targets)}건")
+
+            checked = 0
+            matched = 0
+            commit_batch = []
+
+            def _fetch_and_check(sp):
+                """API 호출 → 옵션 추가금 비교 → 일치 시 True 반환"""
+                master = sp.master
+                if not master:
+                    return False
+                try:
+                    # _get_access_token은 내부 캐시를 사용하므로 상품마다 재발급 없음
+                    data = get_origin_product(sp.origin_product_no, naver_store.client_id, naver_store.client_secret)
+                    origin = data.get("originProduct", {})
+                    combos = (
+                        origin.get("detailAttribute", {})
+                        .get("optionInfo", {})
+                        .get("optionCombinations", [])
+                    )
+                    if not combos:
+                        return False
+
+                    # 스토어 현재 추가금 목록 (순서 기준)
+                    store_additions = [c.get("price", 0) for c in combos]
+
+                    # 마스터 데이터로 계산한 예상 추가금
+                    try:
+                        pricing = calculate_option_pricing(master.price, master.option_diffs)
+                        expected = pricing["additions"]
+                    except Exception:
+                        return False
+
+                    # 개수와 금액 모두 일치해야 함
+                    if len(store_additions) != len(expected):
+                        return False
+                    if store_additions != expected:
+                        return False
+
+                    return True
+                except Exception as e:
+                    logger.debug(f"[option_sync] origin={sp.origin_product_no} 오류: {e}")
+                    return False
+
+            # 병렬 처리 (스레드 4개 — 토큰 재발급 고려해 보수적으로)
+            with ThreadPoolExecutor(max_workers=4) as executor:
+                future_map = {executor.submit(_fetch_and_check, sp): sp for sp in targets}
+                for future in as_completed(future_map):
+                    sp = future_map[future]
+                    checked += 1
+                    try:
+                        is_match = future.result()
+                    except Exception:
+                        is_match = False
+
+                    if is_match:
+                        sp.applied_option_diffs = sp.master.option_diffs
+                        sp.applied_option_base_price = sp.master.price
+                        commit_batch.append(sp)
+                        matched += 1
+
+                    if checked % 100 == 0:
+                        # 중간 커밋
+                        try:
+                            db.session.commit()
+                        except Exception as ce:
+                            db.session.rollback()
+                            logger.error(f"[option_sync] 중간 커밋 실패: {ce}")
+                        logger.info(
+                            f"[option_sync] {naver_store.store_name}: "
+                            f"{checked}/{len(targets)} 처리, {matched}건 일치"
+                        )
+
+            try:
+                db.session.commit()
+            except Exception as ce:
+                db.session.rollback()
+                logger.error(f"[option_sync] 최종 커밋 실패: {ce}")
+
+            logger.info(
+                f"[option_sync] {naver_store.store_name} 완료: "
+                f"총 {checked}건 확인, {matched}건 적용 상태 기록"
+            )
+            total_checked += checked
+            total_matched += matched
+
+        logger.info(
+            f"[option_sync] 전체 완료: {total_checked}건 확인, {total_matched}건 기록"
+        )
+        return {"checked": total_checked, "matched": total_matched}
+
+    finally:
+        if ctx:
+            ctx.pop()
+
+
 # ── 관리 페이지 ──────────────────────────────────────────
 
 @store_bp.route("/stores")

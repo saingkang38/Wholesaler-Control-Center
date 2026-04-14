@@ -233,6 +233,25 @@ def run_ownerclan_retry():
     _collect_wholesaler("ownerclan", "오너클랜(재시도)", flask_app, run_time)
 
 
+def run_option_sync():
+    """매일 05:30 — 스토어 옵션 추가금 동기화 (applied_option_diffs 초기화)"""
+    from app import create_app
+    from notifiers.telegram import notify_failure
+    flask_app = create_app()
+    run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
+    logger.info(f"[scheduler] 옵션 동기화 시작 ({run_time})")
+    try:
+        from app.store import sync_store_option_state
+        result = sync_store_option_state(flask_app)
+        logger.info(
+            f"[scheduler] 옵션 동기화 완료 — "
+            f"확인 {result.get('checked', 0)}건 / 기록 {result.get('matched', 0)}건"
+        )
+    except Exception as e:
+        logger.error(f"[scheduler] 옵션 동기화 실패: {e}", exc_info=True)
+        notify_failure("옵션 동기화", str(e), run_time)
+
+
 def run_db_cleanup():
     """매일 03:00 — 오래된 데이터 정리"""
     from app import create_app
@@ -363,8 +382,16 @@ if __name__ == "__main__":
         id="db_backup",
         timezone=TIMEZONE,
     )
+    scheduler.add_job(
+        run_option_sync,
+        trigger="cron",
+        hour=5,
+        minute=30,
+        id="option_sync",
+        timezone=TIMEZONE,
+    )
 
-    logger.info(f"[scheduler] 시작 — 매일 23:00 파이프라인 / 04:59 오너클랜 재시도 / 01:59 DB백업+정리 ({TIMEZONE})")
+    logger.info(f"[scheduler] 시작 — 매일 23:00 파이프라인 / 04:59 오너클랜 재시도 / 01:59 DB백업+정리 / 05:30 옵션동기화 ({TIMEZONE})")
     logger.info("[scheduler] Ctrl+C로 중단")
 
     try:

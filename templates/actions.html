@@ -236,6 +236,10 @@
           <span style="color:#999;">정가</span>
           {% if row.discount %}<span style="color:#e65100; margin-left:4px;">-{{ '{:,}'.format(row.discount) }}</span>{% endif %}
         </td>
+        {% elif row.signal_type == 'OPTION_ADD' %}
+        <td style="font-size:12px; color:#666;">{{ '{:,}'.format(row.wholesale_price) if row.wholesale_price else '-' }}<br><span style="color:#999;">도매기준가</span></td>
+        <td style="font-size:12px;">{{ '{:,}'.format(row.margin_price) if row.margin_price else '-' }}<br><span style="color:#999;">마진적용가</span></td>
+        <td style="font-size:12px;">{{ '{:,}'.format(row.sale_price) if row.sale_price else '-' }}<br><span style="color:#999;">현재판매가</span></td>
         {% else %}
         <td>{{ '{:,}'.format(row.wholesale_price) if row.wholesale_price else '-' }}</td>
         <td>
@@ -272,6 +276,42 @@
         </td>
         {% endif %}
       </tr>
+      {% if row.signal_type == 'OPTION_ADD' and (row.current_option_rows or row.new_option_rows) %}
+      <tr style="background:#f8faff;">
+        <td colspan="20" style="padding:6px 16px 10px; border-top:none;">
+          <div style="display:flex; gap:24px; font-size:12px;">
+            <div style="flex:1;">
+              <div style="font-weight:600; color:#666; margin-bottom:4px;">현재 스토어 옵션</div>
+              {% if row.current_option_rows %}
+                {% for name, add in row.current_option_rows %}
+                <span style="display:inline-block; background:#f3f4f6; border:1px solid #d1d5db; border-radius:3px; padding:1px 7px; margin:2px 2px 0 0; color:#374151;">
+                  {{ name }}{% if add is not none and add != 0 %} <b style="color:{% if add > 0 %}#dc2626{% else %}#16a34a{% endif %};">{{ '+' if add > 0 else '' }}{{ '{:,}'.format(add) }}</b>{% endif %}
+                </span>
+                {% endfor %}
+              {% else %}
+                <span style="color:#9ca3af;">옵션 없음</span>
+              {% endif %}
+            </div>
+            <div style="flex:1;">
+              <div style="font-weight:600; color:#2563eb; margin-bottom:4px;">적용될 도매처 옵션 <span style="font-weight:400; color:#888; font-size:11px;">(원가→마진적용)</span></div>
+              {% if row.new_option_rows %}
+                {% for name, raw_d, margin_d in row.new_option_rows %}
+                <span style="display:inline-block; background:#eff6ff; border:1px solid #bfdbfe; border-radius:3px; padding:1px 7px; margin:2px 2px 0 0; color:#1d4ed8;">
+                  {{ name }}
+                  {% if raw_d != 0 %}
+                    <b style="color:#6b7280;">{{ '+' if raw_d > 0 else '' }}{{ '{:,}'.format(raw_d) }}</b>
+                    {% if margin_d is not none %}<span style="color:#374151;">→</span><b style="color:{% if margin_d > 0 %}#dc2626{% else %}#16a34a{% endif %};">{{ '+' if margin_d > 0 else '' }}{{ '{:,}'.format(margin_d) }}</b>{% endif %}
+                  {% endif %}
+                </span>
+                {% endfor %}
+              {% else %}
+                <span style="color:#9ca3af;">옵션 없음</span>
+              {% endif %}
+            </div>
+          </div>
+        </td>
+      </tr>
+      {% endif %}
       {% endfor %}
     </tbody>
   </table>

@@ -109,6 +109,12 @@ def actions_page():
             sale_price      = suggested.get("list_price")      # 조건 충족 정가
             discount        = suggested.get("discount", 0)
             option_count    = len(suggested.get("additions", []))
+        elif s.signal_type == "OPTION_ADD":
+            wholesale_price = suggested.get("base_price")
+            margin_price    = _apply_margin_cached(wholesale_price) if wholesale_price else None
+            sale_price      = s.store.sale_price if s.store else None
+            discount        = 0
+            option_count    = None
         elif s.signal_type == "OPTION_STOCK_CHANGE":
             wholesale_price = None
             margin_price    = None
@@ -122,6 +128,53 @@ def actions_page():
             margin_price    = _apply_margin_cached(wholesale_price) if wholesale_price else None
             discount        = 0
             option_count    = None
+
+        # OPTION_ADD 시그널: 현재 스토어 옵션 vs 적용될 도매처 옵션 표시
+        current_option_rows = []
+        new_option_rows = []
+        if s.signal_type == "OPTION_ADD":
+            from app.settings import calculate_option_pricing as _calc_pricing
+            # 현재 스토어 옵션 — applied 이력으로 추가금 역산, 없으면 이름만
+            cur_opts_text = current.get("options_text") or ""
+            if cur_opts_text:
+                cur_names = [n.strip() for n in cur_opts_text.split("\n") if n.strip()]
+                if s.store and s.store.applied_option_diffs and s.store.applied_option_base_price:
+                    try:
+                        cur_pricing = _calc_pricing(s.store.applied_option_base_price, s.store.applied_option_diffs)
+                        cur_adds = cur_pricing["additions"]
+                        current_option_rows = [
+                            (cur_names[i], cur_adds[i] if i < len(cur_adds) else 0)
+                            for i in range(len(cur_names))
+                        ]
+                    except Exception:
+                        current_option_rows = [(n, None) for n in cur_names]
+                else:
+                    current_option_rows = [(n, None) for n in cur_names]
+            # 적용될 새 옵션 — 도매 원가 diff + 마진 적용 추가금
+            new_opts_text = suggested.get("options_text") or ""
+            new_diffs_text = suggested.get("option_diffs") or ""
+            new_base = suggested.get("base_price")
+            if new_opts_text:
+                names = [n.strip() for n in new_opts_text.split("\n") if n.strip()]
+                raw_diffs = []
+                for d in new_diffs_text.split("\n"):
+                    d = d.strip()
+                    try:
+                        raw_diffs.append(int(d))
+                    except ValueError:
+                        raw_diffs.append(0)
+                # 마진 적용 추가금 계산
+                margin_adds = []
+                if new_base:
+                    try:
+                        new_pricing = _calc_pricing(new_base, new_diffs_text)
+                        margin_adds = new_pricing["additions"]
+                    except Exception:
+                        pass
+                for i, name in enumerate(names):
+                    raw_d = raw_diffs[i] if i < len(raw_diffs) else 0
+                    margin_d = margin_adds[i] if i < len(margin_adds) else None
+                    new_option_rows.append((name, raw_d, margin_d))
 
         # PRICE 시그널 + 옵션 상품인 경우: 승인 시 적용될 옵션별 가격 계산
         option_details = []
@@ -175,6 +228,8 @@ def actions_page():
             "discount": discount,
             "option_count": option_count,
             "option_details": option_details,
+            "current_option_rows": current_option_rows,
+            "new_option_rows": new_option_rows,
             "detected_at": s.detected_at.strftime("%Y-%m-%d %H:%M") if s.detected_at else "-",
             "status": s.status,
             "error_message": s.error_message,
@@ -288,6 +343,11 @@ def bulk_resolve():
         elif action == "skip":
             signal.status = "skipped"
             signal.resolved_at = kst_now()
+            if signal.signal_type in ("OPTION_ADD", "OPTION_PRICE_CHANGE") and signal.store:
+                _sugg = json.loads(signal.suggested_value or "{}")
+                if _sugg.get("option_diffs"):
+                    signal.store.applied_option_diffs = _sugg["option_diffs"]
+                    signal.store.applied_option_base_price = _sugg.get("base_price")
             db.session.commit()
             ok_count += 1
 
@@ -313,6 +373,12 @@ def resolve_signal(signal_id):
         elif action == "skip":
             signal.status = "skipped"
             signal.resolved_at = kst_now()
+            # OPTION_ADD/OPTION_PRICE_CHANGE 건너뜀 → 현재 상태를 "적용됨"으로 기록
+            if signal.signal_type in ("OPTION_ADD", "OPTION_PRICE_CHANGE") and signal.store:
+                _sugg = json.loads(signal.suggested_value or "{}")
+                if _sugg.get("option_diffs"):
+                    signal.store.applied_option_diffs = _sugg["option_diffs"]
+                    signal.store.applied_option_base_price = _sugg.get("base_price")
             db.session.commit()
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -772,6 +838,8 @@ def _execute_signal(signal: ActionSignal):
             store.sale_price = list_price - discount
             store.option_list_price = list_price
             store.option_discount_amount = discount if discount > 0 else None
+            store.applied_option_diffs = suggested.get("option_diffs", "")
+            store.applied_option_base_price = suggested.get("base_price")
 
         # ── 옵션 구성 전체 교체: 추가금 있는 상품 전용 ───────────────────
         elif signal.signal_type == "OPTION_ADD":
@@ -885,6 +953,8 @@ def _execute_signal(signal: ActionSignal):
             store.sale_price = pricing["sale_price"]
             store.option_list_price = pricing["list_price"]
             store.option_discount_amount = pricing["discount"] if pricing["discount"] > 0 else None
+            store.applied_option_diffs = option_diffs
+            store.applied_option_base_price = base_price
 
             # 옵션 구조+가격 함께 처리됐으므로 pending OPTION_PRICE_CHANGE 자동 스킵
             pending_price = ActionSignal.query.filter_by(
@@ -1050,6 +1120,14 @@ def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dic
     if (master.id, store.id, "OPTION_ADD") in pending:
         return
 
+    # 1순위: StoreProduct에 저장된 적용 이력 확인
+    if store.applied_option_diffs == master.option_diffs:
+        if existing:
+            db.session.delete(existing)
+            prev_opts.pop(key, None)
+            pending.discard(key)
+        return
+
     last_executed = (
         ActionSignal.query
         .filter_by(store_product_id=store.id, signal_type="OPTION_PRICE_CHANGE")
@@ -1184,6 +1262,15 @@ def _check_option_add_signals(master: MasterProduct, store: StoreProduct, stats:
             pending.discard(key)
         return
     if not master.price or not store.origin_product_no:
+        return
+
+    # 1순위: StoreProduct에 저장된 적용 이력 확인 (ActionSignal 이력 없어도 동작)
+    if (store.applied_option_diffs == master.option_diffs and
+            store.applied_option_base_price == master.price):
+        if existing:
+            db.session.delete(existing)
+            prev_opts.pop(key, None)
+            pending.discard(key)
         return
 
     last_executed = (

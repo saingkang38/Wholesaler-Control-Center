@@ -1,10 +1,18 @@
 import os
 import time
+import threading
 import bcrypt
 import pybase64
 import requests
 
+from store.naver.rate_control import call as _api_call
+
 API_BASE = "https://api.commerce.naver.com/external"
+
+# 토큰 캐시: client_id → (access_token, expires_at)
+_token_cache: dict = {}
+_token_cache_lock = threading.Lock()
+_TOKEN_TTL = 50 * 60  # 50분 (토큰 유효기간 1시간보다 보수적으로)
 
 
 def _get_access_token(client_id: str = None, client_secret: str = None) -> str:
@@ -15,6 +23,12 @@ def _get_access_token(client_id: str = None, client_secret: str = None) -> str:
 
     if not client_id or not client_secret:
         raise Exception("NAVER_CLIENT_ID / NAVER_CLIENT_SECRET 미설정")
+
+    # 캐시 확인
+    with _token_cache_lock:
+        cached = _token_cache.get(client_id)
+        if cached and time.time() < cached[1]:
+            return cached[0]
 
     timestamp = str(int(time.time() * 1000))
     password = f"{client_id}_{timestamp}"
@@ -34,19 +48,19 @@ def _get_access_token(client_id: str = None, client_secret: str = None) -> str:
         timeout=10,
     )
     resp.raise_for_status()
-    return resp.json()["access_token"]
+    token = resp.json()["access_token"]
+
+    with _token_cache_lock:
+        _token_cache[client_id] = (token, time.time() + _TOKEN_TTL)
+
+    return token
 
 
 def get_products(page: int = 1, size: int = 100, token: str = None, client_id: str = None, client_secret: str = None) -> dict:
     if not token:
         token = _get_access_token(client_id, client_secret)
-    resp = requests.post(
-        f"{API_BASE}/v1/products/search",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        json={"page": page, "size": size},
-        timeout=15,
-    )
-    resp.raise_for_status()
+    resp = _api_call("POST", f"{API_BASE}/v1/products/search", token,
+                     json_body={"page": page, "size": size}, timeout=15)
     return resp.json()
 
 
@@ -102,56 +116,33 @@ def get_all_products(client_id: str = None, client_secret: str = None, on_page=N
 
 def change_status(origin_product_no: int, status: str, client_id: str = None, client_secret: str = None) -> bool:
     token = _get_access_token(client_id, client_secret)
-    resp = requests.put(
-        f"{API_BASE}/v1/products/origin-products/{origin_product_no}/change-status",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        json={"statusType": status},
-        timeout=10,
-    )
-    if not resp.ok:
-        raise Exception(f"{resp.status_code} {resp.text}")
+    _api_call("PUT",
+              f"{API_BASE}/v1/products/origin-products/{origin_product_no}/change-status",
+              token, json_body={"statusType": status}, timeout=10)
     return True
 
 
 def update_seller_management_code(origin_product_no: int, seller_management_code: str, client_id: str = None, client_secret: str = None) -> bool:
     token = _get_access_token(client_id, client_secret)
-    resp = requests.patch(
-        f"{API_BASE}/v1/products/origin-products/multi-update",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        json={
-            "multiProductUpdateRequestVos": [
-                {
-                    "originProductNo": int(origin_product_no),
-                    "multiUpdateTypes": ["SELLER_MANAGEMENT_CODE"],
-                    "sellerManagementCode": seller_management_code,
-                }
-            ]
-        },
-        timeout=10,
-    )
-    if not resp.ok:
-        raise Exception(f"{resp.status_code} {resp.text}")
+    _api_call("PATCH", f"{API_BASE}/v1/products/origin-products/multi-update", token,
+              json_body={
+                  "multiProductUpdateRequestVos": [{
+                      "originProductNo": int(origin_product_no),
+                      "multiUpdateTypes": ["SELLER_MANAGEMENT_CODE"],
+                      "sellerManagementCode": seller_management_code,
+                  }]
+              }, timeout=10)
     return True
 
 
 def update_price(origin_product_no: int, sale_price: int, client_id: str = None, client_secret: str = None) -> bool:
     token = _get_access_token(client_id, client_secret)
-    resp = requests.patch(
-        f"{API_BASE}/v1/products/origin-products/multi-update",
-        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-        json={
-            "multiProductUpdateRequestVos": [
-                {
-                    "originProductNo": int(origin_product_no),
-                    "multiUpdateTypes": ["SALE_PRICE"],
-                    "productSalePrice": {
-                        "salePrice": int(sale_price),
-                    },
-                }
-            ]
-        },
-        timeout=10,
-    )
-    if not resp.ok:
-        raise Exception(f"{resp.status_code} {resp.text}")
+    _api_call("PATCH", f"{API_BASE}/v1/products/origin-products/multi-update", token,
+              json_body={
+                  "multiProductUpdateRequestVos": [{
+                      "originProductNo": int(origin_product_no),
+                      "multiUpdateTypes": ["SALE_PRICE"],
+                      "productSalePrice": {"salePrice": int(sale_price)},
+                  }]
+              }, timeout=10)
     return True

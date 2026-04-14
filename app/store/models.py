@@ -39,6 +39,10 @@ class StoreProduct(db.Model):
     option_list_price     = db.Column(db.Integer, nullable=True)   # 설정 판매가(정가)
     option_discount_amount = db.Column(db.Integer, nullable=True)  # 즉시할인금액
 
+    # 마지막으로 적용한 도매처 옵션 상태 (ActionSignal 이력 없어도 중복 감지 방지)
+    applied_option_diffs       = db.Column(db.Text, nullable=True)     # 적용된 option_diffs
+    applied_option_base_price  = db.Column(db.Integer, nullable=True)  # 적용 당시 도매가
+
     # 마스터 매칭
     master_product_id = db.Column(db.Integer, db.ForeignKey("master_products.id"), nullable=True)
 
