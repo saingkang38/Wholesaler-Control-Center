@@ -85,8 +85,11 @@ def trigger_collection(wholesaler_code):
 
 
 @collections_bp.route("/api/collection-status")
-@login_required
 def collection_status():
+    from flask_login import current_user
+    from flask import jsonify as _jsonify
+    if not current_user.is_authenticated:
+        return _jsonify({"error": "unauthenticated"}), 401
     from datetime import datetime
     from zoneinfo import ZoneInfo
     from app.execution_logs.models import CollectionRun
