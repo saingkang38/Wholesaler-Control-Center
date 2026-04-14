@@ -984,9 +984,9 @@ def detect_action_signals(wholesaler_id: int) -> dict:
 
         _check_price_signals(master, store, stats, existing_pending)
         _check_status_signals(master, store, stats, existing_pending)
+        _check_option_add_signals(master, store, stats, existing_pending, prev_opts)
         _check_option_signals(master, store, stats, existing_pending, prev_opts)
         _check_option_stock_signals(master, store, stats, existing_pending, prev_opts)
-        _check_option_add_signals(master, store, stats, existing_pending, prev_opts)
 
     db.session.commit()
     logger.info(f"[actions] 시그널 감지 완료: {stats}")
@@ -1060,6 +1060,23 @@ def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dic
     if last_executed:
         last_suggested = json.loads(last_executed.suggested_value or "{}")
         if last_suggested.get("option_diffs") == master.option_diffs:
+            if existing:
+                db.session.delete(existing)
+                prev_opts.pop(key, None)
+                pending.discard(key)
+            return
+
+    # OPTION_ADD 실행 이력도 확인 — OPTION_ADD 실행 시 동일 option_diffs 적용됨
+    last_add_exec = (
+        ActionSignal.query
+        .filter_by(store_product_id=store.id, signal_type="OPTION_ADD")
+        .filter(ActionSignal.status.in_(["executed", "reverted"]))
+        .order_by(ActionSignal.resolved_at.desc())
+        .first()
+    )
+    if last_add_exec:
+        last_add = json.loads(last_add_exec.suggested_value or "{}")
+        if last_add.get("option_diffs") == master.option_diffs:
             if existing:
                 db.session.delete(existing)
                 prev_opts.pop(key, None)

@@ -204,9 +204,11 @@ class ZentraldeCollector(BaseCollector):
         option_el = product.find("option")
         options = self._parse_options(option_el.text if option_el is not None else None)
         if options:
-            raw_prices = [o["price"] or 0 for o in options]
-            # 절대 가격 → 상품 기준가 대비 차액으로 변환
-            diffs = [(p - price) if price else p for p in raw_prices]
+            # 절대 가격 → 상품 기준가 대비 차액으로 변환. 옵션 가격이 None이면 추가금 0으로 처리
+            diffs = [
+                (o["price"] - price if price else o["price"]) if o["price"] is not None else 0
+                for o in options
+            ]
             options_text = "\n".join(o["option_name"] for o in options)
             option_diffs = "\n".join(str(d) for d in diffs)
         else:
