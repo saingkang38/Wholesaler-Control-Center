@@ -401,6 +401,7 @@ def sync_store_option_state(flask_app=None) -> dict:
     from concurrent.futures import ThreadPoolExecutor, as_completed
     from app.settings import calculate_option_pricing
     from store.naver.products import get_origin_product
+    from store.naver import _get_access_token
 
     ctx = flask_app.app_context() if flask_app else None
     if ctx:
@@ -443,60 +444,58 @@ def sync_store_option_state(flask_app=None) -> dict:
             matched = 0
             commit_batch = []
 
-            def _fetch_and_check(sp):
-                """API 호출 → 옵션 추가금 비교 → 일치 시 True 반환"""
-                master = sp.master
-                if not master:
-                    return False
+            def _fetch_additions(origin_no: int, master_price: int, master_diffs: str):
+                """API 호출 → (is_match, additions_str) 반환 — SQLAlchemy 객체 접근 없음"""
                 try:
-                    # _get_access_token은 내부 캐시를 사용하므로 상품마다 재발급 없음
-                    data = get_origin_product(sp.origin_product_no, naver_store.client_id, naver_store.client_secret)
-                    origin = data.get("originProduct", {})
+                    data = get_origin_product(origin_no, naver_store.client_id, naver_store.client_secret)
                     combos = (
-                        origin.get("detailAttribute", {})
+                        data.get("originProduct", {})
+                        .get("detailAttribute", {})
                         .get("optionInfo", {})
                         .get("optionCombinations", [])
                     )
                     if not combos:
-                        return False
-
-                    # 스토어 현재 추가금 목록 (순서 기준)
+                        return False, None
                     store_additions = [c.get("price", 0) for c in combos]
-
-                    # 마스터 데이터로 계산한 예상 추가금
+                    additions_str = "\n".join(str(a) for a in store_additions)
                     try:
-                        pricing = calculate_option_pricing(master.price, master.option_diffs)
-                        expected = pricing["additions"]
+                        expected = calculate_option_pricing(master_price, master_diffs)["additions"]
+                        is_match = (len(store_additions) == len(expected) and store_additions == expected)
                     except Exception:
-                        return False
-
-                    # 개수와 금액 모두 일치해야 함
-                    if len(store_additions) != len(expected):
-                        return False
-                    if store_additions != expected:
-                        return False
-
-                    return True
+                        is_match = False
+                    return is_match, additions_str
                 except Exception as e:
-                    logger.debug(f"[option_sync] origin={sp.origin_product_no} 오류: {e}")
-                    return False
+                    logger.debug(f"[option_sync] origin={origin_no} 오류: {e}")
+                    return False, None
 
-            # 병렬 처리 (스레드 4개 — 토큰 재발급 고려해 보수적으로)
+            # primitive 값만 추출 후 스레드에 전달 (SQLAlchemy 세션 스레드 안전성 문제 방지)
+            task_data = [
+                (sp, sp.origin_product_no, sp.master.price, sp.master.option_diffs)
+                for sp in targets
+                if sp.master
+            ]
+
             with ThreadPoolExecutor(max_workers=4) as executor:
-                future_map = {executor.submit(_fetch_and_check, sp): sp for sp in targets}
+                future_map = {
+                    executor.submit(_fetch_additions, origin_no, m_price, m_diffs): sp
+                    for sp, origin_no, m_price, m_diffs in task_data
+                }
                 for future in as_completed(future_map):
                     sp = future_map[future]
                     checked += 1
                     try:
-                        is_match = future.result()
+                        is_match, additions_str = future.result()
                     except Exception:
-                        is_match = False
+                        is_match, additions_str = False, None
+
+                    if additions_str is not None:
+                        sp.naver_cached_additions = additions_str
 
                     if is_match:
                         sp.applied_option_diffs = sp.master.option_diffs
                         sp.applied_option_base_price = sp.master.price
-                        commit_batch.append(sp)
                         matched += 1
+                    commit_batch.append(sp)
 
                     if checked % 100 == 0:
                         # 중간 커밋

@@ -242,16 +242,7 @@
         <td style="font-size:12px;">{{ '{:,}'.format(row.sale_price) if row.sale_price else '-' }}<br><span style="color:#999;">현재판매가</span></td>
         {% else %}
         <td>{{ '{:,}'.format(row.wholesale_price) if row.wholesale_price else '-' }}</td>
-        <td>
-          {{ '{:,}'.format(row.margin_price) if row.margin_price else '-' }}
-          {% if row.option_details %}
-          <div style="margin-top:4px; font-size:11px; color:#555; line-height:1.7;">
-            {% for name, price in row.option_details %}
-            <span style="display:inline-block; background:#f0f4ff; border:1px solid #c7d7f7; border-radius:3px; padding:0 5px; margin:1px;">{{ name }} <b>{{ '{:,}'.format(price) }}</b></span>
-            {% endfor %}
-          </div>
-          {% endif %}
-        </td>
+        <td>{{ '{:,}'.format(row.margin_price) if row.margin_price else '-' }}</td>
         <td>{{ '{:,}'.format(row.sale_price) if row.sale_price else '-' }}</td>
         {% endif %}
         <td>{{ row.detected_at }}</td>
@@ -276,6 +267,41 @@
         </td>
         {% endif %}
       </tr>
+      {% if row.signal_type in ('PRICE_UP_NEEDED', 'PRICE_DOWN_POSSIBLE') and row.option_details %}
+      <tr style="background:#fffbf0;">
+        <td colspan="20" style="padding:6px 16px 10px; border-top:none;">
+          <div style="display:flex; gap:24px; font-size:12px;">
+            <div style="flex:1;">
+              <div style="font-weight:600; color:#666; margin-bottom:4px;">현재 스마트스토어 옵션</div>
+              {% if row.store_option_rows %}
+                {% for name, price in row.store_option_rows %}
+                <span style="display:inline-block; background:#f3f4f6; border:1px solid #d1d5db; border-radius:3px; padding:1px 7px; margin:2px 2px 0 0; color:#374151;">
+                  {{ name }} <b>{{ '{:,}'.format(price) }}</b>
+                </span>
+                {% endfor %}
+              {% else %}
+                <span style="color:#9ca3af;">이력 없음</span>
+              {% endif %}
+            </div>
+            <div style="flex:1;">
+              <div style="font-weight:600; color:#d97706; margin-bottom:4px;">승인 시 적용될 옵션 가격 <span style="font-weight:400; color:#888; font-size:11px;">(마진적용)</span></div>
+              {% if row.pricing_list_price %}
+              <div style="font-size:11px; color:#6b7280; margin-bottom:5px;">
+                정가 <b style="color:#374151;">{{ '{:,}'.format(row.pricing_list_price) }}원</b>
+                {% if row.pricing_discount %}/ 즉시할인 <b style="color:#dc2626;">-{{ '{:,}'.format(row.pricing_discount) }}원</b>{% endif %}
+                → 실판매가 <b style="color:#059669;">{{ '{:,}'.format(row.pricing_sale_price) }}원</b>
+              </div>
+              {% endif %}
+              {% for name, price in row.option_details %}
+              <span style="display:inline-block; background:#fffbeb; border:1px solid #fde68a; border-radius:3px; padding:1px 7px; margin:2px 2px 0 0; color:#92400e;">
+                {{ name }} <b>{{ '{:,}'.format(price) }}</b>
+              </span>
+              {% endfor %}
+            </div>
+          </div>
+        </td>
+      </tr>
+      {% endif %}
       {% if row.signal_type == 'OPTION_ADD' and (row.current_option_rows or row.new_option_rows) %}
       <tr style="background:#f8faff;">
         <td colspan="20" style="padding:6px 16px 10px; border-top:none;">

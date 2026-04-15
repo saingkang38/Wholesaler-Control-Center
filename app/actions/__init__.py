@@ -179,6 +179,8 @@ def actions_page():
 
         # PRICE 시그널 + 옵션 상품인 경우: 승인 시 적용될 옵션별 가격 계산
         option_details = []
+        store_option_rows = []  # 현재 스마트스토어 옵션별 가격
+        pricing_list_price = pricing_discount = pricing_sale_price = None
         if s.signal_type in ("PRICE_UP_NEEDED", "PRICE_DOWN_POSSIBLE") and wholesale_price:
             master = s.master
             if master and master.option_diffs and master.options_text:
@@ -188,10 +190,37 @@ def actions_page():
                     names = [n.strip() for n in master.options_text.split("\n") if n.strip()]
                     adds  = opt_p["additions"]
                     base  = opt_p["sale_price"]
+                    pricing_list_price = opt_p["list_price"]
+                    pricing_discount   = opt_p["discount"]
+                    pricing_sale_price = opt_p["sale_price"]
                     option_details = [
                         (names[i] if i < len(names) else f"옵션{i+1}", base + (adds[i] if i < len(adds) else 0))
                         for i in range(len(names))
                     ]
+                    # 현재 스마트스토어 옵션 가격 계산
+                    # 우선순위 1: Naver 실제 추가금 캐시 (sale_price + naver_addition)
+                    if s.store and s.store.naver_cached_additions and s.store.sale_price:
+                        try:
+                            cur_adds_raw = [int(v) for v in s.store.naver_cached_additions.split("\n") if v.strip()]
+                            store_option_rows = [
+                                (names[i] if i < len(names) else f"옵션{i+1}",
+                                 s.store.sale_price + (cur_adds_raw[i] if i < len(cur_adds_raw) else 0))
+                                for i in range(len(names))
+                            ]
+                        except Exception:
+                            pass
+                    # 우선순위 2: 적용 이력으로 역산
+                    if not store_option_rows and s.store and s.store.applied_option_base_price and s.store.applied_option_diffs:
+                        try:
+                            cur_p = calculate_option_pricing(s.store.applied_option_base_price, s.store.applied_option_diffs)
+                            cur_base = cur_p["sale_price"]
+                            cur_adds = cur_p["additions"]
+                            store_option_rows = [
+                                (names[i] if i < len(names) else f"옵션{i+1}", cur_base + (cur_adds[i] if i < len(cur_adds) else 0))
+                                for i in range(len(names))
+                            ]
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
@@ -229,6 +258,10 @@ def actions_page():
             "discount": discount,
             "option_count": option_count,
             "option_details": option_details,
+            "store_option_rows": store_option_rows,
+            "pricing_list_price": pricing_list_price,
+            "pricing_discount":   pricing_discount,
+            "pricing_sale_price": pricing_sale_price,
             "current_option_rows": current_option_rows,
             "new_option_rows": new_option_rows,
             "detected_at": s.detected_at.strftime("%Y-%m-%d %H:%M") if s.detected_at else "-",
@@ -540,7 +573,19 @@ def _execute_price_option_no_extra(store, master, suggested: dict, client_id: st
     combinations = option_info.get("optionCombinations", [])
 
     if not combinations:
-        raise ValueError("스토어 상품에 옵션 없음 (option_no_extra 경로)")
+        # 스토어에 옵션 없음 → 마스터 옵션으로 신규 생성
+        option_names = [n.strip() for n in (master.options_text or "").split("\n") if n.strip()]
+        if not option_names:
+            raise ValueError("스토어/마스터 모두 옵션 없음 (option_no_extra 경로)")
+        combinations = [
+            {"optionName1": name, "price": 0, "stockQuantity": 999, "usable": True}
+            for name in option_names
+        ]
+        # 옵션 구조 신규 초기화: 속성 그룹명 없으면 Naver가 optionCombinations를 무시함
+        option_info["optionCombinationGroupNames"] = {"optionGroupName1": "옵션"}
+        logger.info(
+            f"[actions][option_no_extra] 스토어 옵션 없음 → 마스터 {len(combinations)}개 신규 생성: store_id={store.id}"
+        )
 
     for combo in combinations:
         combo["price"] = 0  # 추가금 없음 — 전부 0원
@@ -565,6 +610,15 @@ def _execute_price_option_no_extra(store, master, suggested: dict, client_id: st
 # ---------------------------------------------------------------------------
 # [유형 3] 옵션 있음·추가금 있음 — 가격 실행
 # ---------------------------------------------------------------------------
+
+def _clamp_combo_price(price: int, list_price: int) -> int:
+    """salePrice(정가) 기준 스마트스토어 옵션가 허용 범위로 클램핑"""
+    if list_price < 2000:
+        return max(0, min(price, list_price))
+    elif list_price < 10000:
+        return max(-(list_price // 2), min(price, list_price))
+    else:
+        return max(-(list_price // 2), min(price, list_price // 2))
 
 def _execute_price_option_with_extra(store, master, suggested: dict, client_id: str, client_secret: str, signal: "ActionSignal"):
     """
@@ -598,7 +652,23 @@ def _execute_price_option_with_extra(store, master, suggested: dict, client_id: 
     combinations = option_info.get("optionCombinations", [])
 
     if not combinations:
-        raise ValueError("스토어 상품에 옵션 없음 (option_with_extra 경로)")
+        # 스토어에 옵션 없음 → 마스터 옵션으로 신규 생성
+        if not option_names:
+            raise ValueError("스토어/마스터 모두 옵션 없음 (option_with_extra 경로)")
+        combinations = [
+            {
+                "optionName1": name,
+                "price": pricing["additions"][i] if i < len(pricing["additions"]) else 0,
+                "stockQuantity": 999,
+                "usable": True,
+            }
+            for i, name in enumerate(option_names)
+        ]
+        # 옵션 구조 신규 초기화: 속성 그룹명 없으면 Naver가 optionCombinations를 무시함
+        option_info["optionCombinationGroupNames"] = {"optionGroupName1": "옵션"}
+        logger.info(
+            f"[actions][option_with_extra] 스토어 옵션 없음 → 마스터 {len(combinations)}개 신규 생성: store_id={store.id}"
+        )
 
     # keep 정책 옵션만 combo 업데이트; addon/exclude 는 제외
     new_combos = []
@@ -616,10 +686,21 @@ def _execute_price_option_with_extra(store, master, suggested: dict, client_id: 
             matched_idx = i
         if matched_idx is not None and matched_idx < len(pricing["additions"]):
             combo["price"] = pricing["additions"][matched_idx]
-        new_combos.append(combo)
+            new_combos.append(combo)
+        else:
+            # 마스터에 없는 Naver 콤보 → 제외 (범위 오류 방지)
+            logger.warning(
+                f"[actions][option_with_extra] 마스터 미매칭 콤보 제외 "
+                f"(store_product_id={store.id}, combo_idx={i}, name='{name}')"
+            )
 
     if not new_combos:  # 안전장치: 모두 addon/exclude인 경우 전체 유지
         new_combos = combinations
+
+    # 스마트스토어 옵션가 범위 초과 방지: 정가 기준 허용 범위로 클램핑
+    lp = pricing["list_price"]
+    for combo in new_combos:
+        combo["price"] = _clamp_combo_price(combo["price"], lp)
 
     option_info["optionCombinations"] = new_combos
     detail["optionInfo"] = option_info
@@ -657,6 +738,8 @@ def _execute_price_option_with_extra(store, master, suggested: dict, client_id: 
     store.sale_price = new_price
     store.option_list_price = pricing["list_price"]
     store.option_discount_amount = pricing["discount"] or None
+    store.applied_option_diffs = master.option_diffs
+    store.applied_option_base_price = wholesale_price
     logger.info(
         f"[actions][option_with_extra] 가격 반영: store_id={store.id}, "
         f"list_price={pricing['list_price']}, discount={pricing['discount']}, "
@@ -1318,30 +1401,31 @@ def _check_option_add_signals(master: MasterProduct, store: StoreProduct, stats:
                 pending.discard(key)
             return
 
-    if key not in pending:
-        new_suggested = json.dumps({
-            "base_price":   master.price,
-            "option_diffs": master.option_diffs,
-            "options_text": master.options_text,
-        })
-        if existing:
-            old = json.loads(existing.suggested_value or "{}")
-            if (old.get("options_text") == master.options_text and
-                    old.get("option_diffs") == master.option_diffs):
-                return  # 값 동일, 기존 pending 유지
-            existing.suggested_value = new_suggested
-            existing.detected_at = kst_now()
-            stats["OPTION_ADD"] += 1
-        else:
-            db.session.add(ActionSignal(
-                master_product_id=master.id,
-                store_product_id=store.id,
-                signal_type="OPTION_ADD",
-                current_value=json.dumps({"options_text": master.options_text}),
-                suggested_value=new_suggested,
-            ))
-            pending.add(key)
-            stats["OPTION_ADD"] += 1
+    new_suggested = json.dumps({
+        "base_price":   master.price,
+        "option_diffs": master.option_diffs,
+        "options_text": master.options_text,
+    })
+    new_current = json.dumps({"options_text": master.options_text})
+    if existing:
+        old = json.loads(existing.suggested_value or "{}")
+        if (old.get("options_text") == master.options_text and
+                old.get("option_diffs") == master.option_diffs):
+            return  # 값 동일, 기존 pending 유지
+        existing.current_value = new_current
+        existing.suggested_value = new_suggested
+        existing.detected_at = kst_now()
+        stats["OPTION_ADD"] += 1
+    elif key not in pending:
+        db.session.add(ActionSignal(
+            master_product_id=master.id,
+            store_product_id=store.id,
+            signal_type="OPTION_ADD",
+            current_value=new_current,
+            suggested_value=new_suggested,
+        ))
+        pending.add(key)
+        stats["OPTION_ADD"] += 1
 
 
 def _check_status_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set):

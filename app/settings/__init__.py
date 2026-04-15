@@ -38,6 +38,15 @@ def apply_margin(wholesale_price: int) -> int:
     return wholesale_price
 
 
+def _get_base_margin_rate(base_price: int) -> float:
+    """base_price에 해당하는 마진율 반환 (옵션 차액 계산용)"""
+    for price_from, price_to, margin_rate in _get_margin_tuples():
+        if base_price >= price_from:
+            if price_to is None or base_price <= price_to:
+                return margin_rate
+    return 0.0
+
+
 def calculate_option_pricing(base_price: int, option_diffs_text: str) -> dict:
     """
     옵션 상품의 정가/즉시할인/옵션추가금 계산.
@@ -69,7 +78,10 @@ def calculate_option_pricing(base_price: int, option_diffs_text: str) -> dict:
     if not diffs:
         return {"list_price": sale_price, "discount": 0, "sale_price": sale_price, "additions": []}
 
-    raw_additions = [apply_margin(base_price + d) - sale_price for d in diffs]
+    # 기준가(base_price)의 마진율을 옵션 차액에도 동일하게 적용
+    # apply_margin(base_price + d) 방식은 구간 경계 근처에서 역전 발생 가능
+    base_rate = _get_base_margin_rate(base_price)
+    raw_additions = [round(d * (1 + base_rate) / 10) * 10 for d in diffs]
 
     # 네이버 필수 조건: 옵션가 0원짜리 1개 이상 — 가장 저렴한 옵션을 기준(0원)으로 정규화
     min_add = min(raw_additions)

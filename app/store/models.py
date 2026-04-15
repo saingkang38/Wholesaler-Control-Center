@@ -43,6 +43,9 @@ class StoreProduct(db.Model):
     applied_option_diffs       = db.Column(db.Text, nullable=True)     # 적용된 option_diffs
     applied_option_base_price  = db.Column(db.Integer, nullable=True)  # 적용 당시 도매가
 
+    # 스마트스토어 실제 옵션 추가금 캐시 (sync_store_option_state 에서 갱신, 표시 전용)
+    naver_cached_additions     = db.Column(db.Text, nullable=True)     # 실제 Naver 추가금 (줄바꿈 구분)
+
     # 마스터 매칭
     master_product_id = db.Column(db.Integer, db.ForeignKey("master_products.id"), nullable=True)
 

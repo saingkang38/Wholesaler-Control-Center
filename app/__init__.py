@@ -84,6 +84,7 @@ def create_app():
             "ALTER TABLE master_products ADD COLUMN shipping_condition VARCHAR(256)",
             "ALTER TABLE store_products ADD COLUMN applied_option_diffs TEXT",
             "ALTER TABLE store_products ADD COLUMN applied_option_base_price INTEGER",
+            "ALTER TABLE store_products ADD COLUMN naver_cached_additions TEXT",
         ]
         for sql in migrations:
             try:
