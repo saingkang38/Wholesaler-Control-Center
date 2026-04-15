@@ -129,7 +129,7 @@ def _lookup_master(seller_code: str, master_map: dict, prefixes: list):
 def sync_store_products() -> dict:
     """모든 활성 NaverStore를 순회하며 상품 동기화"""
     stores = NaverStore.query.filter_by(is_active=True).all()
-    total_stats = {"created": 0, "updated": 0, "matched": 0, "unmatched": 0}
+    total_stats = {"created": 0, "updated": 0, "matched": 0, "unmatched": 0, "closed": 0}
 
     for naver_store in stores:
         stats = _sync_single_store(naver_store)
@@ -147,6 +147,7 @@ def _sync_single_store(naver_store: NaverStore, log_cb=None) -> dict:
 
     from store.naver import get_all_products
 
+    sync_start = kst_now()  # 동기화 시작 시각 — API 미반환 상품 감지용
     log("네이버 API 토큰 발급 중...", 2)
 
     def on_page(page, total_pages, count):
@@ -203,12 +204,21 @@ def _sync_single_store(naver_store: NaverStore, log_cb=None) -> dict:
 
         store = existing_stores.get(origin_no)
         if store:
+            old_status = store.store_status
             store.store_status = p["status"]
             store.sale_price = p["price"]
             store.product_name = p["name"]
             store.seller_management_code = seller_code
             store.last_synced_at = kst_now()
             stats["updated"] += 1
+
+            # SALE → 비판매(CLOSE/SUSPENSION 등) 전환 시 pending 시그널 즉시 취소
+            if old_status == "SALE" and store.store_status != "SALE":
+                from app.actions.models import ActionSignal
+                ActionSignal.query.filter_by(
+                    store_product_id=store.id,
+                    status="pending",
+                ).delete(synchronize_session=False)
         else:
             store = StoreProduct(
                 naver_store_id=naver_store.id,
@@ -231,6 +241,27 @@ def _sync_single_store(naver_store: NaverStore, log_cb=None) -> dict:
                 stats["matched"] += 1
             else:
                 stats["unmatched"] += 1
+
+    # last_synced_at < sync_start 인 상품 = 이번 동기화에서 API 미반환 = 삭제된 상품
+    gone = StoreProduct.query.filter(
+        StoreProduct.naver_store_id == naver_store.id,
+        StoreProduct.last_synced_at < sync_start,
+        StoreProduct.store_status.notin_(["CLOSE", "DELETE"]),
+    ).all()
+    for store in gone:
+        logger.info(
+            f"[store] API 미반환 상품 CLOSE 처리: "
+            f"origin_no={store.origin_product_no}, "
+            f"code={store.seller_management_code}"
+        )
+        store.store_status = "CLOSE"
+        store.last_synced_at = sync_start
+        from app.actions.models import ActionSignal
+        ActionSignal.query.filter_by(
+            store_product_id=store.id,
+            status="pending",
+        ).delete(synchronize_session=False)
+    stats["closed"] = len(gone)
 
     db.session.commit()
     log(f"매칭 완료 — 매칭 {stats['matched']}건 / 미매칭 {stats['unmatched']}건", 82)

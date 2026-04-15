@@ -70,6 +70,7 @@ def actions_page():
                 MasterProduct.options_text != "",
                 MasterProduct.option_diffs != None,
                 MasterProduct.option_diffs != "",
+                MasterProduct.option_diffs != "0",
             )
     if search_q:
         sp_sub = db.session.query(StoreProduct.id).filter(
@@ -261,6 +262,7 @@ def actions_page():
                 MasterProduct.options_text != "",
                 MasterProduct.option_diffs != None,
                 MasterProduct.option_diffs != "",
+                MasterProduct.option_diffs != "0",
             ).count()
 
     no_option_count = _option_type_count("no_option")
@@ -1052,6 +1054,17 @@ def detect_action_signals(wholesaler_id: int) -> dict:
         if store.exclusion:
             continue
 
+        # 판매중지·판매종료 상품은 상태 시그널만 처리 (가격/옵션 시그널 스킵)
+        if store.store_status != "SALE":
+            # 기존 pending 옵션 시그널 정리 (판매중지 상품에는 불필요)
+            for otype in OPTION_TYPES:
+                okey = (master.id, store.id, otype)
+                if okey in prev_opts:
+                    db.session.delete(prev_opts.pop(okey))
+                    existing_pending.discard(okey)
+            _check_status_signals(master, store, stats, existing_pending)
+            continue
+
         _check_price_signals(master, store, stats, existing_pending)
         _check_status_signals(master, store, stats, existing_pending)
         _check_option_add_signals(master, store, stats, existing_pending, prev_opts)
@@ -1106,7 +1119,7 @@ def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dic
     key = (master.id, store.id, "OPTION_PRICE_CHANGE")
     existing = prev_opts.get(key)
 
-    if not master.option_diffs or not master.options_text:
+    if not master.options_text or not _has_extra_price(master):
         if existing:
             db.session.delete(existing)
             prev_opts.pop(key, None)
@@ -1255,7 +1268,7 @@ def _check_option_add_signals(master: MasterProduct, store: StoreProduct, stats:
     key = (master.id, store.id, "OPTION_ADD")
     existing = prev_opts.get(key)
 
-    if not master.options_text or not master.option_diffs:
+    if not master.options_text or not _has_extra_price(master):
         if existing:
             db.session.delete(existing)
             prev_opts.pop(key, None)
