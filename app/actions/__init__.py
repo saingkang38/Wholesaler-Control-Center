@@ -62,7 +62,11 @@ def actions_page():
             query = query.filter(
                 MasterProduct.options_text != None,
                 MasterProduct.options_text != "",
-                db.or_(MasterProduct.option_diffs == None, MasterProduct.option_diffs == ""),
+                db.or_(
+                    MasterProduct.option_diffs == None,
+                    MasterProduct.option_diffs == "",
+                    db.func.replace(db.func.replace(MasterProduct.option_diffs, "0", ""), "\n", "") == "",
+                ),
             )
         elif option_type_filter == "option_with_extra":
             query = query.filter(
@@ -70,7 +74,7 @@ def actions_page():
                 MasterProduct.options_text != "",
                 MasterProduct.option_diffs != None,
                 MasterProduct.option_diffs != "",
-                MasterProduct.option_diffs != "0",
+                db.func.replace(db.func.replace(MasterProduct.option_diffs, "0", ""), "\n", "") != "",
             )
     if search_q:
         sp_sub = db.session.query(StoreProduct.id).filter(
@@ -287,7 +291,11 @@ def actions_page():
             return base.filter(
                 MasterProduct.options_text != None,
                 MasterProduct.options_text != "",
-                db.or_(MasterProduct.option_diffs == None, MasterProduct.option_diffs == ""),
+                db.or_(
+                    MasterProduct.option_diffs == None,
+                    MasterProduct.option_diffs == "",
+                    db.func.replace(db.func.replace(MasterProduct.option_diffs, "0", ""), "\n", "") == "",
+                ),
             ).count()
         elif otype == "option_with_extra":
             return base.filter(
@@ -295,7 +303,7 @@ def actions_page():
                 MasterProduct.options_text != "",
                 MasterProduct.option_diffs != None,
                 MasterProduct.option_diffs != "",
-                MasterProduct.option_diffs != "0",
+                db.func.replace(db.func.replace(MasterProduct.option_diffs, "0", ""), "\n", "") != "",
             ).count()
 
     no_option_count = _option_type_count("no_option")
@@ -791,6 +799,15 @@ def _execute_signal(signal: ActionSignal):
             if new_status:
                 change_status(store.origin_product_no, new_status, client_id=client_id, client_secret=client_secret)
                 store.store_status = new_status
+            # 판매중지·단종 실행 시 pending 옵션 시그널 즉시 삭제
+            # (판매중지 상태에서는 옵션 재고/가격/구성 변동이 고객에게 무의미)
+            if signal.signal_type in ("SUSPEND_NEEDED", "DISCONTINUE_NEEDED"):
+                ActionSignal.query.filter(
+                    ActionSignal.store_product_id == store.id,
+                    ActionSignal.status == "pending",
+                    ActionSignal.signal_type.in_(["OPTION_ADD", "OPTION_PRICE_CHANGE", "OPTION_STOCK_CHANGE"]),
+                ).delete(synchronize_session=False)
+                logger.info(f"[actions] 판매중지/단종 실행 → pending 옵션 시그널 정리 (store_id={store.id})")
 
         # ── 옵션 재고 변동: 옵션 있는 상품 전용 ──────────────────────────
         elif signal.signal_type == "OPTION_STOCK_CHANGE":
