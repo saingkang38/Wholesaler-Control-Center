@@ -1,0 +1,144 @@
+{% extends "base.html" %}
+{% block title %}실시간 로그{% endblock %}
+{% block content %}
+<div class="card">
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+        <h2 style="font-size:18px; font-weight:bold;">실시간 로그</h2>
+        <div style="display:flex; gap:8px; align-items:center;">
+            <span id="status-dot" style="width:10px; height:10px; border-radius:50%; background:#ccc; display:inline-block;"></span>
+            <span id="status-text" style="font-size:13px; color:#666;">연결 중...</span>
+            <button onclick="clearLog()" style="padding:4px 12px; font-size:12px; background:#6c757d; color:white; border:none; border-radius:4px; cursor:pointer;">지우기</button>
+        </div>
+    </div>
+
+    <!-- 현재 실행 중인 수집 -->
+    <div id="running-banner" style="margin-bottom:12px; {% if not running %}display:none;{% endif %}">
+        {% for run in running %}
+        <div style="background:#fff3cd; border:1px solid #ffc107; border-radius:6px; padding:8px 14px; margin-bottom:6px; font-size:13px;">
+            ⏳ <strong>수집 중:</strong> {{ run.wholesaler.wholesaler_name if run.wholesaler else '알 수 없음' }}
+            — 시작 {{ run.started_at.strftime('%H:%M:%S') if run.started_at else '-' }}
+        </div>
+        {% endfor %}
+    </div>
+
+    <!-- 로그 스트림 창 -->
+    <div id="log-box" style="
+        background:#1e1e1e;
+        color:#d4d4d4;
+        font-family: 'Consolas', 'Courier New', monospace;
+        font-size:13px;
+        line-height:1.6;
+        padding:16px;
+        border-radius:6px;
+        height:520px;
+        overflow-y:auto;
+        white-space:pre-wrap;
+        word-break:break-all;
+    ">
+        <span style="color:#666;">[로그 스트림 대기 중...]</span>
+    </div>
+
+    <div style="margin-top:8px; font-size:12px; color:#999;">
+        수집·액션 실행 로그가 실시간으로 표시됩니다. 서버 재시작 시 이전 로그는 초기화됩니다.
+    </div>
+</div>
+
+<script>
+const logBox = document.getElementById('log-box');
+const statusDot = document.getElementById('status-dot');
+const statusText = document.getElementById('status-text');
+let lineCount = 0;
+const MAX_LINES = 200;
+let initialized = false;
+
+function appendLine(msg, color) {
+    if (!initialized) {
+        logBox.innerHTML = '';
+        initialized = true;
+    }
+    const now = new Date().toLocaleTimeString('ko-KR', {hour12: false});
+    const line = document.createElement('div');
+    line.style.borderBottom = '1px solid #2a2a2a';
+    line.style.padding = '1px 0';
+    if (color) line.style.color = color;
+
+    const ts = document.createElement('span');
+    ts.style.color = '#569cd6';
+    ts.textContent = now + '  ';
+
+    const txt = document.createElement('span');
+    txt.textContent = msg;
+
+    line.appendChild(ts);
+    line.appendChild(txt);
+    logBox.appendChild(line);
+    lineCount++;
+
+    // 최대 줄 수 초과 시 오래된 항목 제거
+    if (lineCount > MAX_LINES) {
+        logBox.removeChild(logBox.firstChild);
+        lineCount--;
+    }
+
+    logBox.scrollTop = logBox.scrollHeight;
+}
+
+function clearLog() {
+    logBox.innerHTML = '';
+    lineCount = 0;
+    initialized = false;
+}
+
+function connectStream() {
+    const src = new EventSource('/logs/live-stream?since=' + (Date.now() / 1000 - 1));
+
+    src.onopen = function() {
+        statusDot.style.background = '#28a745';
+        statusText.textContent = '연결됨';
+    };
+
+    src.onmessage = function(e) {
+        try {
+            const data = JSON.parse(e.data);
+            const msg = data.msg || '';
+            // 색상 구분
+            let color = null;
+            if (msg.includes('실패') || msg.includes('에러') || msg.includes('오류')) color = '#f14c4c';
+            else if (msg.includes('완료') || msg.includes('성공')) color = '#4ec9b0';
+            else if (msg.includes('시작') || msg.includes('수집')) color = '#dcdcaa';
+            appendLine(msg, color);
+        } catch(err) {}
+    };
+
+    src.onerror = function() {
+        statusDot.style.background = '#dc3545';
+        statusText.textContent = '연결 끊김 — 재연결 중...';
+        src.close();
+        setTimeout(connectStream, 3000);
+    };
+}
+
+connectStream();
+
+// 실행 중인 수집 폴링 (10초마다)
+function pollRunning() {
+    fetch('/api/running-collections')
+        .then(r => r.json())
+        .then(data => {
+            const banner = document.getElementById('running-banner');
+            if (data.running && data.running.length > 0) {
+                banner.style.display = '';
+                banner.innerHTML = data.running.map(r =>
+                    `<div style="background:#fff3cd; border:1px solid #ffc107; border-radius:6px; padding:8px 14px; margin-bottom:6px; font-size:13px;">
+                        ⏳ <strong>수집 중:</strong> ${r.name} — 시작 ${r.started_at || '-'}
+                    </div>`
+                ).join('');
+            } else {
+                banner.style.display = 'none';
+            }
+        })
+        .catch(() => {});
+}
+setInterval(pollRunning, 10000);
+</script>
+{% endblock %}

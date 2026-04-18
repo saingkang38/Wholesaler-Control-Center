@@ -1,0 +1,203 @@
+{% extends "base.html" %}
+{% block title %}옵션 불일치 관리{% endblock %}
+
+{% block content %}
+<style>
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th { background:#f8f9fa; padding:10px 12px; text-align:left; border-bottom:2px solid #dee2e6; }
+  td { padding:10px 12px; border-bottom:1px solid #f0f0f0; vertical-align:middle; }
+  tr:hover { background:#fafafa; }
+  .badge { display:inline-block; padding:3px 10px; border-radius:12px; font-size:12px; font-weight:bold; }
+  .badge-warning  { background:#fef3c7; color:#d97706; }
+  .badge-success  { background:#d1fae5; color:#059669; }
+  .badge-secondary{ background:#f3f4f6; color:#6b7280; }
+  .btn { padding:5px 12px; border:none; border-radius:4px; cursor:pointer; font-size:13px; }
+  .btn:hover { opacity:.85; }
+  .combo-tag {
+    display:inline-block; background:#f3f4f6; border:1px solid #d1d5db;
+    border-radius:3px; padding:1px 7px; margin:2px 2px 0 0;
+    font-size:12px; color:#374151;
+  }
+  .combo-tag.has-price { border-color:#fbbf24; background:#fffbeb; }
+  .tab-bar { display:flex; gap:8px; margin-bottom:20px; }
+  .tab-bar a {
+    padding:8px 18px; border-radius:6px; text-decoration:none;
+    font-size:14px; background:#e9ecef; color:#333;
+  }
+  .tab-bar a.active { background:#2c3e50; color:white; }
+  .empty { text-align:center; padding:60px; color:#9ca3af; font-size:15px; }
+</style>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+    <h2 style="font-size:18px; margin:0;">
+      도매 단품 ↔ 스토어 옵션 불일치
+      {% if pending_count %}<span class="badge badge-warning" style="margin-left:8px;">{{ pending_count }}</span>{% endif %}
+    </h2>
+    <button class="btn" style="background:#2c3e50;color:white;" onclick="detectNow()">지금 감지 실행</button>
+  </div>
+
+  <div class="tab-bar">
+    <a href="?status=pending{% if store_filter %}&store_id={{ store_filter }}{% endif %}"
+       class="{{ 'active' if status_filter == 'pending' }}">대기중</a>
+    <a href="?status=resolved{% if store_filter %}&store_id={{ store_filter }}{% endif %}"
+       class="{{ 'active' if status_filter == 'resolved' }}">처리완료</a>
+    <a href="?status=ignored{% if store_filter %}&store_id={{ store_filter }}{% endif %}"
+       class="{{ 'active' if status_filter == 'ignored' }}">무시됨</a>
+    <a href="?status=all{% if store_filter %}&store_id={{ store_filter }}{% endif %}"
+       class="{{ 'active' if status_filter == 'all' }}">전체</a>
+  </div>
+
+  {% if naver_stores|length > 1 %}
+  <div style="margin-bottom:14px;">
+    <select onchange="location.href='?status={{ status_filter }}&store_id='+this.value"
+            style="padding:6px 10px; border:1px solid #d1d5db; border-radius:4px; font-size:13px;">
+      <option value="">전체 스토어</option>
+      {% for ns in naver_stores %}
+      <option value="{{ ns.id }}" {{ 'selected' if store_filter == ns.id }}>{{ ns.store_name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+  {% endif %}
+
+  <p style="font-size:13px; color:#6b7280; margin-bottom:16px;">
+    도매처에 옵션 없는 단품인데 스마트스토어에 옵션이 있는 상품 목록입니다.
+    <b>추가금 초기화</b>를 누르면 스마트스토어 옵션 추가금을 전부 0원으로 만들고 도매가 기준 가격을 적용합니다.
+  </p>
+
+  {% if rows %}
+  <table>
+    <thead>
+      <tr>
+        <th>도매처</th>
+        <th>스토어</th>
+        <th>상품명</th>
+        <th>판매자관리코드</th>
+        <th>상품번호</th>
+        <th>도매가</th>
+        <th>스마트스토어 현재 옵션</th>
+        <th>상태</th>
+        <th>감지일시</th>
+        <th>처리</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in rows %}
+      <tr id="row-{{ row.id }}">
+        <td style="font-size:13px; color:#666;">{{ row.wholesaler_name }}</td>
+        <td style="font-size:13px; color:#2563eb; font-weight:500;">{{ row.store_name }}</td>
+        <td>{{ row.product_name }}</td>
+        <td>{{ row.seller_code }}</td>
+        <td style="font-size:12px; color:#666;">{{ row.origin_product_no or '-' }}</td>
+        <td>{{ '{:,}'.format(row.wholesale_price) if row.wholesale_price else '-' }}</td>
+        <td>
+          {% for combo in row.combos %}
+          <span class="combo-tag {{ 'has-price' if combo.price != 0 }}">
+            {{ combo.name or '(이름없음)' }}
+            {% if combo.price != 0 %}
+              <b style="color:#d97706;">+{{ '{:,}'.format(combo.price) }}</b>
+            {% else %}
+              <span style="color:#9ca3af;">+0</span>
+            {% endif %}
+          </span>
+          {% else %}
+          <span style="color:#9ca3af; font-size:12px;">정보 없음</span>
+          {% endfor %}
+        </td>
+        <td>
+          {% if row.status == 'pending' %}
+            <span class="badge badge-warning">대기중</span>
+          {% elif row.status == 'resolved' %}
+            <span class="badge badge-success">처리완료</span>
+            {% if row.resolved_at %}<br><span style="font-size:11px; color:#9ca3af;">{{ row.resolved_at }}</span>{% endif %}
+          {% else %}
+            <span class="badge badge-secondary">무시됨</span>
+          {% endif %}
+        </td>
+        <td style="font-size:12px; color:#9ca3af;">{{ row.created_at }}</td>
+        <td style="white-space:nowrap;">
+          {% if row.status == 'pending' %}
+          <button class="btn" style="background:#059669;color:white;"
+                  onclick="resolve({{ row.id }}, this)">추가금 초기화</button>
+          <button class="btn" style="background:#9ca3af;color:white; margin-top:4px;"
+                  onclick="ignoreRow({{ row.id }}, this)">무시</button>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty">
+    {% if status_filter == 'pending' %}
+    대기중인 불일치 항목이 없습니다.
+    {% else %}
+    항목이 없습니다.
+    {% endif %}
+  </div>
+  {% endif %}
+</div>
+
+<script>
+async function resolve(id, btn) {
+  if (!confirm('스마트스토어 옵션 추가금을 전부 0원으로 초기화하고 도매가 기준 가격을 반영합니다. 진행할까요?')) return;
+  btn.disabled = true;
+  btn.textContent = '처리중...';
+  try {
+    const r = await fetch(`/option-mismatch/${id}/resolve`, {method:'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      const row = document.getElementById(`row-${id}`);
+      if (row) row.style.opacity = '0.4';
+      btn.textContent = '완료';
+      btn.style.background = '#d1fae5';
+      btn.style.color = '#059669';
+    } else {
+      alert('오류: ' + (d.error || '알 수 없는 오류'));
+      btn.disabled = false;
+      btn.textContent = '추가금 초기화';
+    }
+  } catch(e) {
+    alert('요청 실패: ' + e.message);
+    btn.disabled = false;
+    btn.textContent = '추가금 초기화';
+  }
+}
+
+async function ignoreRow(id, btn) {
+  btn.disabled = true;
+  try {
+    const r = await fetch(`/option-mismatch/${id}/ignore`, {method:'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      const row = document.getElementById(`row-${id}`);
+      if (row) row.style.opacity = '0.4';
+      btn.textContent = '무시됨';
+    } else {
+      btn.disabled = false;
+    }
+  } catch(e) {
+    btn.disabled = false;
+  }
+}
+
+async function detectNow() {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.textContent = '감지 중...';
+  try {
+    const r = await fetch('/option-mismatch/detect', {method:'POST'});
+    const d = await r.json();
+    if (d.ok) {
+      alert(`감지 완료: 신규 ${d.created}건, 갱신 ${d.updated}건`);
+      location.reload();
+    }
+  } catch(e) {
+    alert('감지 실패: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '지금 감지 실행';
+  }
+}
+</script>
+{% endblock %}

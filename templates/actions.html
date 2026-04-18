@@ -205,6 +205,7 @@
         <th>유형</th>
         <th>상품명</th>
         <th>판매자관리코드</th>
+        <th>스마트스토어 상품번호</th>
         <th>판매상태</th>
         <th>전시상태</th>
         <th>도매가격</th>
@@ -226,6 +227,7 @@
         <td><span class="badge badge-{{ row.badge }}">{{ row.label }}</span></td>
         <td>{{ row.product_name }}</td>
         <td>{{ row.seller_code }}</td>
+        <td style="font-size:12px; color:#666;">{{ row.origin_product_no or '-' }}</td>
         <td><span class="badge badge-{{ row.sale_badge }}" style="font-size:11px;">{{ row.sale_label }}</span></td>
         <td><span class="badge badge-{{ row.display_badge }}" style="font-size:11px;">{{ row.display_label }}</span></td>
         {% if row.signal_type == 'OPTION_PRICE_CHANGE' %}

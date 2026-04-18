@@ -85,3 +85,22 @@ class ProductExclusion(db.Model):
     created_at = db.Column(db.DateTime, default=kst_now)
 
     store_product = db.relationship("StoreProduct", backref=db.backref("exclusion", uselist=False))
+
+
+class StoreOptionMismatch(db.Model):
+    """
+    도매처 단품 ↔ Naver 스토어 옵션 불일치 레코드.
+    master.options_text = NULL 이지만 Naver 상품에 optionCombinations 가 있는 경우 생성.
+    운영자가 확인 후 처리(추가금 초기화 or 무시)한다.
+    """
+    __tablename__ = "store_option_mismatches"
+
+    id               = db.Column(db.Integer, primary_key=True)
+    store_product_id = db.Column(db.Integer, db.ForeignKey("store_products.id"), unique=True, nullable=False)
+    naver_combos     = db.Column(db.Text)          # JSON: [{name, price}, ...]
+    status           = db.Column(db.String(20), default="pending")  # pending/resolved/ignored
+    resolved_at      = db.Column(db.DateTime)
+    created_at       = db.Column(db.DateTime, default=kst_now)
+    updated_at       = db.Column(db.DateTime, default=kst_now, onupdate=kst_now)
+
+    store_product = db.relationship("StoreProduct", backref=db.backref("option_mismatch", uselist=False))

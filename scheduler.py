@@ -39,8 +39,10 @@ def _collect_wholesaler(wholesaler_code: str, name: str, flask_app, run_time: st
     """단일 도매처 수집 + 마스터 업데이트 + 텔레그램 알림. 성공 여부 반환."""
     from app.collectors.orchestrator import run_collection
     from notifiers.telegram import notify_changes, notify_failure
+    from app import log_buffer
 
     logger.info(f"[scheduler] {name} 수집 시작")
+    log_buffer.push(f"[수집] {name} 시작")
     try:
         with flask_app.app_context():
             result = run_collection(wholesaler_code, trigger_type="scheduled")
@@ -52,7 +54,9 @@ def _collect_wholesaler(wholesaler_code: str, name: str, flask_app, run_time: st
                 run_time,
                 _build_changes(result.get("master_stats") or {}),
             )
-            logger.info(f"[scheduler] {name} 수집 완료 ({result.get('total_items', 0)}건)")
+            cnt = result.get("total_items", 0)
+            logger.info(f"[scheduler] {name} 수집 완료 ({cnt}건)")
+            log_buffer.push(f"[수집] {name} 완료 ({cnt}건)")
             return True
         elif result.get("not_configured"):
             logger.info(f"[scheduler] {name} 설정 미완료 — 건너뜀 (알림 없음)")
@@ -60,6 +64,7 @@ def _collect_wholesaler(wholesaler_code: str, name: str, flask_app, run_time: st
         else:
             error = result.get("error") or "알 수 없는 오류"
             logger.error(f"[scheduler] {name} 수집 실패: {error}")
+            log_buffer.push(f"[수집] {name} 실패: {str(error)[:100]}")
             notify_failure(name, str(error)[:300], run_time)
             return False
 
@@ -70,6 +75,7 @@ def _collect_wholesaler(wholesaler_code: str, name: str, flask_app, run_time: st
             logger.info(f"[scheduler] {name} 설정 미완료 — 건너뜀 (알림 없음): {err_str}")
         else:
             logger.error(f"[scheduler] {name} 수집 예외: {e}")
+            log_buffer.push(f"[수집] {name} 예외: {err_str[:100]}")
             notify_failure(name, err_str[:300], run_time)
         return False
 
@@ -241,11 +247,16 @@ def run_option_sync():
     run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
     logger.info(f"[scheduler] 옵션 동기화 시작 ({run_time})")
     try:
-        from app.store import sync_store_option_state
+        from app.store import sync_store_option_state, detect_option_mismatches
         result = sync_store_option_state(flask_app)
         logger.info(
             f"[scheduler] 옵션 동기화 완료 — "
             f"확인 {result.get('checked', 0)}건 / 기록 {result.get('matched', 0)}건"
+        )
+        m_result = detect_option_mismatches(flask_app)
+        logger.info(
+            f"[scheduler] 단품↔옵션 불일치 감지 — "
+            f"신규 {m_result.get('created', 0)}건 / 갱신 {m_result.get('updated', 0)}건"
         )
     except Exception as e:
         logger.error(f"[scheduler] 옵션 동기화 실패: {e}", exc_info=True)

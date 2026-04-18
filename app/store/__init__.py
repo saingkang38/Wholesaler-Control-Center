@@ -4,7 +4,7 @@ from flask import Blueprint, render_template, request, redirect, url_for, flash
 from flask_login import login_required
 from app.utils import kst_now
 from app.infrastructure import db
-from app.store.models import StoreProduct, NaverStore, SyncLog
+from app.store.models import StoreProduct, NaverStore, SyncLog, StoreOptionMismatch
 from app.master.models import MasterProduct
 from app.wholesalers.models import Wholesaler
 
@@ -531,6 +531,242 @@ def sync_store_option_state(flask_app=None) -> dict:
     finally:
         if ctx:
             ctx.pop()
+
+
+# ── 도매처 단품 ↔ Naver 옵션 불일치 감지 ────────────────────
+
+def detect_option_mismatches(flask_app=None) -> dict:
+    """
+    master.options_text = NULL 이지만 Naver 스토어에 optionCombinations 가 있는 상품을 탐지.
+    StoreOptionMismatch 레코드를 생성/갱신한다 (pending만 갱신, resolved/ignored는 건드리지 않음).
+    """
+    import json
+    from store.naver.products import get_origin_product
+
+    ctx = flask_app.app_context() if flask_app else None
+    if ctx:
+        ctx.push()
+
+    try:
+        stores = NaverStore.query.filter_by(is_active=True).all()
+        created = 0
+        updated = 0
+
+        for naver_store in stores:
+            # 도매처 단품(options_text NULL) + 매칭된 스토어 상품만 대상
+            targets = (
+                db.session.query(StoreProduct)
+                .join(MasterProduct, StoreProduct.master_product_id == MasterProduct.id)
+                .filter(
+                    StoreProduct.naver_store_id == naver_store.id,
+                    StoreProduct.origin_product_no != None,
+                    db.or_(MasterProduct.options_text == None, MasterProduct.options_text == ""),
+                    MasterProduct.price != None,
+                )
+                .all()
+            )
+
+            for sp in targets:
+                try:
+                    data = get_origin_product(
+                        sp.origin_product_no,
+                        naver_store.client_id,
+                        naver_store.client_secret,
+                    )
+                    combos = (
+                        data.get("originProduct", {})
+                        .get("detailAttribute", {})
+                        .get("optionInfo", {})
+                        .get("optionCombinations", [])
+                    )
+                    if not combos:
+                        # Naver에도 옵션 없음 → 기존 불일치 해소
+                        if sp.option_mismatch and sp.option_mismatch.status == "pending":
+                            sp.option_mismatch.status = "resolved"
+                            sp.option_mismatch.resolved_at = kst_now()
+                        continue
+
+                    combo_data = json.dumps(
+                        [{"name": c.get("optionName1") or c.get("optionName2") or "", "price": c.get("price", 0)}
+                         for c in combos],
+                        ensure_ascii=False,
+                    )
+
+                    existing = sp.option_mismatch
+                    if existing:
+                        if existing.status == "pending":
+                            existing.naver_combos = combo_data
+                            existing.updated_at = kst_now()
+                            updated += 1
+                        # resolved/ignored는 건드리지 않음
+                    else:
+                        db.session.add(StoreOptionMismatch(
+                            store_product_id=sp.id,
+                            naver_combos=combo_data,
+                            status="pending",
+                        ))
+                        created += 1
+                except Exception as e:
+                    logger.debug(f"[mismatch] origin={sp.origin_product_no} 오류: {e}")
+
+            try:
+                db.session.commit()
+            except Exception as ce:
+                db.session.rollback()
+                logger.error(f"[mismatch] 커밋 실패: {ce}")
+
+        logger.info(f"[mismatch] 감지 완료: 신규 {created}건, 갱신 {updated}건")
+        return {"created": created, "updated": updated}
+
+    finally:
+        if ctx:
+            ctx.pop()
+
+
+# ── 옵션 불일치 관리 라우트 ─────────────────────────────────
+
+@store_bp.route("/option-mismatch")
+@login_required
+def option_mismatch_page():
+    import json as _json
+    status_filter = request.args.get("status", "pending")
+    store_filter = request.args.get("store_id", type=int)
+
+    q = (
+        db.session.query(StoreOptionMismatch)
+        .join(StoreProduct, StoreOptionMismatch.store_product_id == StoreProduct.id)
+        .join(MasterProduct, StoreProduct.master_product_id == MasterProduct.id)
+    )
+    if status_filter != "all":
+        q = q.filter(StoreOptionMismatch.status == status_filter)
+    if store_filter:
+        q = q.filter(StoreProduct.naver_store_id == store_filter)
+
+    mismatches = q.order_by(StoreOptionMismatch.created_at.desc()).all()
+
+    rows = []
+    for m in mismatches:
+        sp = m.store_product
+        master = sp.master if sp else None
+        combos = _json.loads(m.naver_combos) if m.naver_combos else []
+        rows.append({
+            "id": m.id,
+            "store_product_id": sp.id if sp else None,
+            "status": m.status,
+            "product_name": master.product_name if master else "-",
+            "seller_code": sp.seller_management_code if sp else "-",
+            "origin_product_no": sp.origin_product_no if sp else None,
+            "store_name": sp.naver_store.store_name if sp and sp.naver_store else "-",
+            "wholesaler_name": master.wholesaler.name if master and master.wholesaler else "-",
+            "wholesale_price": master.price if master else None,
+            "combos": combos,
+            "created_at": m.created_at.strftime("%Y-%m-%d %H:%M") if m.created_at else "-",
+            "resolved_at": m.resolved_at.strftime("%Y-%m-%d %H:%M") if m.resolved_at else None,
+        })
+
+    pending_count = StoreOptionMismatch.query.filter_by(status="pending").count()
+    naver_stores = NaverStore.query.filter_by(is_active=True).order_by(NaverStore.store_name).all()
+    return render_template(
+        "option_mismatch.html",
+        rows=rows,
+        status_filter=status_filter,
+        store_filter=store_filter,
+        pending_count=pending_count,
+        naver_stores=naver_stores,
+    )
+
+
+@store_bp.route("/option-mismatch/<int:mismatch_id>/resolve", methods=["POST"])
+@login_required
+def resolve_option_mismatch(mismatch_id):
+    """Naver 옵션 추가금 전부 0으로 초기화 + 도매처 기준 가격 반영 → resolved"""
+    import json as _json
+    from store.naver.products import get_origin_product, update_origin_product
+    from app.settings import apply_margin
+
+    m = StoreOptionMismatch.query.get_or_404(mismatch_id)
+    sp = m.store_product
+    master = sp.master if sp else None
+
+    if not sp or not master or not sp.origin_product_no:
+        return {"ok": False, "error": "상품 정보 없음"}, 400
+    if not sp.naver_store:
+        return {"ok": False, "error": "스토어 정보 없음"}, 400
+
+    try:
+        from store.naver import update_price as _naver_update_price
+        client_id = sp.naver_store.client_id
+        client_secret = sp.naver_store.client_secret
+
+        product_data = get_origin_product(sp.origin_product_no, client_id, client_secret)
+        origin = product_data.get("originProduct", {})
+        option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
+        combinations = option_info.get("optionCombinations", [])
+
+        new_price = apply_margin(master.price)
+
+        if combinations:
+            # Step 1: 기존 salePrice 유지하면서 combo 추가금만 0으로 초기화
+            # (기존 salePrice 기준으로 0은 항상 허용 범위 → Naver 검증 통과)
+            for combo in combinations:
+                combo["price"] = 0
+            option_info["optionCombinations"] = combinations
+            origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
+            # salePrice, customerBenefit은 이 단계에서 변경 안 함
+            payload = {
+                "originProduct": origin,
+                "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
+            }
+            update_origin_product(sp.origin_product_no, payload, client_id, client_secret)
+            logger.info(
+                f"[mismatch] Step1: combo 추가금 → 0 초기화 "
+                f"(store_product_id={sp.id}, combo_count={len(combinations)})"
+            )
+
+        # Step 2: combo 전부 0이므로 이제 새 salePrice 적용 (항상 안전)
+        _naver_update_price(sp.origin_product_no, new_price, client_id=client_id, client_secret=client_secret)
+        logger.info(f"[mismatch] Step2: 가격 반영 (store_product_id={sp.id}, price={new_price})")
+
+        sp.sale_price = new_price
+        sp.option_list_price = new_price
+        sp.option_discount_amount = None
+        sp.applied_option_diffs = None
+        sp.applied_options_text = None
+        sp.applied_option_base_price = master.price
+
+        m.status = "resolved"
+        m.resolved_at = kst_now()
+        db.session.commit()
+
+        logger.info(
+            f"[mismatch] 추가금 초기화 완료: store_product_id={sp.id}, "
+            f"combo_count={len(combinations)}, price={new_price}"
+        )
+        return {"ok": True}
+
+    except Exception as e:
+        db.session.rollback()
+        logger.error(f"[mismatch] 처리 실패: {e}")
+        return {"ok": False, "error": str(e)}, 500
+
+
+@store_bp.route("/option-mismatch/<int:mismatch_id>/ignore", methods=["POST"])
+@login_required
+def ignore_option_mismatch(mismatch_id):
+    """이 불일치를 무시 처리 (이후 동기화에서도 다시 생성되지 않음)"""
+    m = StoreOptionMismatch.query.get_or_404(mismatch_id)
+    m.status = "ignored"
+    m.resolved_at = kst_now()
+    db.session.commit()
+    return {"ok": True}
+
+
+@store_bp.route("/option-mismatch/detect", methods=["POST"])
+@login_required
+def trigger_detect_mismatch():
+    """수동 감지 실행"""
+    result = detect_option_mismatches()
+    return {"ok": True, "created": result["created"], "updated": result["updated"]}
 
 
 # ── 관리 페이지 ──────────────────────────────────────────

@@ -38,7 +38,7 @@ def create_app():
     from app.master.models import MasterProduct, ProductEvent  # noqa: F401 - 테이블 생성용
     from app.store import store_bp
     from app.store import routes as _store_routes  # noqa: F401 — blueprint에 라우트 등록
-    from app.store.models import StoreProduct, NaverStore, ProductExclusion, SyncLog  # noqa: F401 - 테이블 생성용
+    from app.store.models import StoreProduct, NaverStore, ProductExclusion, SyncLog, StoreOptionMismatch  # noqa: F401 - 테이블 생성용
     from app.actions import actions_bp
     from app.actions.models import ActionSignal  # noqa: F401 - 테이블 생성용
     from app.settings import settings_bp

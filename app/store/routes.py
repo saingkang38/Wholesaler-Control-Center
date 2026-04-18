@@ -302,6 +302,58 @@ def logs_page():
     return render_template("logs.html", logs=logs, collection_runs=collection_runs)
 
 
+@store_bp.route("/logs/live")
+@login_required
+def logs_live_page():
+    from app.execution_logs.models import CollectionRun
+    running = CollectionRun.query.filter_by(status="running").order_by(CollectionRun.started_at.desc()).all()
+    return render_template("log_live.html", running=running)
+
+
+@store_bp.route("/logs/live-stream")
+@login_required
+def logs_live_stream():
+    import time, json
+    from app import log_buffer
+
+    since_str = request.args.get("since", "0")
+    try:
+        since = float(since_str)
+    except ValueError:
+        since = 0.0
+
+    def generate():
+        nonlocal since
+        while True:
+            entries = log_buffer.get_since(since)
+            for e in entries:
+                since = e["t"]
+                yield f"data: {json.dumps({'t': e['t'], 'msg': e['msg']}, ensure_ascii=False)}\n\n"
+            time.sleep(1)
+
+    resp = current_app.response_class(
+        generate(),
+        mimetype="text/event-stream",
+    )
+    resp.headers["Cache-Control"] = "no-cache"
+    resp.headers["X-Accel-Buffering"] = "no"
+    return resp
+
+
+@store_bp.route("/api/running-collections")
+@login_required
+def api_running_collections():
+    from app.execution_logs.models import CollectionRun
+    running = CollectionRun.query.filter_by(status="running").order_by(CollectionRun.started_at.desc()).all()
+    result = []
+    for r in running:
+        result.append({
+            "name": r.wholesaler.wholesaler_name if r.wholesaler else "알 수 없음",
+            "started_at": r.started_at.strftime("%H:%M:%S") if r.started_at else None,
+        })
+    return jsonify({"running": result})
+
+
 @store_bp.route("/store-products/<int:product_id>/edit-form")
 @login_required
 def store_product_edit_form(product_id):
