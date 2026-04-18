@@ -492,6 +492,7 @@ def sync_store_option_state(flask_app=None) -> dict:
                         sp.naver_cached_additions = additions_str
 
                     if is_match:
+                        sp.applied_options_text = sp.master.options_text
                         sp.applied_option_diffs = sp.master.option_diffs
                         sp.applied_option_base_price = sp.master.price
                         matched += 1

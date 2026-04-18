@@ -155,10 +155,11 @@ def actions_page():
                         current_option_rows = [(n, None) for n in cur_names]
                 else:
                     current_option_rows = [(n, None) for n in cur_names]
-            # 적용될 새 옵션 — 도매 원가 diff + 마진 적용 추가금
-            new_opts_text = suggested.get("options_text") or ""
-            new_diffs_text = suggested.get("option_diffs") or ""
-            new_base = suggested.get("base_price")
+            # 적용될 새 옵션 — master에서 최신 데이터 우선, 없으면 suggested_value 폴백
+            _m = s.master
+            new_opts_text = (_m.options_text if _m else None) or suggested.get("options_text") or ""
+            new_diffs_text = (_m.option_diffs if _m else None) or suggested.get("option_diffs") or ""
+            new_base = (_m.price if _m else None) or suggested.get("base_price")
             if new_opts_text:
                 names = [n.strip() for n in new_opts_text.split("\n") if n.strip()]
                 raw_diffs = []
@@ -388,8 +389,9 @@ def bulk_resolve():
             signal.resolved_at = kst_now()
             if signal.signal_type in ("OPTION_ADD", "OPTION_PRICE_CHANGE") and signal.store:
                 _sugg = json.loads(signal.suggested_value or "{}")
-                if _sugg.get("option_diffs"):
-                    signal.store.applied_option_diffs = _sugg["option_diffs"]
+                if _sugg.get("options_text") or _sugg.get("option_diffs"):
+                    signal.store.applied_options_text = _sugg.get("options_text")
+                    signal.store.applied_option_diffs = _sugg.get("option_diffs")
                     signal.store.applied_option_base_price = _sugg.get("base_price")
             db.session.commit()
             ok_count += 1
@@ -419,8 +421,9 @@ def resolve_signal(signal_id):
             # OPTION_ADD/OPTION_PRICE_CHANGE 건너뜀 → 현재 상태를 "적용됨"으로 기록
             if signal.signal_type in ("OPTION_ADD", "OPTION_PRICE_CHANGE") and signal.store:
                 _sugg = json.loads(signal.suggested_value or "{}")
-                if _sugg.get("option_diffs"):
-                    signal.store.applied_option_diffs = _sugg["option_diffs"]
+                if _sugg.get("options_text") or _sugg.get("option_diffs"):
+                    signal.store.applied_options_text = _sugg.get("options_text")
+                    signal.store.applied_option_diffs = _sugg.get("option_diffs")
                     signal.store.applied_option_base_price = _sugg.get("base_price")
             db.session.commit()
     except Exception as e:
@@ -595,6 +598,20 @@ def _execute_price_option_no_extra(store, master, suggested: dict, client_id: st
             f"[actions][option_no_extra] 스토어 옵션 없음 → 마스터 {len(combinations)}개 신규 생성: store_id={store.id}"
         )
 
+    # master에 없는 옵션 제거 (옵션 구조 동기화)
+    master_names = [n.strip() for n in (master.options_text or "").split("\n") if n.strip()]
+    if master_names:
+        filtered = [
+            c for c in combinations
+            if (c.get("optionName1") or c.get("optionName2") or "") in master_names
+        ]
+        if filtered:
+            combinations = filtered
+            logger.info(
+                f"[actions][option_no_extra] 옵션 구조 동기화: "
+                f"{len(combinations)}개 유지 (master 기준): store_id={store.id}"
+            )
+
     for combo in combinations:
         combo["price"] = 0  # 추가금 없음 — 전부 0원
 
@@ -612,6 +629,9 @@ def _execute_price_option_no_extra(store, master, suggested: dict, client_id: st
     store.sale_price = new_price
     store.option_list_price = new_price
     store.option_discount_amount = None
+    store.applied_options_text = master.options_text   # 적용된 옵션명 기록
+    store.applied_option_diffs = None                  # 추가금 없음
+    store.applied_option_base_price = wholesale_price  # 도매가 기록
     logger.info(f"[actions][option_no_extra] 가격 반영: store_id={store.id}, price={new_price}")
 
 
@@ -746,6 +766,7 @@ def _execute_price_option_with_extra(store, master, suggested: dict, client_id: 
     store.sale_price = new_price
     store.option_list_price = pricing["list_price"]
     store.option_discount_amount = pricing["discount"] or None
+    store.applied_options_text = master.options_text
     store.applied_option_diffs = master.option_diffs
     store.applied_option_base_price = wholesale_price
     logger.info(
@@ -954,14 +975,17 @@ def _execute_signal(signal: ActionSignal):
                 build_supplement_payload = lambda *a, **kw: []
                 sync_addon_supplement_ids = lambda *a, **kw: None
 
-            base_price   = suggested.get("base_price")
-            option_diffs = suggested.get("option_diffs", "")
-            options_text = suggested.get("options_text", "")
+            base_price   = suggested.get("base_price") or (master.price if master else None)
+            option_diffs = suggested.get("option_diffs") or (master.option_diffs if master else None) or ""
+            options_text = suggested.get("options_text") or (master.options_text if master else "") or ""
 
-            if not base_price or not option_diffs or not options_text:
-                raise ValueError("OPTION_ADD: 옵션 데이터 부족")
+            if not base_price or not options_text:
+                raise ValueError("OPTION_ADD: base_price 또는 options_text 없음")
 
             master_names = [n.strip() for n in options_text.split("\n") if n.strip()]
+            # option_diffs 없으면 추가금 없음(전부 0)으로 처리
+            if not option_diffs:
+                option_diffs = "\n".join(["0"] * len(master_names))
             pricing = calculate_option_pricing(base_price, option_diffs)
             additions = pricing["additions"]
             policies = get_option_policies(master.id)  # {name: keep/addon/exclude}
@@ -1008,8 +1032,11 @@ def _execute_signal(signal: ActionSignal):
                     "usable":       True,
                 })
 
-            if not new_combos:  # 안전장치
-                new_combos = existing_combos or [
+            if not new_combos:  # 안전장치: master 기준 강제 생성 (기존 Naver 콤보 복원 금지)
+                logger.warning(
+                    f"[actions][option_add] 매칭된 콤보 없음 → master 기준 강제 생성: store_id={store.id}"
+                )
+                new_combos = [
                     {"optionName1": n, "price": additions[i] if i < len(additions) else 0,
                      "stockQuantity": 999, "usable": True}
                     for i, n in enumerate(master_names)
@@ -1055,7 +1082,8 @@ def _execute_signal(signal: ActionSignal):
             store.sale_price = pricing["sale_price"]
             store.option_list_price = pricing["list_price"]
             store.option_discount_amount = pricing["discount"] if pricing["discount"] > 0 else None
-            store.applied_option_diffs = option_diffs
+            store.applied_options_text = options_text
+            store.applied_option_diffs = master.option_diffs  # 정규화된 master 값 (추가금 없으면 None)
             store.applied_option_base_price = base_price
 
             # 옵션 구조+가격 함께 처리됐으므로 pending OPTION_PRICE_CHANGE 자동 스킵
@@ -1368,7 +1396,14 @@ def _check_option_add_signals(master: MasterProduct, store: StoreProduct, stats:
     key = (master.id, store.id, "OPTION_ADD")
     existing = prev_opts.get(key)
 
-    if not master.options_text or not _has_extra_price(master):
+    if not master.options_text:
+        if existing:
+            db.session.delete(existing)
+            prev_opts.pop(key, None)
+            pending.discard(key)
+        return
+    # 추가금 없는 상품: applied_options_text 이력이 없으면 비교 기준 없으므로 스킵 (flooding 방지)
+    if not _has_extra_price(master) and store.applied_options_text is None:
         if existing:
             db.session.delete(existing)
             prev_opts.pop(key, None)
@@ -1378,7 +1413,8 @@ def _check_option_add_signals(master: MasterProduct, store: StoreProduct, stats:
         return
 
     # 1순위: StoreProduct에 저장된 적용 이력 확인 (ActionSignal 이력 없어도 동작)
-    if (store.applied_option_diffs == master.option_diffs and
+    if (store.applied_options_text == master.options_text and
+            store.applied_option_diffs == master.option_diffs and
             store.applied_option_base_price == master.price):
         if existing:
             db.session.delete(existing)
