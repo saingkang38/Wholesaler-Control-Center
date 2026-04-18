@@ -19,3 +19,4 @@ zentrade_debug.txt
 where
 scheduler_out.txt
 flask_out.txt
+flask_out_check.txt
