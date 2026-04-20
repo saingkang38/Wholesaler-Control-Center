@@ -313,7 +313,7 @@ class Ds1008Collector(BaseCollector):
                 img["src"] = real_src
             detail_html = detail_el.decode_contents().strip()
 
-        return {
+        result = {
             "price": price,
             "origin": origin,
             "own_code": own_code,
@@ -325,6 +325,14 @@ class Ds1008Collector(BaseCollector):
                 "옵션가": option_prices_text,
             },
         }
+
+        # 품절 감지 (cafe24 표준 OG 태그)
+        avail_meta = soup.select_one("meta[property='product:availability']")
+        if avail_meta:
+            avail = avail_meta.get("content", "").lower()
+            result["status"] = "out_of_stock" if ("out" in avail or "sold" in avail) else "active"
+
+        return result
 
     # ──────────────────────────────────────────────
     # 테스트 엑셀 저장

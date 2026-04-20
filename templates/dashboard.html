@@ -14,6 +14,32 @@
     </div>
 </div>
 
+<!-- 도매처 상태 팝업 -->
+<div id="ws-status-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:1000; align-items:center; justify-content:center;">
+    <div style="background:#fff; border-radius:10px; width:90%; max-width:560px; overflow:hidden;">
+        <div style="display:flex; justify-content:space-between; align-items:center; padding:16px 20px; border-bottom:1px solid #eee; background:#2c3e50;">
+            <span id="ws-modal-title" style="font-size:15px; font-weight:bold; color:#fff;"></span>
+            <button onclick="closeWsModal()" style="background:none; border:none; font-size:20px; cursor:pointer; color:#aaa;">×</button>
+        </div>
+        <div style="padding:16px 20px;">
+            <div id="ws-modal-current" style="margin-bottom:14px; font-size:13px;"></div>
+            <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                <thead>
+                    <tr style="background:#f8f9fa;">
+                        <th style="padding:7px 8px; text-align:left; color:#666; font-weight:600;">시작</th>
+                        <th style="padding:7px 8px; text-align:left; color:#666; font-weight:600;">종료</th>
+                        <th style="padding:7px 8px; text-align:right; color:#666; font-weight:600;">건수</th>
+                        <th style="padding:7px 8px; text-align:left; color:#666; font-weight:600;">상태</th>
+                        <th style="padding:7px 8px; text-align:left; color:#666; font-weight:600;">비고</th>
+                    </tr>
+                </thead>
+                <tbody id="ws-modal-history"></tbody>
+            </table>
+        </div>
+        <div id="ws-modal-actions" style="display:flex; gap:8px; padding:0 20px 16px; justify-content:flex-end;"></div>
+    </div>
+</div>
+
 <!-- 수집 확인 팝업 -->
 <div id="collect-confirm-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:1000; align-items:center; justify-content:center;">
     <div style="background:#fff; border-radius:10px; width:320px; padding:24px; text-align:center;">
@@ -419,7 +445,7 @@ function updateProgressPanel() {
                     }
                 }
 
-                return '<div class="ws-card ' + stateClass + '">' +
+                return '<div class="ws-card ' + stateClass + '" onclick="openStatusModal(\'' + ws.code + '\')" style="cursor:pointer;">' +
                     '<div style="display:flex; justify-content:space-between; align-items:center;">' +
                         '<span style="font-size:13px; font-weight:bold; color:#333;">' + ws.name + '</span>' +
                         stateIcon +
@@ -441,6 +467,108 @@ function updateProgressPanel() {
 // 페이지 로드 즉시 + 5초마다 갱신
 updateProgressPanel();
 setInterval(updateProgressPanel, 5000);
+
+// ── 도매처 상태 팝업 ───────────────────────────────────────────
+let _wsModalCode = null;
+let _wsModalTimer = null;
+
+function openStatusModal(code) {
+    _wsModalCode = code;
+    document.getElementById('ws-status-modal').style.display = 'flex';
+    _loadWsStatus();
+    _wsModalTimer = setInterval(_loadWsStatus, 5000);
+}
+
+function closeWsModal() {
+    document.getElementById('ws-status-modal').style.display = 'none';
+    clearInterval(_wsModalTimer);
+    _wsModalCode = null;
+}
+
+document.getElementById('ws-status-modal').addEventListener('click', function(e) {
+    if (e.target === this) closeWsModal();
+});
+
+function _loadWsStatus() {
+    if (!_wsModalCode) return;
+    fetch('/api/wholesaler-status/' + _wsModalCode)
+        .then(r => r.json())
+        .then(data => {
+            document.getElementById('ws-modal-title').textContent = data.name + ' 수집 상태';
+
+            // 현재 상태
+            const cur = data.current;
+            let curHtml = '';
+            if (cur) {
+                const elapsed = cur.elapsed_minutes != null
+                    ? (cur.elapsed_minutes >= 60
+                        ? Math.floor(cur.elapsed_minutes / 60) + '시간 ' + (cur.elapsed_minutes % 60) + '분'
+                        : cur.elapsed_minutes + '분') + ' 경과'
+                    : '';
+                curHtml = '<div style="background:#fff8e1; border:1px solid #ffe082; border-radius:6px; padding:10px 14px;">'
+                    + '<span style="color:#c77d00; font-weight:bold;">수집 중</span>'
+                    + (elapsed ? '<span style="color:#888; margin-left:10px; font-size:12px;">' + elapsed + '</span>' : '')
+                    + '<span style="color:#999; margin-left:10px; font-size:12px;">' + (cur.started_at || '') + ' 시작</span>'
+                    + '</div>';
+            } else {
+                curHtml = '<div style="color:#aaa; font-size:12px; padding:6px 0;">현재 수집 중이 아닙니다</div>';
+            }
+            document.getElementById('ws-modal-current').innerHTML = curHtml;
+
+            // 이력 테이블
+            const statusLabel = { success: '성공', failed: '실패', cancelled: '중단', running: '수집중', pending: '대기', skipped: '건너뜀' };
+            const statusColor = { success: '#27ae60', failed: '#e74c3c', cancelled: '#e67e22', running: '#c77d00', pending: '#aaa', skipped: '#aaa' };
+            let rows = '';
+            (data.history || []).forEach(r => {
+                const sc = r.status;
+                const label = statusLabel[sc] || sc;
+                const color = statusColor[sc] || '#666';
+                const cnt = r.total_items != null ? r.total_items.toLocaleString() + '건' : '-';
+                const err = r.error_summary ? r.error_summary.substring(0, 30) : '';
+                rows += '<tr style="border-bottom:1px solid #f5f5f5;">'
+                    + '<td style="padding:6px 8px; color:#555;">' + (r.started_at || '-') + '</td>'
+                    + '<td style="padding:6px 8px; color:#999;">' + (r.finished_at || '-') + '</td>'
+                    + '<td style="padding:6px 8px; text-align:right; color:#555;">' + cnt + '</td>'
+                    + '<td style="padding:6px 8px; color:' + color + '; font-weight:bold;">' + label + '</td>'
+                    + '<td style="padding:6px 8px; color:#e74c3c; font-size:11px;">' + err + '</td>'
+                    + '</tr>';
+            });
+            document.getElementById('ws-modal-history').innerHTML = rows || '<tr><td colspan="5" style="padding:10px; color:#aaa;">이력 없음</td></tr>';
+
+            // 버튼
+            let btns = '';
+            if (cur) {
+                btns += '<button onclick="cancelCollect()" style="padding:8px 18px; background:#e74c3c; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px;">수집 중단</button>';
+            } else {
+                btns += '<button onclick="startCollectFromModal()" style="padding:8px 18px; background:#2c3e50; color:#fff; border:none; border-radius:6px; cursor:pointer; font-size:13px;">수집 시작</button>';
+            }
+            btns += '<button onclick="closeWsModal()" style="padding:8px 18px; background:#eee; color:#555; border:none; border-radius:6px; cursor:pointer; font-size:13px;">닫기</button>';
+            document.getElementById('ws-modal-actions').innerHTML = btns;
+        })
+        .catch(() => {});
+}
+
+function cancelCollect() {
+    if (!_wsModalCode) return;
+    if (!confirm('수집을 중단하시겠습니까?')) return;
+    fetch('/api/collect/' + _wsModalCode + '/cancel', { method: 'POST' })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                _loadWsStatus();
+                updateProgressPanel();
+            } else {
+                alert(data.error || '중단 실패');
+            }
+        });
+}
+
+function startCollectFromModal() {
+    if (!_wsModalCode) return;
+    const code = _wsModalCode;
+    closeWsModal();
+    triggerCollect(code);
+}
 </script>
 
 {% endblock %}

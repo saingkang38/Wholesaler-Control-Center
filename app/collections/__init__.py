@@ -84,6 +84,85 @@ def trigger_collection(wholesaler_code):
                 _running.discard(wholesaler_code)
 
 
+@collections_bp.route("/api/wholesaler-status/<code>")
+@login_required
+def wholesaler_status(code):
+    from datetime import datetime
+    from app.execution_logs.models import CollectionRun
+    from app.wholesalers.models import Wholesaler
+
+    wholesaler = Wholesaler.query.filter_by(code=code).first()
+    if not wholesaler:
+        return jsonify({"error": "not found"}), 404
+
+    current_run = (
+        CollectionRun.query
+        .filter_by(wholesaler_id=wholesaler.id, status="running")
+        .order_by(CollectionRun.started_at.desc())
+        .first()
+    )
+    history = (
+        CollectionRun.query
+        .filter_by(wholesaler_id=wholesaler.id)
+        .order_by(CollectionRun.started_at.desc())
+        .limit(5)
+        .all()
+    )
+
+    def fmt(r):
+        elapsed = None
+        if r.started_at and r.status == "running":
+            elapsed = int((datetime.utcnow() - r.started_at).total_seconds() // 60)
+        return {
+            "id": r.id,
+            "status": r.status,
+            "started_at": r.started_at.strftime("%m-%d %H:%M") if r.started_at else None,
+            "finished_at": r.finished_at.strftime("%H:%M") if r.finished_at else None,
+            "total_items": r.total_items,
+            "error_summary": r.error_summary,
+            "elapsed_minutes": elapsed,
+        }
+
+    return jsonify({
+        "code": wholesaler.code,
+        "name": wholesaler.name,
+        "current": fmt(current_run) if current_run else None,
+        "history": [fmt(r) for r in history],
+    })
+
+
+@collections_bp.route("/api/collect/<wholesaler_code>/cancel", methods=["POST"])
+@login_required
+def cancel_collection(wholesaler_code):
+    from datetime import datetime
+    from app.execution_logs.models import CollectionRun
+    from app.wholesalers.models import Wholesaler
+    from app.infrastructure import db
+
+    wholesaler = Wholesaler.query.filter_by(code=wholesaler_code).first()
+    if not wholesaler:
+        return jsonify({"error": "not found"}), 404
+
+    run = (
+        CollectionRun.query
+        .filter_by(wholesaler_id=wholesaler.id, status="running")
+        .order_by(CollectionRun.started_at.desc())
+        .first()
+    )
+    if not run:
+        return jsonify({"success": False, "error": "진행 중인 수집이 없습니다"}), 404
+
+    run.status = "cancelled"
+    run.finished_at = datetime.utcnow()
+    run.error_summary = "사용자 수동 중단"
+    db.session.commit()
+
+    with _running_lock:
+        _running.discard(wholesaler_code)
+
+    return jsonify({"success": True})
+
+
 @collections_bp.route("/api/collection-status")
 def collection_status():
     from flask_login import current_user

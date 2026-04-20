@@ -114,8 +114,18 @@ class SikjajeCollector(BaseCollector):
 
             sale_yn = data.get("판매여부(Y/N)", "Y").strip().upper()
             status = "active" if sale_yn == "Y" else "discontinued"
+            if status == "active" and stock_qty is not None and stock_qty <= 0:
+                status = "out_of_stock"
 
             category = data.get("본사_소분류", "") or data.get("본사_중분류", "") or None
+
+            extra = {h: v for h, v in data.items()}
+            opt_name = data.get("옵션명", "") or data.get("옵션", "")
+            opt_price = data.get("옵션가", "")
+            if opt_name:
+                extra["옵션"] = opt_name
+            if opt_price:
+                extra["옵션가"] = opt_price
 
             items.append({
                 "source_product_code": source_code,
@@ -132,7 +142,7 @@ class SikjajeCollector(BaseCollector):
                 "detail_description": data.get("상세설명(HTML)", ""),
                 "shipping_fee": self._parse_price(data.get("배송비(기본)", "")),
                 "shipping_condition": None,
-                "extra": {h: v for h, v in data.items()},
+                "extra": extra,
             })
 
         return items

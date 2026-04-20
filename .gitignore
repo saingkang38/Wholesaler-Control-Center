@@ -20,3 +20,4 @@ where
 scheduler_out.txt
 flask_out.txt
 flask_out_check.txt
+server.pid

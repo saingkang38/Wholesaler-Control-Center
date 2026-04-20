@@ -247,12 +247,36 @@ class DometopiaCollector(BaseCollector):
             if not source_code:
                 continue
 
+            # 상태 감지 (유연한 컬럼명 탐색)
+            status = "active"
+            sale_flag = (
+                data.get("판매여부", "") or data.get("상태", "") or
+                data.get("재고여부", "") or data.get("사용여부", "")
+            ).strip().upper()
+            if sale_flag in ("N", "0", "품절", "판매중지", "미사용", "OUT"):
+                status = "out_of_stock"
+            elif sale_flag in ("단종", "DISCONTINUED"):
+                status = "discontinued"
+            stock_text = data.get("재고수량", "") or data.get("재고", "") or data.get("수량", "")
+            if stock_text and status == "active":
+                sq = self._parse_price(stock_text)
+                if sq is not None and sq <= 0:
+                    status = "out_of_stock"
+
+            extra = {h: v for h, v in data.items()}
+            opt_name = data.get("옵션명", "") or data.get("옵션", "")
+            opt_price = data.get("옵션가", "")
+            if opt_name:
+                extra["옵션"] = opt_name
+            if opt_price:
+                extra["옵션가"] = opt_price
+
             items.append({
                 "source_product_code": source_code,
                 "product_name": data.get("상품명", ""),
                 "price": self._parse_price(data.get("판매가", "")),
                 "supply_price": None,
-                "status": "active",
+                "status": status,
                 "image_url": data.get("이미지", "") or None,
                 "detail_url": "",
                 "stock_qty": None,
@@ -262,7 +286,7 @@ class DometopiaCollector(BaseCollector):
                 "detail_description": "",
                 "shipping_fee": None,
                 "shipping_condition": None,
-                "extra": {h: v for h, v in data.items()},
+                "extra": extra,
             })
 
         return items

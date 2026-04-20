@@ -1,0 +1,3 @@
+code='null', is_active=True
+전체 도매처 수: 12, codes: ['ownerclan', 'jtckorea', 'metaldiy', 'ds1008', 'hitdesign', 'mro3', 'feelwoo', 'sikjaje', 'onch3', 'zentrade', 'chingudome', 'dometopia']
+조회 결과: None

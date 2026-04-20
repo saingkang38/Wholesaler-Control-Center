@@ -15,7 +15,7 @@
     <div id="running-banner" style="margin-bottom:12px; {% if not running %}display:none;{% endif %}">
         {% for run in running %}
         <div style="background:#fff3cd; border:1px solid #ffc107; border-radius:6px; padding:8px 14px; margin-bottom:6px; font-size:13px;">
-            ⏳ <strong>수집 중:</strong> {{ run.wholesaler.wholesaler_name if run.wholesaler else '알 수 없음' }}
+            ⏳ <strong>수집 중:</strong> {{ run.wholesaler.name if run.wholesaler else '알 수 없음' }}
             — 시작 {{ run.started_at.strftime('%H:%M:%S') if run.started_at else '-' }}
         </div>
         {% endfor %}

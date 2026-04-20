@@ -302,6 +302,25 @@ class FeelwooCollector(BaseCollector):
             # 전체 컬럼 extra에 저장
             extra = {h: cell(i) for i, h in enumerate(headers) if h}
 
+            # 옵션 표준화: 컬럼명과 무관하게 extra["옵션"]/extra["옵션가"]로 통일
+            if idx_option is not None:
+                opt_val = cell(idx_option)
+                if opt_val:
+                    extra["옵션"] = opt_val
+            if idx_option_price is not None:
+                opt_price_val = cell(idx_option_price)
+                if opt_price_val and price:
+                    # 옵션가 컬럼이 절대가격이면 차액으로 변환, 이미 차액이면 그대로
+                    try:
+                        parsed = int("".join(c for c in str(opt_price_val) if c.isdigit() or c in "+-"))
+                        # 절대가격 여부 판단: 기준가보다 크고 +/- 부호 없으면 절대가격
+                        if "+" not in str(opt_price_val) and "-" not in str(opt_price_val) and parsed > price * 0.5:
+                            extra["옵션가"] = str(parsed - price)
+                        else:
+                            extra["옵션가"] = opt_price_val
+                    except (ValueError, TypeError):
+                        extra["옵션가"] = opt_price_val
+
             items.append({
                 "source_product_code": source_code,
                 "product_name": product_name,

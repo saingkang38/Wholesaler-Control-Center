@@ -57,8 +57,9 @@ def changes():
     )
 
 # 연속 미수집 N일 이상 → 상태 전환 기준
-MISSING_DAYS_CANDIDATE = 3    # missing_candidate
-MISSING_DAYS_DISCONTINUED = 7  # discontinued_candidate
+MISSING_DAYS_CANDIDATE = 3    # active → missing
+MISSING_DAYS_DISCONTINUED = 7  # missing → discontinued_candidate
+MISSING_DAYS_FINAL = 365       # discontinued_candidate → discontinued (1년 이상 미수집)
 
 
 def process_master_update(wholesaler_id: int, items: list, snapshot_date: date = None) -> dict:
@@ -80,6 +81,7 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
         "restocked": 0,
         "missing": 0,
         "discontinued_candidate": 0,
+        "discontinued": 0,
         "price_change": 0,
         "image_change": 0,
         "name_change": 0,
@@ -102,7 +104,7 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
             _opt_diffs = extra.get("옵션가")
             _opt_stocks = extra.get("옵션재고")
             _init_status = "active"
-            if item.get("status") == "out_of_stock" and not _opt_text:
+            if item.get("status") == "out_of_stock":
                 _init_status = "out_of_stock"
             master = MasterProduct(
                 wholesaler_id=wholesaler_id,
@@ -141,7 +143,7 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
             prev_status = master.current_status
 
             # 이전에 미수집/단종후보/품절이었으면 재입고
-            if prev_status in ("missing", "discontinued_candidate", "out_of_stock"):
+            if prev_status in ("missing", "discontinued_candidate", "out_of_stock", "discontinued"):
                 new_events.append(ProductEvent(
                     master_product_id=master.id,
                     event_type="RESTOCKED",
@@ -262,9 +264,9 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
             master.last_seen_date = snapshot_date
             master.missing_days = 0
 
-            # 품절 상태 처리: 옵션 없는 상품이 OOS로 수집되면 out_of_stock으로 표시
+            # 품절 상태 처리: OOS로 수집되면 옵션 유무와 무관하게 out_of_stock으로 표시
             item_status = item.get("status", "active")
-            if item_status == "out_of_stock" and not new_options:
+            if item_status == "out_of_stock":
                 if master.current_status != "out_of_stock":
                     master.last_status_change_date = snapshot_date
                 master.current_status = "out_of_stock"
@@ -336,7 +338,21 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
 
         master.missing_days = (master.missing_days or 0) + 1
 
-        if master.missing_days >= MISSING_DAYS_DISCONTINUED:
+        if master.missing_days >= MISSING_DAYS_FINAL:
+            # 1년 이상 미수집 → 단종 확정
+            if master.current_status != "discontinued":
+                master.current_status = "discontinued"
+                master.last_status_change_date = snapshot_date
+                new_events.append(ProductEvent(
+                    master_product_id=master.id,
+                    event_type="DISCONTINUED",
+                    event_date=snapshot_date,
+                    before_value=json.dumps({"missing_days": master.missing_days}, ensure_ascii=False),
+                ))
+                stats["discontinued"] += 1
+            continue  # 단종 확정, 아래 후보 전환 로직 스킵
+
+        elif master.missing_days >= MISSING_DAYS_DISCONTINUED:
             if master.current_status != "discontinued_candidate":
                 master.current_status = "discontinued_candidate"
                 master.last_status_change_date = snapshot_date

@@ -334,6 +334,13 @@ class HitdesignCollector(BaseCollector):
             result["price"] = price
         if category:
             result["category_name"] = category
+
+        # 품절 감지 (cafe24 표준 OG 태그)
+        avail_meta = soup.select_one("meta[property='product:availability']")
+        if avail_meta:
+            avail = avail_meta.get("content", "").lower()
+            result["status"] = "out_of_stock" if ("out" in avail or "sold" in avail) else "active"
+
         return result
 
     # ──────────────────────────────────────────────

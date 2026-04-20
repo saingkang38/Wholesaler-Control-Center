@@ -1049,8 +1049,9 @@ def _execute_signal(signal: ActionSignal):
             store.sale_price = list_price - discount
             store.option_list_price = list_price
             store.option_discount_amount = discount if discount > 0 else None
-            store.applied_option_diffs = suggested.get("option_diffs", "")
+            store.applied_option_diffs = suggested.get("option_diffs") or None
             store.applied_option_base_price = suggested.get("base_price")
+            store.applied_options_text = suggested.get("options_text") or master.options_text
 
         # ── 옵션 구성 전체 교체: 추가금 있는 상품 전용 ───────────────────
         elif signal.signal_type == "OPTION_ADD":
@@ -1614,8 +1615,8 @@ def _check_status_signals(master: MasterProduct, store: StoreProduct, stats: dic
             stats["SUSPEND_NEEDED"] += 1
 
     elif master_status == "out_of_stock":
-        # 옵션 없는 상품이 명시적으로 품절 → 상품 전체 중지
-        if store_active and not master.options_text and (master.id, store.id, "SUSPEND_NEEDED") not in pending:
+        # 도매처에서 품절 → 상품 전체 중지 (옵션 유무 무관)
+        if store_active and (master.id, store.id, "SUSPEND_NEEDED") not in pending:
             db.session.add(ActionSignal(
                 master_product_id=master.id,
                 store_product_id=store.id,

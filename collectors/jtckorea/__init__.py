@@ -128,9 +128,6 @@ class JtckoreaCollector(BaseCollector):
                 if price is not None:
                     break
 
-        # 상태: 기본 active (이 사이트는 HTML에 신뢰할 품절 지표 없음)
-        status = "active"
-
         # dl > dt/dd 에서 원산지, 자체코드, 배송비 파싱
         origin = None
         own_code = None
@@ -172,7 +169,6 @@ class JtckoreaCollector(BaseCollector):
             detail_html = f'<div style="text-align:center;">{inner_html}</div>'
 
         result = {
-            "status": status,
             "origin": origin,
             "own_code": own_code,
             "detail_description": detail_html,
@@ -254,7 +250,7 @@ class JtckoreaCollector(BaseCollector):
                 "source_product_code": goods_no,
                 "product_name": product_name,
                 "price": None,
-                "status": "active",
+                "status": "out_of_stock" if cate_name == "재입고요청/품절" else "active",
                 "image_url": image_url,
                 "detail_url": BASE_URL + "/goods/goods_view.php?goodsNo=" + goods_no,
                 "category_name": cate_name,

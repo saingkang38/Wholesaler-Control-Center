@@ -348,7 +348,7 @@ def api_running_collections():
     result = []
     for r in running:
         result.append({
-            "name": r.wholesaler.wholesaler_name if r.wholesaler else "알 수 없음",
+            "name": r.wholesaler.name if r.wholesaler else "알 수 없음",
             "started_at": r.started_at.strftime("%H:%M:%S") if r.started_at else None,
         })
     return jsonify({"running": result})

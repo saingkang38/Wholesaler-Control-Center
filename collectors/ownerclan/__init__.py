@@ -126,53 +126,34 @@ class OwnerclanCollector(BaseCollector):
     # ──────────────────────────────────────────────
 
     def _run_full(self, login_id: str, login_pw: str) -> dict:
-        items = []
         try:
+            # Phase 1: 트리거 — 브라우저 ~1분 사용 후 즉시 종료
             with sync_playwright() as p:
                 browser = p.chromium.launch(headless=True)
-                context = browser.new_context(accept_downloads=True)
-                page = context.new_page()
-                page.set_default_timeout(30000)
+                try:
+                    context = browser.new_context(accept_downloads=True)
+                    page = context.new_page()
+                    page.set_default_timeout(30000)
+                    idx = self._login_and_trigger(page, login_id, login_pw)
+                    IDX_FILE.parent.mkdir(parents=True, exist_ok=True)
+                    IDX_FILE.write_text(str(idx))
+                    logger.info(f"[ownerclan] 트리거 완료 (idx={idx}) — 브라우저 종료")
+                finally:
+                    browser.close()
 
-                idx = self._login_and_trigger(page, login_id, login_pw)
+            # Phase 2: 브라우저 없이 대기
+            wait_seconds = int(os.getenv("OWNERCLAN_WAIT_SECONDS", "1200"))
+            logger.info(f"[ownerclan] {wait_seconds}초 대기 중 (브라우저 없음)...")
+            time.sleep(wait_seconds)
 
-                wait_seconds = int(os.getenv("OWNERCLAN_WAIT_SECONDS", "1200"))
-                logger.info(f"[ownerclan] {wait_seconds}초 대기 후 다운로드 시작...")
-                time.sleep(wait_seconds)
-
-                safe_path = self._download_file(page, idx)
-                browser.close()
-
-            items, total_rows = self._parse_zip(safe_path)
-            logger.info(f"[ownerclan] 파싱 완료: {total_rows}건")
+            # Phase 3: 다운로드 — 새 브라우저 ~1분 사용 후 즉시 종료
+            return self._run_download(login_id, login_pw)
 
         except PlaywrightTimeout as e:
-            return {
-                "success": False,
-                "total_items": len(items), "total_pages": 0,
-                "success_count": len(items), "fail_count": 1,
-                "error_summary": f"타임아웃: {str(e)[:200]}",
-                "items": items,
-            }
+            return self._error(f"타임아웃: {str(e)[:200]}")
         except Exception as e:
             logger.warning(f"[ownerclan] 오류 발생: {e}")
-            return {
-                "success": False,
-                "total_items": len(items), "total_pages": 0,
-                "success_count": len(items), "fail_count": 1,
-                "error_summary": str(e)[:500],
-                "items": items,
-            }
-
-        return {
-            "success": True,
-            "total_items": total_rows,
-            "total_pages": 1,
-            "success_count": total_rows,
-            "fail_count": 0,
-            "error_summary": None,
-            "items": items,
-        }
+            return self._error(str(e)[:500])
 
     # ──────────────────────────────────────────────
     # 공통: 로그인

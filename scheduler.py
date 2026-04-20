@@ -388,8 +388,8 @@ if __name__ == "__main__":
     scheduler.add_job(
         lambda: (run_db_backup(), run_db_cleanup()),
         trigger="cron",
-        hour=1,
-        minute=59,
+        hour=3,
+        minute=0,
         id="db_backup",
         timezone=TIMEZONE,
     )
@@ -402,7 +402,7 @@ if __name__ == "__main__":
         timezone=TIMEZONE,
     )
 
-    logger.info(f"[scheduler] 시작 — 매일 23:00 파이프라인 / 04:59 오너클랜 재시도 / 01:59 DB백업+정리 / 05:30 옵션동기화 ({TIMEZONE})")
+    logger.info(f"[scheduler] 시작 — 매일 23:00 파이프라인 / 03:00 DB백업+정리 / 04:59 오너클랜 재시도 / 05:30 옵션동기화 ({TIMEZONE})")
     logger.info("[scheduler] Ctrl+C로 중단")
 
     try:
