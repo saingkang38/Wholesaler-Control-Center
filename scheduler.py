@@ -2,7 +2,7 @@ import os
 import sys
 import logging
 import concurrent.futures
-from datetime import datetime, date
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 from apscheduler.schedulers.blocking import BlockingScheduler
@@ -21,322 +21,377 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 TIMEZONE = os.getenv("DEFAULT_TIMEZONE", "Asia/Seoul")
+KST = ZoneInfo("Asia/Seoul")
+
+CHAIN_GAP_SECONDS = 20 * 60
+COLLECTOR_TIMEOUT_SECS = 90 * 60
+
+# (slot_type, code, display_name, phase)
+# slot_type: 'trigger' | 'collect'  (collect에는 일반 수집 + ownerclan-download 모두 포함)
+CHAIN_SEQUENCE = [
+    ("trigger", "ownerclan",  "오너클랜(트리거)", "trigger"),
+    ("collect", "chingudome", "친구도매",        None),
+    ("collect", "zentrade",   "젠트레이드",      None),
+    ("collect", "mro3",       "3MRO",            None),
+    ("collect", "ownerclan",  "오너클랜(다운로드)", "download"),
+    ("collect", "metaldiy",   "철물박사",        None),
+    ("collect", "jtckorea",   "JTC코리아",       None),
+    ("collect", "feelwoo",    "필우커머스",      None),
+    ("collect", "sikjaje",    "식자재마트",      None),
+    ("collect", "hitdesign",  "히트가구",        None),
+    ("collect", "ds1008",     "DS도매",          None),
+    ("collect", "dometopia",  "도매토피아",      None),
+    ("collect", "onch3",      "온채널",          None),
+]
+
+_scheduler_ref: BlockingScheduler | None = None
+_flask_app_ref = None
 
 
-def _build_changes(stats: dict) -> dict:
-    return {
-        "신규":       stats.get("new", 0),
-        "재입고":     stats.get("restocked", 0),
-        "가격변동":   stats.get("price_change", 0),
-        "상품명변경": stats.get("name_change", 0),
-        "이미지변경": stats.get("image_change", 0),
-        "품절단종":   stats.get("missing", 0),
-        "삭제":       stats.get("discontinued_candidate", 0),
-    }
+def _today_kst_midnight() -> datetime:
+    return datetime.now(KST).replace(hour=0, minute=0, second=0, microsecond=0).replace(tzinfo=None)
 
 
-def _collect_wholesaler(wholesaler_code: str, name: str, flask_app, run_time: str) -> bool:
-    """단일 도매처 수집 + 마스터 업데이트 + 텔레그램 알림. 성공 여부 반환."""
-    from app.collectors.orchestrator import run_collection
-    from notifiers.telegram import notify_changes, notify_failure
-    from app import log_buffer
-
-    logger.info(f"[scheduler] {name} 수집 시작")
-    log_buffer.push(f"[수집] {name} 시작")
-    try:
-        with flask_app.app_context():
-            result = run_collection(wholesaler_code, trigger_type="scheduled")
-
-        if result.get("success"):
-            notify_changes(
-                name,
-                result.get("total_items", 0),
-                run_time,
-                _build_changes(result.get("master_stats") or {}),
-            )
-            cnt = result.get("total_items", 0)
-            logger.info(f"[scheduler] {name} 수집 완료 ({cnt}건)")
-            log_buffer.push(f"[수집] {name} 완료 ({cnt}건)")
-            return True
-        elif result.get("not_configured"):
-            logger.info(f"[scheduler] {name} 설정 미완료 — 건너뜀 (알림 없음)")
-            return False
-        else:
-            error = result.get("error") or "알 수 없는 오류"
-            logger.error(f"[scheduler] {name} 수집 실패: {error}")
-            log_buffer.push(f"[수집] {name} 실패: {str(error)[:100]}")
-            notify_failure(name, str(error)[:300], run_time)
-            return False
-
-    except Exception as e:
-        err_str = str(e)
-        _config_kw = ("미설정", "환경변수 없음", "환경변수없음", "LOGIN_ID", "LOGIN_PASSWORD")
-        if any(kw in err_str for kw in _config_kw):
-            logger.info(f"[scheduler] {name} 설정 미완료 — 건너뜀 (알림 없음): {err_str}")
-        else:
-            logger.error(f"[scheduler] {name} 수집 예외: {e}")
-            log_buffer.push(f"[수집] {name} 예외: {err_str[:100]}")
-            notify_failure(name, err_str[:300], run_time)
-        return False
-
-
-COLLECTOR_TIMEOUT_SECS = 90 * 60  # 도매처별 최대 90분
-
-
-def _timed_collect(wholesaler_code: str, name: str, flask_app, run_time: str) -> bool:
-    """_collect_wholesaler를 최대 90분 타임아웃으로 실행. 초과 시 실패 알림 후 계속."""
-    from notifiers.telegram import notify_failure
-
+def _run_with_timeout(func, timeout_seconds: int):
+    """별도 스레드에서 func 실행, 타임아웃 초과 시 (None, 에러문자열) 반환."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(_collect_wholesaler, wholesaler_code, name, flask_app, run_time)
+        future = executor.submit(func)
         try:
-            return future.result(timeout=COLLECTOR_TIMEOUT_SECS)
+            return future.result(timeout=timeout_seconds), None
         except concurrent.futures.TimeoutError:
-            logger.error(f"[scheduler] {name} 타임아웃 ({COLLECTOR_TIMEOUT_SECS // 60}분) — 건너뜀")
-            notify_failure(name, f"수집 타임아웃 ({COLLECTOR_TIMEOUT_SECS // 60}분 초과)", run_time)
-            return False
+            return None, f"타임아웃 ({timeout_seconds // 60}분 초과)"
         except Exception as e:
-            logger.error(f"[scheduler] {name} 타임아웃 래퍼 예외: {e}")
-            return False
+            return None, str(e)
 
 
-def _ownerclan_trigger(flask_app, run_time: str) -> bool:
-    """오너클랜 트리거만 실행 (다운로드 세트 요청). DB 저장 없음."""
-    from notifiers.telegram import notify_failure
-    from collectors.ownerclan import OwnerclanCollector
+def _find_resume_index() -> int:
+    """오늘 chain으로 완료(success/skipped)된 마지막 슬롯 인덱스 + 1을 반환."""
+    from app.execution_logs.models import CollectionRun
+    from app.wholesalers.models import Wholesaler
 
-    logger.info("[scheduler] 오너클랜 트리거 시작")
+    today_midnight = _today_kst_midnight()
+    runs = (
+        CollectionRun.query
+        .filter(
+            CollectionRun.trigger_type == "chain",
+            CollectionRun.started_at >= today_midnight,
+            CollectionRun.status.in_(["success", "skipped"]),
+        )
+        .all()
+    )
+    if not runs:
+        return 0
+
+    wids = {r.wholesaler_id for r in runs}
+    code_by_id = {w.id: w.code for w in Wholesaler.query.filter(Wholesaler.id.in_(wids)).all()}
+    completed_codes = {code_by_id.get(r.wholesaler_id) for r in runs}
+
+    last_completed = -1
+    for i, (_slot_type, code, _name, _phase) in enumerate(CHAIN_SEQUENCE):
+        if code in completed_codes:
+            last_completed = i
+    return last_completed + 1
+
+
+def _collect_today_slot_results() -> list:
+    """오늘 chain run 결과를 슬롯 순서로 정렬해 반환."""
+    from app.execution_logs.models import CollectionRun
+    from app.wholesalers.models import Wholesaler
+
+    today_midnight = _today_kst_midnight()
+    runs = (
+        CollectionRun.query
+        .filter(
+            CollectionRun.trigger_type == "chain",
+            CollectionRun.started_at >= today_midnight,
+        )
+        .order_by(CollectionRun.started_at.asc())
+        .all()
+    )
+    id_to_name = {w.id: w.name for w in Wholesaler.query.all()}
+    return [
+        {
+            "name": id_to_name.get(r.wholesaler_id, str(r.wholesaler_id)),
+            "status": r.status,
+            "total_items": r.total_items or 0,
+        }
+        for r in runs
+    ]
+
+
+def _today_chain_started_at() -> datetime | None:
+    from app.execution_logs.models import CollectionRun
+    today_midnight = _today_kst_midnight()
+    first = (
+        CollectionRun.query
+        .filter(CollectionRun.trigger_type == "chain", CollectionRun.started_at >= today_midnight)
+        .order_by(CollectionRun.started_at.asc())
+        .first()
+    )
+    return first.started_at if first else None
+
+
+def _execute_chain_slot(slot_index: int):
+    """단일 체인 슬롯 실행 → 알림 → 다음 슬롯 예약. 실패해도 체인은 이어감."""
+    if _scheduler_ref is None or _flask_app_ref is None:
+        logger.error("[chain] scheduler/flask 레퍼런스 미초기화 — 슬롯 중단")
+        return
+
+    if slot_index >= len(CHAIN_SEQUENCE):
+        _schedule_finalize()
+        return
+
+    slot_type, code, name, phase = CHAIN_SEQUENCE[slot_index]
+    started_at = datetime.now(KST)
+    started_str = started_at.strftime("%Y-%m-%d %H:%M:%S")
+    logger.info(f"[chain] 슬롯 {slot_index} ({name}) 시작 @ {started_str}")
+
+    status = "failed"
+    error_msg: str | None = None
+    stats_payload: dict | None = None
+
     try:
-        with flask_app.app_context():
-            result = OwnerclanCollector().run(phase="trigger")
-        if result.get("success"):
-            logger.info(f"[scheduler] 오너클랜 트리거 완료 (idx={result.get('trigger_idx')})")
-            return True
+        if slot_type == "trigger":
+            # 오너클랜 트리거: DB 기록 없음, phase='trigger' 직접 실행
+            from collectors.ownerclan import OwnerclanCollector
+
+            def _do_trigger():
+                with _flask_app_ref.app_context():
+                    return OwnerclanCollector().run(phase="trigger")
+
+            r, err = _run_with_timeout(_do_trigger, 10 * 60)
+            if err:
+                status = "failed"
+                error_msg = err
+            elif r and r.get("success"):
+                status = "success"
+                stats_payload = {"total_items": 0, "master_stats": {}}
+            else:
+                status = "failed"
+                error_msg = (r or {}).get("error_summary") or (r or {}).get("error") or "트리거 실패"
+
         else:
-            error = result.get("error_summary") or "알 수 없는 오류"
-            logger.error(f"[scheduler] 오너클랜 트리거 실패: {error}")
-            notify_failure("오너클랜(트리거)", str(error)[:300], run_time)
-            return False
+            from app.collectors.orchestrator import run_collection
+
+            def _do_collect():
+                with _flask_app_ref.app_context():
+                    return run_collection(code, trigger_type="chain", phase=phase)
+
+            r, err = _run_with_timeout(_do_collect, COLLECTOR_TIMEOUT_SECS)
+            if err:
+                status = "failed"
+                error_msg = err
+            elif r and r.get("success"):
+                status = "success"
+                stats_payload = {
+                    "total_items": r.get("total_items", 0),
+                    "master_stats": r.get("master_stats") or {},
+                }
+            elif r and r.get("not_configured"):
+                status = "skipped"
+                error_msg = r.get("error") or "설정 미완료"
+            else:
+                status = "failed"
+                error_msg = (r or {}).get("error") or "알 수 없는 오류"
+
     except Exception as e:
-        logger.error(f"[scheduler] 오너클랜 트리거 예외: {e}")
-        notify_failure("오너클랜(트리거)", str(e)[:300], run_time)
-        return False
+        status = "failed"
+        error_msg = str(e)
+        logger.exception(f"[chain] 슬롯 {slot_index} ({name}) 외곽 예외")
+
+    finally:
+        finished_at = datetime.now(KST)
+        finished_str = finished_at.strftime("%Y-%m-%d %H:%M:%S")
+        elapsed = int((finished_at - started_at).total_seconds())
+
+        try:
+            from notifiers.telegram import notify_wholesaler_done
+            notify_wholesaler_done(
+                name=name,
+                status=status,
+                started_at=started_str,
+                finished_at=finished_str,
+                elapsed_seconds=elapsed,
+                stats=stats_payload,
+                error=error_msg,
+            )
+        except Exception as notify_err:
+            logger.warning(f"[chain] 알림 실패 (무시): {notify_err}")
+
+        logger.info(
+            f"[chain] 슬롯 {slot_index} ({name}) 종료: status={status} elapsed={elapsed}s"
+        )
+
+        _schedule_next_slot(slot_index + 1)
 
 
-def run_store_sync(flask_app, run_time: str):
-    """스마트스토어 전체 동기화"""
-    from notifiers.telegram import notify_failure
+def _schedule_next_slot(next_index: int):
+    """다음 슬롯 또는 최종 마무리를 now+CHAIN_GAP_SECONDS 에 예약."""
+    if _scheduler_ref is None:
+        logger.error("[chain] scheduler 레퍼런스 없음 — 다음 예약 실패")
+        return
 
-    logger.info(f"[scheduler] 스토어 동기화 시작")
+    run_date = datetime.now(KST) + timedelta(seconds=CHAIN_GAP_SECONDS)
+
+    if next_index >= len(CHAIN_SEQUENCE):
+        _scheduler_ref.add_job(
+            _finalize_chain,
+            trigger="date",
+            run_date=run_date,
+            id="chain_finalize",
+            replace_existing=True,
+        )
+        logger.info(f"[chain] 최종 마무리 예약 @ {run_date.strftime('%H:%M:%S')}")
+        return
+
+    _, _code, name, _ = CHAIN_SEQUENCE[next_index]
+    _scheduler_ref.add_job(
+        _execute_chain_slot,
+        trigger="date",
+        run_date=run_date,
+        args=[next_index],
+        id=f"chain_slot_{next_index}",
+        replace_existing=True,
+    )
+    logger.info(f"[chain] 다음 슬롯 {next_index} ({name}) 예약 @ {run_date.strftime('%H:%M:%S')}")
+
+
+def _schedule_finalize():
+    _schedule_next_slot(len(CHAIN_SEQUENCE))
+
+
+def _finalize_chain():
+    """마지막 슬롯 완료 후 스마트스토어 재수집 + 시그널 감지 + 최종 알림."""
+    logger.info("[chain] 최종 마무리 시작")
+    chain_finished_at = datetime.now(KST)
+    store_sync_stats: dict | None = None
+    match_stats_total: dict = {}
+
+    if _flask_app_ref is None:
+        logger.error("[chain] flask 레퍼런스 없음 — 마무리 중단")
+        return
+
     try:
         from app.store import sync_store_products
-        with flask_app.app_context():
-            stats = sync_store_products()
-        logger.info(f"[scheduler] 스토어 동기화 완료: {stats}")
+        with _flask_app_ref.app_context():
+            store_sync_stats = sync_store_products()
+        logger.info(f"[chain] 스토어 재수집 완료: {store_sync_stats}")
     except Exception as e:
-        logger.error(f"[scheduler] 스토어 동기화 실패: {e}")
-        notify_failure("스토어동기화", str(e)[:300], run_time)
+        logger.exception("[chain] 스토어 재수집 실패")
+        store_sync_stats = {"error": str(e)}
 
-
-def run_match_and_signal(flask_app, run_time: str):
-    """마스터↔스토어 매칭 + 액션 시그널 감지"""
-    logger.info(f"[scheduler] 매칭 및 시그널 감지 시작")
     try:
         from app.actions import detect_action_signals
         from app.wholesalers.models import Wholesaler
-        with flask_app.app_context():
-            wholesalers = Wholesaler.query.filter_by(is_active=True).all()
-            for ws in wholesalers:
-                stats = detect_action_signals(ws.id)
-                logger.info(f"[scheduler] {ws.name} 시그널: {stats}")
+        with _flask_app_ref.app_context():
+            for ws in Wholesaler.query.filter_by(is_active=True).all():
+                try:
+                    s = detect_action_signals(ws.id)
+                    for k, v in (s or {}).items():
+                        match_stats_total[k] = match_stats_total.get(k, 0) + (v or 0)
+                except Exception as per_err:
+                    logger.error(f"[chain] {ws.name} 시그널 감지 실패: {per_err}")
     except Exception as e:
-        logger.error(f"[scheduler] 매칭/시그널 감지 실패: {e}")
-
-
-def run_noon_pipeline():
-    """
-    23:00 전체 수집 파이프라인 (순차 실행)
-
-    순서:
-      1. 오너클랜 트리거 (다운로드 세트 요청)
-      2. API 도매처: 친구도매 → 젠트레이드 → 3MRO
-      3. 오너클랜 다운로드 (API 수집 중 파일 준비됨)
-      4. 크롤링/파일 도매처: 철물박사 → JTC코리아 → 필우커머스 → 식자재마트
-                            → 히트가구 → DS도매 → 도매토피아 → 온채널
-      5. 스토어 동기화 + 시그널 갱신
-    """
-    run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
-    logger.info(f"[scheduler] 낮 파이프라인 시작 ({run_time})")
-
-    from app import create_app
-    flask_app = create_app()
-
-    # 1. 오너클랜 트리거 (다운로드 세트 요청만, 빠름)
-    _ownerclan_trigger(flask_app, run_time)
-
-    # 2. API 도매처 (오너클랜 파일 준비되는 동안 수집)
-    _timed_collect("chingudome", "친구도매", flask_app, run_time)
-    _timed_collect("zentrade",   "젠트레이드", flask_app, run_time)
-    _timed_collect("mro3",       "3MRO",      flask_app, run_time)
-
-    # 3. 오너클랜 다운로드 (API 수집 소요 시간 ≒ 20분 대기 완료)
-    _timed_collect("ownerclan", "오너클랜", flask_app, run_time)
-
-    # 4. 크롤링 도매처 (시간 오래 걸리는 순으로)
-    _timed_collect("metaldiy",   "철물박사",   flask_app, run_time)
-    _timed_collect("jtckorea",   "JTC코리아",  flask_app, run_time)
-    _timed_collect("feelwoo",    "필우커머스", flask_app, run_time)
-    _timed_collect("sikjaje",    "식자재마트", flask_app, run_time)
-    _timed_collect("hitdesign",  "히트가구",   flask_app, run_time)
-    _timed_collect("ds1008",     "DS도매",     flask_app, run_time)
-    _timed_collect("dometopia",  "도매토피아", flask_app, run_time)
-    _timed_collect("onch3",      "온채널",     flask_app, run_time)
-
-    # 5. 스토어 동기화 + 시그널
-    run_store_sync(flask_app, run_time)
-    run_match_and_signal(flask_app, run_time)
-
-    logger.info(f"[scheduler] 낮 파이프라인 완료 ({run_time})")
-
-
-def run_ownerclan_retry():
-    """04:59 — 오너클랜 최근 10시간 내 성공 기록 없으면 재시도 (1회만)"""
-    run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
-    logger.info(f"[scheduler] 오너클랜 재시도 확인 ({run_time})")
-
-    from app import create_app
-    flask_app = create_app()
+        logger.exception("[chain] 시그널 감지 전체 실패")
 
     try:
-        with flask_app.app_context():
-            from app.execution_logs.models import CollectionRun
-            from app.wholesalers.models import Wholesaler
-            from datetime import timedelta
+        with _flask_app_ref.app_context():
+            slot_results = _collect_today_slot_results()
+            started_kst = _today_chain_started_at()
+        if started_kst is None:
+            started_kst = chain_finished_at.replace(tzinfo=None)
+        # DB의 started_at은 naive. KST 기준으로 저장된다고 가정 (utils.kst_now 사용)
+        started_display = started_kst.strftime("%Y-%m-%d %H:%M:%S")
+        finished_display = chain_finished_at.strftime("%Y-%m-%d %H:%M:%S")
+        total_elapsed = int((chain_finished_at.replace(tzinfo=None) - started_kst).total_seconds())
 
-            ownerclan = Wholesaler.query.filter_by(code="ownerclan").first()
-            if not ownerclan:
-                logger.warning("[scheduler] 오너클랜 도매처 DB 없음 — 재시도 건너뜀")
-                return
-
-            # 파이프라인은 23:00 시작, 오너클랜 수집은 자정 전 완료 → 날짜 기준 아닌 시간 기준 체크
-            # 04:59 기준 최근 10시간(= 전날 18:59 이후) 내 성공 기록 확인
-            cutoff = datetime.now(ZoneInfo("Asia/Seoul")).replace(tzinfo=None) - timedelta(hours=10)
-            success_recent = CollectionRun.query.filter(
-                CollectionRun.wholesaler_id == ownerclan.id,
-                CollectionRun.started_at >= cutoff,
-                CollectionRun.status == "success",
-            ).first()
-
-            if success_recent:
-                logger.info(f"[scheduler] 오너클랜 최근 수집 성공({str(success_recent.started_at)[:19]}) — 재시도 건너뜀")
-                return
-
-    except Exception as e:
-        logger.error(f"[scheduler] 오너클랜 재시도 확인 중 오류: {e}")
-        return
-
-    logger.info("[scheduler] 오너클랜 최근 수집 성공 없음 — 재시도 시작")
-    _collect_wholesaler("ownerclan", "오너클랜(재시도)", flask_app, run_time)
-
-
-def run_option_sync():
-    """매일 05:30 — 스토어 옵션 추가금 동기화 (applied_option_diffs 초기화)"""
-    from app import create_app
-    from notifiers.telegram import notify_failure
-    flask_app = create_app()
-    run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
-    logger.info(f"[scheduler] 옵션 동기화 시작 ({run_time})")
-    try:
-        from app.store import sync_store_option_state, detect_option_mismatches
-        result = sync_store_option_state(flask_app)
-        logger.info(
-            f"[scheduler] 옵션 동기화 완료 — "
-            f"확인 {result.get('checked', 0)}건 / 기록 {result.get('matched', 0)}건"
-        )
-        m_result = detect_option_mismatches(flask_app)
-        logger.info(
-            f"[scheduler] 단품↔옵션 불일치 감지 — "
-            f"신규 {m_result.get('created', 0)}건 / 갱신 {m_result.get('updated', 0)}건"
+        from notifiers.telegram import notify_chain_final
+        notify_chain_final(
+            chain_started_at=started_display,
+            chain_finished_at=finished_display,
+            total_elapsed_seconds=total_elapsed,
+            slot_results=slot_results,
+            store_sync_stats=store_sync_stats,
+            match_stats=match_stats_total,
         )
     except Exception as e:
-        logger.error(f"[scheduler] 옵션 동기화 실패: {e}", exc_info=True)
-        notify_failure("옵션 동기화", str(e), run_time)
+        logger.warning(f"[chain] 최종 알림 실패 (무시): {e}")
+
+    logger.info("[chain] 체인 완료")
 
 
-def run_db_cleanup():
-    """매일 03:00 — 오래된 데이터 정리"""
-    from app import create_app
-    from datetime import timedelta
-
-    flask_app = create_app()
-    today_kst = datetime.now(ZoneInfo("Asia/Seoul")).date()
-
-    cutoffs = {
-        "NormalizedProduct": today_kst - timedelta(days=7),
-        "CollectionRun":     today_kst - timedelta(days=60),
-        "ProductEvent":      today_kst - timedelta(days=90),
-        "ActionSignal":      today_kst - timedelta(days=30),
-    }
-
-    try:
-        with flask_app.app_context():
-            from app.infrastructure import db
-            from app.normalization.models import NormalizedProduct
-            from app.execution_logs.models import CollectionRun
-            from app.master.models import ProductEvent
-            from app.actions.models import ActionSignal
-
-            # NormalizedProduct: 7일 이상 지난 것
-            n = NormalizedProduct.query.filter(
-                NormalizedProduct.collected_at < cutoffs["NormalizedProduct"]
-            ).delete(synchronize_session=False)
-
-            # CollectionRun: 60일 이상 지난 것
-            c = CollectionRun.query.filter(
-                CollectionRun.started_at < cutoffs["CollectionRun"]
-            ).delete(synchronize_session=False)
-
-            # ProductEvent: 90일 이상 지난 것
-            e = ProductEvent.query.filter(
-                ProductEvent.event_date < cutoffs["ProductEvent"]
-            ).delete(synchronize_session=False)
-
-            # ActionSignal: 처리 완료된 것 중 30일 이상 지난 것
-            a = ActionSignal.query.filter(
-                ActionSignal.status.in_(["executed", "reverted", "rejected", "skipped", "failed"]),
-                ActionSignal.detected_at < cutoffs["ActionSignal"],
-            ).delete(synchronize_session=False)
-
-            db.session.commit()
-            logger.info(f"[scheduler] DB 정리 완료 — NormalizedProduct:{n} CollectionRun:{c} ProductEvent:{e} ActionSignal:{a}")
-
-    except Exception as ex:
-        logger.error(f"[scheduler] DB 정리 실패: {ex}")
-
-
-def run_db_backup():
-    """매일 03:00 — DB 백업 (최근 7일치 보관)"""
-    import shutil
-    run_time = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y-%m-%d %H:%M")
-    db_path = Path(__file__).resolve().parent / "instance" / "wholesaler.db"
-    backup_dir = Path(__file__).resolve().parent / "instance" / "backups"
-    backup_dir.mkdir(exist_ok=True)
-
-    timestamp = datetime.now(ZoneInfo("Asia/Seoul")).strftime("%Y%m%d_%H%M%S")
-    backup_path = backup_dir / f"wholesaler_{timestamp}.db"
-
-    try:
-        shutil.copy2(db_path, backup_path)
-        logger.info(f"[scheduler] DB 백업 완료: {backup_path.name}")
-    except Exception as e:
-        logger.error(f"[scheduler] DB 백업 실패: {e}")
+def start_chain_today():
+    """매일 19:00 Asia/Seoul cron — 체인 시작 (중복 방지 포함)."""
+    if _scheduler_ref is None or _flask_app_ref is None:
+        logger.error("[chain] 19:00 cron — 레퍼런스 미초기화, 시작 불가")
         return
 
-    # 7일 초과 백업 삭제
-    backups = sorted(backup_dir.glob("wholesaler_*.db"))
-    for old in backups[:-7]:
-        old.unlink()
-        logger.info(f"[scheduler] 오래된 백업 삭제: {old.name}")
+    try:
+        with _flask_app_ref.app_context():
+            resume_idx = _find_resume_index()
+    except Exception as e:
+        logger.error(f"[chain] 19:00 cron — resume 체크 실패, 처음부터 시작: {e}")
+        resume_idx = 0
+
+    if resume_idx >= len(CHAIN_SEQUENCE):
+        logger.info("[chain] 오늘 이미 전부 완료 — 19:00 cron 무시")
+        return
+    if resume_idx > 0:
+        logger.info(f"[chain] 오늘 {resume_idx}번까지 완료 상태 — 19:00 cron 무시 (체인 진행 중 가정)")
+        return
+
+    logger.info("[chain] 19:00 cron — 슬롯 0부터 시작")
+    _execute_chain_slot(0)
+
+
+def resume_chain_if_needed():
+    """스케줄러 프로세스 시작 시 호출 — 오늘 체인 상태에 따라 재개/대기 결정."""
+    if _scheduler_ref is None or _flask_app_ref is None:
+        logger.error("[chain] resume — 레퍼런스 미초기화")
+        return
+
+    try:
+        with _flask_app_ref.app_context():
+            resume_idx = _find_resume_index()
+    except Exception as e:
+        logger.error(f"[chain] resume 판단 실패: {e}")
+        return
+
+    now_kst = datetime.now(KST)
+    today_19 = now_kst.replace(hour=19, minute=0, second=0, microsecond=0)
+
+    if resume_idx >= len(CHAIN_SEQUENCE):
+        logger.info("[chain] 오늘 전부 완료 — 내일 19:00 대기")
+        return
+
+    if resume_idx == 0:
+        if now_kst >= today_19:
+            logger.info(f"[chain] 오늘 이력 없음 + 19:00 이후 ({now_kst.strftime('%H:%M')}) — 즉시 시작")
+            _scheduler_ref.add_job(
+                _execute_chain_slot,
+                trigger="date",
+                run_date=now_kst + timedelta(seconds=3),
+                args=[0],
+                id="chain_slot_0",
+                replace_existing=True,
+            )
+        else:
+            logger.info(f"[chain] 오늘 이력 없음 + 19:00 전 ({now_kst.strftime('%H:%M')}) — cron 대기")
+        return
+
+    _, _code, name, _ = CHAIN_SEQUENCE[resume_idx]
+    run_date = now_kst + timedelta(seconds=CHAIN_GAP_SECONDS)
+    _scheduler_ref.add_job(
+        _execute_chain_slot,
+        trigger="date",
+        run_date=run_date,
+        args=[resume_idx],
+        id=f"chain_slot_{resume_idx}",
+        replace_existing=True,
+    )
+    logger.info(
+        f"[chain] 재시작 감지 — 슬롯 {resume_idx} ({name})부터 재개 @ {run_date.strftime('%H:%M:%S')}"
+    )
 
 
 if __name__ == "__main__":
@@ -368,41 +423,24 @@ if __name__ == "__main__":
 
     scheduler = BlockingScheduler(timezone=TIMEZONE)
 
+    from app import create_app
+    flask_app = create_app()
+
+    _scheduler_ref = scheduler
+    _flask_app_ref = flask_app
+
     scheduler.add_job(
-        run_noon_pipeline,
+        start_chain_today,
         trigger="cron",
-        hour=23,
+        hour=19,
         minute=0,
-        id="daily_pipeline",
+        id="chain_start",
         timezone=TIMEZONE,
     )
 
-    scheduler.add_job(
-        run_ownerclan_retry,
-        trigger="cron",
-        hour=4,
-        minute=59,
-        id="ownerclan_retry",
-        timezone=TIMEZONE,
-    )
-    scheduler.add_job(
-        lambda: (run_db_backup(), run_db_cleanup()),
-        trigger="cron",
-        hour=3,
-        minute=0,
-        id="db_backup",
-        timezone=TIMEZONE,
-    )
-    scheduler.add_job(
-        run_option_sync,
-        trigger="cron",
-        hour=5,
-        minute=30,
-        id="option_sync",
-        timezone=TIMEZONE,
-    )
+    resume_chain_if_needed()
 
-    logger.info(f"[scheduler] 시작 — 매일 23:00 파이프라인 / 03:00 DB백업+정리 / 04:59 오너클랜 재시도 / 05:30 옵션동기화 ({TIMEZONE})")
+    logger.info(f"[scheduler] 시작 — 매일 19:00 체인 실행 ({TIMEZONE})")
     logger.info("[scheduler] Ctrl+C로 중단")
 
     try:

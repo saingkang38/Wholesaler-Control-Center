@@ -11,11 +11,28 @@ _running: set = set()
 _running_lock = threading.Lock()
 
 
+def _is_chain_active() -> bool:
+    from app.execution_logs.models import CollectionRun
+    return (
+        CollectionRun.query
+        .filter_by(trigger_type="chain", status="running")
+        .first()
+        is not None
+    )
+
+
 @collections_bp.route("/api/collect/<wholesaler_code>", methods=["POST"])
 @login_required
 def trigger_collection(wholesaler_code):
     from app.execution_logs.models import CollectionRun
     from app.wholesalers.models import Wholesaler
+
+    if _is_chain_active():
+        return jsonify({
+            "success": False,
+            "chain_active": True,
+            "error": "체인 수집 진행 중입니다. 완료될 때까지 수동 수집이 제한됩니다.",
+        }), 409
 
     with _running_lock:
         if wholesaler_code in _running:
