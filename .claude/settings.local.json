@@ -6,7 +6,11 @@
       "Read(//c/Users/saing/Desktop/on test/**)",
       "Bash(python -c \":*)",
       "Bash(python -c \"import sys; data=sys.stdin.buffer.read\\(\\); print\\(data.decode\\(''''utf-8'''', errors=''''replace''''\\)\\)\")",
-      "Bash(python:*)"
+      "Bash(python:*)",
+      "Bash(tasklist *)",
+      "Bash(/c/Windows/System32/tasklist.exe *)",
+      "Bash(py *)",
+      "Bash(git *)"
     ]
   }
 }
