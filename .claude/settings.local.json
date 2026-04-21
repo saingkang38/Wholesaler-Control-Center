@@ -10,7 +10,8 @@
       "Bash(tasklist *)",
       "Bash(/c/Windows/System32/tasklist.exe *)",
       "Bash(py *)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(powershell.exe *)"
     ]
   }
 }
