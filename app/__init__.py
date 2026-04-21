@@ -1,10 +1,13 @@
 from flask import Flask
 from sqlalchemy.pool import NullPool
+from datetime import timedelta
 import os
 
 def create_app():
     app = Flask(__name__, template_folder="../templates", static_folder="../static")
     app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "fallback-dev-key")
+    app.config["PERMANENT_SESSION_LIFETIME"] = timedelta(days=7)
+    app.config["REMEMBER_COOKIE_DURATION"] = timedelta(days=30)
     app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///wholesaler.db")
     app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
     app.config["SQLALCHEMY_ENGINE_OPTIONS"] = {

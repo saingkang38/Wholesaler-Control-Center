@@ -1,4 +1,4 @@
-from flask import Blueprint, render_template, redirect, url_for, request
+from flask import Blueprint, render_template, redirect, url_for, request, session
 from flask_login import login_user, logout_user, login_required
 from app.auth.models import User
 from app.infrastructure import db
@@ -14,7 +14,8 @@ def login():
         user = User.query.filter_by(username=username, is_active=True).first()
 
         if user and user.check_password(password):
-            login_user(user)
+            session.permanent = True
+            login_user(user, remember=True)
             user.last_login_at = kst_now()
             db.session.commit()
             return redirect(url_for("dashboard.index"))
