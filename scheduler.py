@@ -29,19 +29,19 @@ COLLECTOR_TIMEOUT_SECS = 90 * 60
 # (slot_type, code, display_name, phase)
 # slot_type: 'trigger' | 'collect'  (collect에는 일반 수집 + ownerclan-download 모두 포함)
 CHAIN_SEQUENCE = [
-    ("trigger", "ownerclan",  "오너클랜(트리거)", "trigger"),
-    ("collect", "chingudome", "친구도매",        None),
-    ("collect", "zentrade",   "젠트레이드",      None),
-    ("collect", "mro3",       "3MRO",            None),
+    ("collect", "jtckorea",   "JTC코리아",        None),
+    ("collect", "feelwoo",    "필우커머스",       None),
+    ("collect", "zentrade",   "젠트레이드",       None),
+    ("collect", "chingudome", "친구도매",         None),
+    ("collect", "onch3",      "온채널",           None),
+    ("collect", "sikjaje",    "식자재마트",       None),
+    ("collect", "dometopia",  "도매토피아",       None),
+    ("collect", "mro3",       "3MRO",             None),
+    ("collect", "ds1008",     "DS도매",           None),
+    ("collect", "metaldiy",   "철물박사",         None),
+    ("collect", "hitdesign",  "히트가구",         None),
+    ("trigger", "ownerclan",  "오너클랜(트리거)",   "trigger"),
     ("collect", "ownerclan",  "오너클랜(다운로드)", "download"),
-    ("collect", "metaldiy",   "철물박사",        None),
-    ("collect", "jtckorea",   "JTC코리아",       None),
-    ("collect", "feelwoo",    "필우커머스",      None),
-    ("collect", "sikjaje",    "식자재마트",      None),
-    ("collect", "hitdesign",  "히트가구",        None),
-    ("collect", "ds1008",     "DS도매",          None),
-    ("collect", "dometopia",  "도매토피아",      None),
-    ("collect", "onch3",      "온채널",          None),
 ]
 
 _scheduler_ref: BlockingScheduler | None = None
