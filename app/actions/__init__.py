@@ -1300,8 +1300,17 @@ def _check_price_signals(master: MasterProduct, store: StoreProduct, stats: dict
     if not master.price or not store.sale_price:
         return
 
-    from app.settings import apply_margin
-    margin_price = apply_margin(master.price)  # 마진 적용 기준가
+    from app.settings import apply_margin, calculate_option_pricing
+
+    # 기대 정가 계산 (옵션 상품은 가장 싼 옵션 기준, 단품은 도매가 기준)
+    if master.options_text and master.option_diffs:
+        try:
+            margin_price = calculate_option_pricing(master.price, master.option_diffs)["list_price"]
+        except Exception:
+            # 옵션 파싱 실패 시 단품 계산으로 fallback
+            margin_price = apply_margin(master.price)
+    else:
+        margin_price = apply_margin(master.price)
 
     # 옵션 상품(option_list_price 있음): 정가 - 즉시할인 = 실효가 (sale_price 시점과 무관하게 일관됨)
     # 일반 즉시할인 상품(option_list_price 없음): sale_price(정가) - 즉시할인 = 실효가
@@ -1309,6 +1318,19 @@ def _check_price_signals(master: MasterProduct, store: StoreProduct, stats: dict
         effective_price = store.option_list_price - (store.option_discount_amount or 0)
     else:
         effective_price = store.sale_price - (store.option_discount_amount or 0)
+
+    # 50원 이하 차이는 반올림·즉시할인 등 노이즈로 보고 신호 생성 생략
+    if abs(margin_price - effective_price) <= 50:
+        return
+
+    # 옵션 구조 불일치 시 PRICE 신호 생성 생략 — OPTION_ADD / OPTION_PRICE_CHANGE 에 위임
+    if master.options_text:
+        if not master.option_diffs:
+            return  # 패턴 A: master.options_text 있으나 option_diffs 없음 (데이터 이상치)
+        if not store.option_list_price:
+            return  # 패턴 B: master는 옵션인데 store는 단품 구조 (옵션 재구성 필요)
+        if store.applied_option_diffs and master.option_diffs != store.applied_option_diffs:
+            return  # 패턴 D: 옵션 차액 불일치 (OPTION_PRICE_CHANGE 대상)
 
     if margin_price > effective_price:
         if (master.id, store.id, "PRICE_UP_NEEDED") not in pending:
