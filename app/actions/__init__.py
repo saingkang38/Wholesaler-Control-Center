@@ -346,6 +346,29 @@ def actions_page():
         .filter(StoreProduct.applied_options_text.isnot(None)).count()
     )
 
+    # 도매처별 OPTION_ADD 카운트 (option_add_kind 필터 활성 시 일괄 승인 패널용)
+    wholesaler_bulk_counts = []
+    if signal_type_filter == "OPTION_ADD" and option_add_kind_filter in ("new", "existing"):
+        from app.wholesalers.models import Wholesaler
+        ws_q = (
+            db.session.query(
+                Wholesaler.code, Wholesaler.name, db.func.count(ActionSignal.id).label("cnt")
+            )
+            .select_from(ActionSignal)
+            .filter(ActionSignal.status == "pending", ActionSignal.signal_type == "OPTION_ADD")
+            .join(MasterProduct, ActionSignal.master_product_id == MasterProduct.id)
+            .join(Wholesaler, MasterProduct.wholesaler_id == Wholesaler.id)
+            .join(StoreProduct, ActionSignal.store_product_id == StoreProduct.id)
+        )
+        if option_add_kind_filter == "new":
+            ws_q = ws_q.filter(StoreProduct.applied_options_text.is_(None))
+        else:
+            ws_q = ws_q.filter(StoreProduct.applied_options_text.isnot(None))
+        ws_q = ws_q.group_by(Wholesaler.code, Wholesaler.name).order_by(db.desc("cnt"))
+        wholesaler_bulk_counts = [
+            {"code": r.code, "name": r.name, "count": r.cnt} for r in ws_q.all()
+        ]
+
     return render_template("actions.html", rows=rows, status_filter=status_filter,
                            pending_count=pending_count, failed_count=failed_count,
                            pagination=pagination,
@@ -356,6 +379,7 @@ def actions_page():
                            option_add_kind_filter=option_add_kind_filter,
                            opt_add_new_count=opt_add_new_count,
                            opt_add_existing_count=opt_add_existing_count,
+                           wholesaler_bulk_counts=wholesaler_bulk_counts,
                            no_option_count=no_option_count,
                            option_no_extra_count=option_no_extra_count,
                            option_with_extra_count=option_with_extra_count,
@@ -394,6 +418,41 @@ def delete_exclusion(exclusion_id):
     db.session.delete(exc)
     db.session.commit()
     return jsonify({"ok": True})
+
+
+@actions_bp.route("/actions/bulk-ids")
+@login_required
+def bulk_ids():
+    """일괄 승인 대상 ids 조회 — 도매처별 OPTION_ADD 일괄 처리 전 ids 수집용."""
+    from app.store.models import StoreProduct
+    from app.wholesalers.models import Wholesaler
+
+    signal_type = request.args.get("signal_type", "")
+    option_add_kind = request.args.get("option_add_kind", "")
+    wholesaler_code = request.args.get("wholesaler_code", "")
+    status = request.args.get("status", "pending")
+
+    if not signal_type or not wholesaler_code:
+        return jsonify({"error": "signal_type and wholesaler_code required"}), 400
+
+    ws = Wholesaler.query.filter_by(code=wholesaler_code).first()
+    if not ws:
+        return jsonify({"error": "wholesaler not found"}), 404
+
+    query = (
+        ActionSignal.query.filter_by(status=status, signal_type=signal_type)
+        .join(MasterProduct, ActionSignal.master_product_id == MasterProduct.id)
+        .filter(MasterProduct.wholesaler_id == ws.id)
+    )
+    if option_add_kind in ("new", "existing"):
+        query = query.join(StoreProduct, ActionSignal.store_product_id == StoreProduct.id)
+        if option_add_kind == "new":
+            query = query.filter(StoreProduct.applied_options_text.is_(None))
+        else:
+            query = query.filter(StoreProduct.applied_options_text.isnot(None))
+
+    ids = [r[0] for r in query.with_entities(ActionSignal.id).all()]
+    return jsonify({"ids": ids, "count": len(ids)})
 
 
 @actions_bp.route("/actions/bulk-resolve", methods=["POST"])

@@ -156,6 +156,27 @@
               color:{{ 'white' if option_add_kind_filter == val else '#555' }};">{{ label }} ({{ cnt }})</a>
     {% endfor %}
   </div>
+
+  {# 3-B. 도매처별 일괄 승인 패널 (option_add_kind 필터 활성 시) #}
+  {% if option_add_kind_filter in ('new', 'existing') and wholesaler_bulk_counts %}
+  <div style="margin-bottom:14px; padding:10px 12px; background:#fefce8; border:1px solid #facc15; border-radius:6px;">
+    <div style="font-size:13px; font-weight:600; color:#713f12; margin-bottom:8px;">
+      🏢 도매처별 일괄 승인 (현재 필터: {{ '🆕 신규' if option_add_kind_filter == 'new' else '🔄 기존변경' }})
+    </div>
+    <div style="display:flex; gap:8px; flex-wrap:wrap;">
+      {% for w in wholesaler_bulk_counts %}
+      <button type="button"
+              onclick="bulkApproveByWholesaler('{{ w.code }}', '{{ w.name }}', {{ w.count }}, '{{ option_add_kind_filter }}')"
+              style="padding:7px 14px; background:#fbbf24; color:#451a03; border:none; border-radius:4px; font-size:13px; font-weight:500; cursor:pointer;">
+        {{ w.name }} {{ '{:,}'.format(w.count) }}건 ▶
+      </button>
+      {% endfor %}
+    </div>
+    <div style="margin-top:8px; font-size:11px; color:#92400e;">
+      ⚠ 클릭 후 최종 확인 모달에서 다시 한번 확인합니다 · 20건 단위로 자동 처리 · 처리 중 중단 가능
+    </div>
+  </div>
+  {% endif %}
   {% endif %}
   {% endif %}
 
@@ -610,5 +631,159 @@ function retry(id, btn) {
   })
   .catch(() => { alert('처리 중 오류가 발생했습니다.'); btn.disabled = false; });
 }
+
+// === Phase 3-B: 도매처별 OPTION_ADD 일괄 승인 ===
+const BULK_CHUNK_SIZE = 20;
+const BULK_CHUNK_DELAY_MS = 500;
+let _bulkAbort = false;
+let _bulkRunning = false;
+
+async function bulkApproveByWholesaler(wsCode, wsName, expectedCount, kind) {
+  if (_bulkRunning) { alert('이미 일괄 처리가 진행 중입니다.'); return; }
+  try {
+    const params = new URLSearchParams({
+      signal_type: 'OPTION_ADD',
+      option_add_kind: kind,
+      wholesaler_code: wsCode,
+      status: 'pending',
+    });
+    const resp = await fetch('/actions/bulk-ids?' + params);
+    const data = await resp.json();
+    if (data.error) { alert('오류: ' + data.error); return; }
+    if (!data.ids || data.ids.length === 0) { alert('대상이 없습니다 (이미 처리되었을 수 있음)'); return; }
+    showBulkConfirmModal(wsName, kind, data.ids);
+  } catch (e) {
+    alert('ids 조회 실패: ' + e.message);
+  }
+}
+
+function showBulkConfirmModal(wsName, kind, ids) {
+  const count = ids.length;
+  const seconds = count * 2.5;
+  const minutes = Math.floor(seconds / 60);
+  const secs = Math.round(seconds % 60);
+  const timeStr = minutes > 0 ? `약 ${minutes}분 ${secs}초` : `약 ${secs}초`;
+  const kindLabel = kind === 'new' ? '🆕 신규' : '🔄 기존변경';
+  document.getElementById('bulkConfirmBody').innerHTML = `
+    <div style="margin-bottom:6px;"><strong>도매처:</strong> ${wsName}</div>
+    <div style="margin-bottom:6px;"><strong>유형:</strong> OPTION_ADD (${kindLabel})</div>
+    <div style="margin-bottom:6px;"><strong>대상:</strong> ${count.toLocaleString()}건</div>
+    <div style="margin-bottom:6px;"><strong>예상 처리 시간:</strong> ${timeStr}</div>
+    <div style="margin-bottom:12px;"><strong>청크 단위:</strong> ${BULK_CHUNK_SIZE}건씩 자동 처리</div>
+    <div style="padding:10px; background:#fef2f2; border-radius:4px; font-size:13px; color:#991b1b;">
+      ⚠ 처리 중 브라우저 탭을 닫지 마세요<br>
+      ⚠ 중단 시 그때까지 처리된 건만 적용됩니다<br>
+      ⚠ 적용된 건은 [실행완료] 탭에서 개별 되돌리기 가능
+    </div>`;
+  const startBtn = document.getElementById('bulkConfirmStart');
+  startBtn.onclick = () => {
+    closeBulkConfirmModal();
+    startBulkProcessing(wsName, ids);
+  };
+  document.getElementById('bulkConfirmModal').style.display = 'flex';
+}
+
+function closeBulkConfirmModal() {
+  document.getElementById('bulkConfirmModal').style.display = 'none';
+}
+
+async function startBulkProcessing(wsName, ids) {
+  _bulkAbort = false;
+  _bulkRunning = true;
+  const total = ids.length;
+  let processed = 0, okCount = 0, failCount = 0;
+  const t0 = Date.now();
+
+  const progressModal = document.getElementById('bulkProgressModal');
+  const abortBtn = document.getElementById('bulkAbortBtn');
+  abortBtn.disabled = false;
+  abortBtn.style.display = 'inline-block';
+  document.getElementById('bulkProgressFooter').innerHTML = '';
+  progressModal.style.display = 'flex';
+  updateBulkProgress(wsName, processed, total, okCount, failCount);
+
+  for (let i = 0; i < ids.length; i += BULK_CHUNK_SIZE) {
+    if (_bulkAbort) break;
+    const chunk = ids.slice(i, i + BULK_CHUNK_SIZE);
+    try {
+      const resp = await fetch('/actions/bulk-resolve', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ids: chunk, action: 'approve'}),
+      });
+      const data = await resp.json();
+      okCount += data.ok_count || 0;
+      failCount += data.fail_count || 0;
+    } catch (e) {
+      failCount += chunk.length;
+    }
+    processed += chunk.length;
+    updateBulkProgress(wsName, processed, total, okCount, failCount);
+    if (i + BULK_CHUNK_SIZE < ids.length && !_bulkAbort) {
+      await new Promise(r => setTimeout(r, BULK_CHUNK_DELAY_MS));
+    }
+  }
+
+  const elapsed = Math.round((Date.now() - t0) / 1000);
+  const elapsedStr = `${Math.floor(elapsed/60)}분 ${elapsed%60}초`;
+  abortBtn.style.display = 'none';
+  document.getElementById('bulkProgressBody').innerHTML = `
+    <div style="font-size:15px; color:${_bulkAbort ? '#f59e0b' : '#16a34a'}; font-weight:600; margin-bottom:8px;">
+      ${_bulkAbort ? '⏸ 중단됨' : '✓ 완료'}
+    </div>
+    <div style="margin-bottom:4px;">도매처: ${wsName}</div>
+    <div style="margin-bottom:4px;">성공: ${okCount.toLocaleString()}건</div>
+    <div style="margin-bottom:4px;">실패: ${failCount.toLocaleString()}건${failCount > 0 ? ' ([실패] 탭에서 확인)' : ''}</div>
+    <div style="margin-bottom:4px;">소요 시간: ${elapsedStr}</div>`;
+  document.getElementById('bulkProgressFooter').innerHTML = `
+    <button onclick="window.location.reload()" style="padding:8px 16px; background:#2563eb; color:white; border:none; border-radius:4px; cursor:pointer;">새로고침</button>
+    <button onclick="document.getElementById('bulkProgressModal').style.display='none';" style="padding:8px 16px; margin-left:6px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">닫기</button>`;
+  _bulkRunning = false;
+}
+
+function updateBulkProgress(wsName, processed, total, ok, fail) {
+  const pct = total > 0 ? Math.round(processed / total * 100) : 0;
+  document.getElementById('bulkProgressBar').style.width = pct + '%';
+  document.getElementById('bulkProgressBody').innerHTML = `
+    <div style="margin-bottom:6px;"><strong>${wsName}</strong></div>
+    <div style="margin-bottom:6px;">처리 중: ${processed.toLocaleString()} / ${total.toLocaleString()} (${pct}%)</div>
+    <div style="font-size:13px; color:#666;">성공 ${ok.toLocaleString()} · 실패 ${fail.toLocaleString()}</div>`;
+}
+
+function abortBulk() {
+  if (!_bulkRunning) return;
+  if (confirm('현재 청크 종료 후 중단합니다. 계속할까요?')) {
+    _bulkAbort = true;
+    document.getElementById('bulkAbortBtn').disabled = true;
+  }
+}
 </script>
+
+<!-- Phase 3-B: 일괄 승인 확인 모달 -->
+<div id="bulkConfirmModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; justify-content:center; align-items:center;">
+  <div style="background:white; padding:24px; border-radius:8px; min-width:380px; max-width:480px;">
+    <h3 style="margin:0 0 16px; font-size:17px;">⚠ 일괄 승인 확인</h3>
+    <div id="bulkConfirmBody" style="font-size:14px; line-height:1.6; margin-bottom:20px;"></div>
+    <div style="text-align:right;">
+      <button onclick="closeBulkConfirmModal()" style="padding:8px 16px; margin-right:8px; background:#e5e7eb; border:none; border-radius:4px; cursor:pointer;">취소</button>
+      <button id="bulkConfirmStart" style="padding:8px 16px; background:#dc2626; color:white; border:none; border-radius:4px; cursor:pointer; font-weight:600;">확인하고 시작</button>
+    </div>
+  </div>
+</div>
+
+<!-- Phase 3-B: 일괄 처리 진행률 모달 -->
+<div id="bulkProgressModal" style="display:none; position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.5); z-index:1000; justify-content:center; align-items:center;">
+  <div style="background:white; padding:24px; border-radius:8px; min-width:380px; max-width:480px;">
+    <h3 style="margin:0 0 16px; font-size:17px;">처리 중...</h3>
+    <div id="bulkProgressBody" style="font-size:14px; line-height:1.6; margin-bottom:14px;"></div>
+    <div style="background:#e5e7eb; border-radius:4px; overflow:hidden; height:20px; margin-bottom:16px;">
+      <div id="bulkProgressBar" style="width:0%; height:100%; background:#16a34a; transition:width 0.3s;"></div>
+    </div>
+    <div style="text-align:right;">
+      <button id="bulkAbortBtn" onclick="abortBulk()" style="padding:8px 16px; background:#f59e0b; color:white; border:none; border-radius:4px; cursor:pointer;">중단</button>
+      <span id="bulkProgressFooter"></span>
+    </div>
+  </div>
+</div>
+
 {% endblock %}
