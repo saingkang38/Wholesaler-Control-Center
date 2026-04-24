@@ -25,6 +25,10 @@ KST = ZoneInfo("Asia/Seoul")
 
 CHAIN_GAP_SECONDS = 20 * 60
 COLLECTOR_TIMEOUT_SECS = 90 * 60
+COLLECTOR_TIMEOUT_OVERRIDES = {
+    "hitdesign": 240 * 60,
+    "ownerclan": 240 * 60,
+}
 
 # (slot_type, code, display_name, phase)
 # slot_type: 'trigger' | 'collect'  (collect에는 일반 수집 + ownerclan-download 모두 포함)
@@ -177,7 +181,7 @@ def _execute_chain_slot(slot_index: int):
                 with _flask_app_ref.app_context():
                     return run_collection(code, trigger_type="chain", phase=phase)
 
-            r, err = _run_with_timeout(_do_collect, COLLECTOR_TIMEOUT_SECS)
+            r, err = _run_with_timeout(_do_collect, COLLECTOR_TIMEOUT_OVERRIDES.get(code, COLLECTOR_TIMEOUT_SECS))
             if err:
                 status = "failed"
                 error_msg = err
