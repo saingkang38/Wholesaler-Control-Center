@@ -129,6 +129,7 @@
       ('DISCONTINUE_NEEDED', '단종'),
       ('PRICE', '가격변동'),
       ('OPTION', '옵션변동'),
+      ('OPTION_ADD', '옵션추가'),
       ('RESUME_POSSIBLE', '판매재개'),
     ] %}
     {% for val, label in sig_items %}
@@ -138,6 +139,24 @@
               color:{{ 'white' if signal_type_filter == val else '#555' }};">{{ label }}</a>
     {% endfor %}
   </div>
+
+  {# 3-A. OPTION_ADD 신규/기존 필터 (signal_type=OPTION_ADD 일 때만 노출) #}
+  {% if signal_type_filter == 'OPTION_ADD' %}
+  <div style="margin-bottom:14px; display:flex; gap:6px; flex-wrap:wrap; align-items:center; padding-left:12px; border-left:3px solid #94a3b8;">
+    <span style="font-size:12px; color:#666;">옵션추가 분류:</span>
+    {% set kind_items = [
+      ('', '전체', opt_add_new_count + opt_add_existing_count),
+      ('new', '🆕 신규', opt_add_new_count),
+      ('existing', '🔄 기존변경', opt_add_existing_count),
+    ] %}
+    {% for val, label, cnt in kind_items %}
+    <a href="/actions?status=pending&per_page={{ per_page }}{{ otq }}{{ sq }}&signal_type=OPTION_ADD{% if val %}&option_add_kind={{ val }}{% endif %}"
+       style="padding:5px 12px; border-radius:4px; font-size:13px; text-decoration:none;
+              background:{{ '#2c3e50' if option_add_kind_filter == val else '#e9ecef' }};
+              color:{{ 'white' if option_add_kind_filter == val else '#555' }};">{{ label }} ({{ cnt }})</a>
+    {% endfor %}
+  </div>
+  {% endif %}
   {% endif %}
 
   <!-- 상품 검색 -->
@@ -225,7 +244,16 @@
         <td style="font-size:13px; color:#666;">{{ row.wholesaler_name }}</td>
         <td style="font-size:13px; color:#2563eb; font-weight:500;">{{ row.store_name }}</td>
         <td><span class="badge badge-{{ row.badge }}">{{ row.label }}</span></td>
-        <td>{{ row.product_name }}</td>
+        <td>
+          {% if row.signal_type == 'OPTION_ADD' %}
+          <span style="display:inline-block; padding:2px 6px; border-radius:3px; font-size:11px; margin-right:4px; vertical-align:middle;
+                       background:{{ '#fef3c7' if row.is_new_option else '#dbeafe' }};
+                       color:{{ '#92400e' if row.is_new_option else '#1e40af' }};">
+            {{ '🆕 신규' if row.is_new_option else '🔄 기존변경' }}
+          </span>
+          {% endif %}
+          {{ row.product_name }}
+        </td>
         <td>{{ row.seller_code }}</td>
         <td style="font-size:12px; color:#666;">{{ row.origin_product_no or '-' }}</td>
         <td><span class="badge badge-{{ row.sale_badge }}" style="font-size:11px;">{{ row.sale_label }}</span></td>

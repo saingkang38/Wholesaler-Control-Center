@@ -39,6 +39,7 @@ def actions_page():
     store_filter = request.args.get("store_id", 0, type=int)
     signal_type_filter = request.args.get("signal_type", "")
     option_type_filter = request.args.get("option_type", "no_option")
+    option_add_kind_filter = request.args.get("option_add_kind", "")  # "new" | "existing" | ""
     search_q = request.args.get("q", "").strip()
 
     from app.store.models import StoreProduct, NaverStore
@@ -76,6 +77,16 @@ def actions_page():
                 MasterProduct.option_diffs != "",
                 db.func.replace(db.func.replace(MasterProduct.option_diffs, "0", ""), "\n", "") != "",
             )
+    # OPTION_ADD 신규/기존 필터 (signal_type=OPTION_ADD 일 때만 의미 있음)
+    if option_add_kind_filter and signal_type_filter == "OPTION_ADD":
+        if option_add_kind_filter == "new":
+            sub_kind = db.session.query(StoreProduct.id).filter(StoreProduct.applied_options_text.is_(None)).subquery()
+        elif option_add_kind_filter == "existing":
+            sub_kind = db.session.query(StoreProduct.id).filter(StoreProduct.applied_options_text.isnot(None)).subquery()
+        else:
+            sub_kind = None
+        if sub_kind is not None:
+            query = query.filter(ActionSignal.store_product_id.in_(sub_kind))
     if search_q:
         sp_sub = db.session.query(StoreProduct.id).filter(
             db.or_(
@@ -287,6 +298,7 @@ def actions_page():
             "sale_badge": sale_badge,
             "display_label": display_label,
             "display_badge": display_badge,
+            "is_new_option": (s.signal_type == "OPTION_ADD" and s.store and not s.store.applied_options_text),
         })
     pending_count = ActionSignal.query.filter_by(status="pending").count()
     failed_count = ActionSignal.query.filter_by(status="failed").count()
@@ -322,6 +334,18 @@ def actions_page():
     option_no_extra_count = _option_type_count("option_no_extra")
     option_with_extra_count = _option_type_count("option_with_extra")
 
+    # OPTION_ADD 신규/기존 카운트 (검수 흐름 안내용)
+    opt_add_new_count = (
+        ActionSignal.query.filter_by(status="pending", signal_type="OPTION_ADD")
+        .join(StoreProduct, ActionSignal.store_product_id == StoreProduct.id)
+        .filter(StoreProduct.applied_options_text.is_(None)).count()
+    )
+    opt_add_existing_count = (
+        ActionSignal.query.filter_by(status="pending", signal_type="OPTION_ADD")
+        .join(StoreProduct, ActionSignal.store_product_id == StoreProduct.id)
+        .filter(StoreProduct.applied_options_text.isnot(None)).count()
+    )
+
     return render_template("actions.html", rows=rows, status_filter=status_filter,
                            pending_count=pending_count, failed_count=failed_count,
                            pagination=pagination,
@@ -329,6 +353,9 @@ def actions_page():
                            all_stores=all_stores, store_filter=store_filter,
                            signal_type_filter=signal_type_filter,
                            option_type_filter=option_type_filter,
+                           option_add_kind_filter=option_add_kind_filter,
+                           opt_add_new_count=opt_add_new_count,
+                           opt_add_existing_count=opt_add_existing_count,
                            no_option_count=no_option_count,
                            option_no_extra_count=option_no_extra_count,
                            option_with_extra_count=option_with_extra_count,
