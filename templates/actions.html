@@ -651,13 +651,51 @@ async function bulkApproveByWholesaler(wsCode, wsName, expectedCount, kind) {
     const data = await resp.json();
     if (data.error) { alert('오류: ' + data.error); return; }
     if (!data.ids || data.ids.length === 0) { alert('대상이 없습니다 (이미 처리되었을 수 있음)'); return; }
-    showBulkConfirmModal(wsName, kind, data.ids);
+    showBulkConfirmModal(wsName, kind, data.ids, data.samples || []);
   } catch (e) {
     alert('ids 조회 실패: ' + e.message);
   }
 }
 
-function showBulkConfirmModal(wsName, kind, ids) {
+function _fmtMoney(v) {
+  if (v === null || v === undefined || v === '') return '-';
+  const n = Number(v);
+  if (isNaN(n)) return '-';
+  return n.toLocaleString() + '원';
+}
+
+function _renderSamplesHtml(samples) {
+  if (!samples || samples.length === 0) {
+    return '<div style="font-size:12px; color:#999; padding:8px;">샘플 미리보기 없음</div>';
+  }
+  const rows = samples.map((sp, idx) => {
+    const optsHtml = (sp.new_options || []).map(o => {
+      const addStr = o.addition > 0 ? `+${_fmtMoney(o.addition)}` : (o.addition < 0 ? `${_fmtMoney(o.addition)}` : '기준가');
+      return `<li style="font-size:12px;"><strong>${o.name}</strong> ${addStr} → ${_fmtMoney(o.price)}</li>`;
+    }).join('');
+    return `
+      <div style="border:1px solid #e5e7eb; border-radius:4px; padding:10px; margin-bottom:8px; background:#f9fafb;">
+        <div style="font-size:13px; font-weight:600; margin-bottom:4px;">${idx + 1}. ${sp.product_name}</div>
+        <div style="font-size:12px; color:#555; margin-bottom:6px;">
+          판매자상품코드: <code style="background:#e5e7eb; padding:1px 4px; border-radius:3px;">${sp.seller_code}</code>
+        </div>
+        <div style="font-size:12px; margin-bottom:6px;">
+          현재 스토어 판매가: <strong>${_fmtMoney(sp.current_sale_price)}</strong>
+          · 도매가: <strong>${_fmtMoney(sp.wholesale_price)}</strong>
+          · 마진적용가(정가): <strong style="color:#059669;">${_fmtMoney(sp.expected_list_price)}</strong>
+        </div>
+        <div style="font-size:12px; color:#374151;"><strong>적용 예정 옵션:</strong></div>
+        <ul style="margin:4px 0 0 18px; padding:0;">${optsHtml || '<li style="font-size:12px; color:#999;">옵션 없음</li>'}</ul>
+      </div>`;
+  }).join('');
+  return `
+    <div style="margin-top:12px; padding-top:12px; border-top:1px solid #e5e7eb;">
+      <div style="font-size:13px; font-weight:600; margin-bottom:8px;">📋 대표 샘플 ${samples.length}건 미리보기</div>
+      <div style="max-height:320px; overflow-y:auto; padding-right:4px;">${rows}</div>
+    </div>`;
+}
+
+function showBulkConfirmModal(wsName, kind, ids, samples) {
   const count = ids.length;
   const seconds = count * 2.5;
   const minutes = Math.floor(seconds / 60);
@@ -674,7 +712,8 @@ function showBulkConfirmModal(wsName, kind, ids) {
       ⚠ 처리 중 브라우저 탭을 닫지 마세요<br>
       ⚠ 중단 시 그때까지 처리된 건만 적용됩니다<br>
       ⚠ 적용된 건은 [실행완료] 탭에서 개별 되돌리기 가능
-    </div>`;
+    </div>
+    ${_renderSamplesHtml(samples)}`;
   const startBtn = document.getElementById('bulkConfirmStart');
   startBtn.onclick = () => {
     closeBulkConfirmModal();

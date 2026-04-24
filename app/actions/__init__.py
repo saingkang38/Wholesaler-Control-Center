@@ -452,7 +452,52 @@ def bulk_ids():
             query = query.filter(StoreProduct.applied_options_text.isnot(None))
 
     ids = [r[0] for r in query.with_entities(ActionSignal.id).all()]
-    return jsonify({"ids": ids, "count": len(ids)})
+
+    # 대표 샘플 최대 5건 미리보기 생성 (detected_at 최신순)
+    samples = []
+    if ids:
+        from app.settings import apply_margin, calculate_option_pricing
+        sample_signals = (
+            ActionSignal.query.filter(ActionSignal.id.in_(ids[:5]))
+            .order_by(ActionSignal.detected_at.desc())
+            .all()
+        )
+        for sig in sample_signals:
+            try:
+                m = sig.master
+                s = sig.store
+                if not m:
+                    continue
+                # 옵션 구조 계산
+                if m.options_text and m.option_diffs:
+                    opt = calculate_option_pricing(m.price, m.option_diffs)
+                    list_price = opt["list_price"]
+                    additions = opt["additions"]
+                else:
+                    list_price = apply_margin(m.price) if m.price else 0
+                    additions = []
+                names = [n.strip() for n in (m.options_text or "").split("\n") if n.strip()]
+                new_options = []
+                for i, name in enumerate(names):
+                    add = additions[i] if i < len(additions) else 0
+                    new_options.append({
+                        "name": name,
+                        "addition": add,
+                        "price": list_price + add,
+                    })
+                samples.append({
+                    "product_name": m.product_name or "-",
+                    "seller_code": (s.seller_management_code if s else "") or "-",
+                    "current_sale_price": (s.sale_price if s else None),
+                    "wholesale_price": m.price,
+                    "expected_list_price": list_price,
+                    "new_options": new_options,
+                })
+            except Exception:
+                # 샘플 하나 실패해도 나머지는 반환
+                continue
+
+    return jsonify({"ids": ids, "count": len(ids), "samples": samples})
 
 
 @actions_bp.route("/actions/bulk-resolve", methods=["POST"])
