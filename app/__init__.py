@@ -103,15 +103,15 @@ def create_app():
         from app.wholesalers import (
             get_or_create_ownerclan, get_or_create_jtckorea, get_or_create_metaldiy,
             get_or_create_ds1008, get_or_create_hitdesign, get_or_create_mro3,
-            get_or_create_feelwoo, get_or_create_sikjaje, get_or_create_onch3,
-            get_or_create_chingudome, get_or_create_zentrade, get_or_create_dometopia,
+            get_or_create_feelwoo, get_or_create_sikjaje,
+            get_or_create_chingudome, get_or_create_zentrade,
         )
         create_initial_admin()
         for init_fn in [
             get_or_create_ownerclan, get_or_create_jtckorea, get_or_create_metaldiy,
             get_or_create_ds1008, get_or_create_hitdesign, get_or_create_mro3,
-            get_or_create_feelwoo, get_or_create_sikjaje, get_or_create_onch3,
-            get_or_create_chingudome, get_or_create_zentrade, get_or_create_dometopia,
+            get_or_create_feelwoo, get_or_create_sikjaje,
+            get_or_create_chingudome, get_or_create_zentrade,
         ]:
             try:
                 init_fn()

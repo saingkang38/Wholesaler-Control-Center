@@ -67,10 +67,3 @@ def get_or_create_sikjaje():
 def get_or_create_feelwoo():
     return _ensure_wholesaler("feelwoo", "필우커머스", "https://feelwoo.com", "fwc_",
                               login_required=True)
-
-def get_or_create_onch3():
-    return _ensure_wholesaler("onch3", "온채널", "https://www.onch3.co.kr", "onch_",
-                              login_required=True)
-
-def get_or_create_dometopia():
-    return _ensure_wholesaler("dometopia", "도매토피아", "https://www.dometopia.com", "doto_")

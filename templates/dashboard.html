@@ -118,14 +118,6 @@
             style="padding:6px 12px; background:#1a7a4a; color:white; border:none; border-radius:5px; font-size:12px; cursor:pointer;">
             식자재코리아
         </button>
-        <button onclick="triggerCollect('onch3')"
-            style="padding:6px 12px; background:#0077b6; color:white; border:none; border-radius:5px; font-size:12px; cursor:pointer;">
-            온채널
-        </button>
-        <button onclick="triggerCollect('dometopia')"
-            style="padding:6px 12px; background:#b7410e; color:white; border:none; border-radius:5px; font-size:12px; cursor:pointer;">
-            도매토피아
-        </button>
     </div>
 </div>
 <p id="collect-result" style="margin-bottom:16px; font-size:13px; color:#e74c3c;"></p>
@@ -336,8 +328,6 @@ const WS_LIST = [
     { code: 'sikjaje',    name: '식자재마트' },
     { code: 'hitdesign',  name: '히트가구' },
     { code: 'ds1008',     name: 'DS도매' },
-    { code: 'dometopia',  name: '도매토피아' },
-    { code: 'onch3',      name: '온채널' },
 ];
 
 function triggerCollect(code) {

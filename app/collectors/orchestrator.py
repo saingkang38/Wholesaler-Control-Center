@@ -18,8 +18,6 @@ def _build_registry():
     from collectors.mro3 import Mro3Collector
     from collectors.feelwoo import FeelwooCollector
     from collectors.sikjaje import SikjajeCollector
-    from collectors.onch3 import Onch3Collector
-    from collectors.dometopia import DometopiaCollector
     return {
         "ownerclan": OwnerclanCollector,
         "jtckorea": JtckoreaCollector,
@@ -31,8 +29,6 @@ def _build_registry():
         "mro3": Mro3Collector,
         "feelwoo": FeelwooCollector,
         "sikjaje": SikjajeCollector,
-        "onch3": Onch3Collector,
-        "dometopia": DometopiaCollector,
     }
 
 
