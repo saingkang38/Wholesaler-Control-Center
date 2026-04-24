@@ -56,10 +56,10 @@ def changes():
         change_types=CHANGE_TYPES,
     )
 
-# 연속 미수집 N일 이상 → 상태 전환 기준
-MISSING_DAYS_CANDIDATE = 3    # active → missing
-MISSING_DAYS_DISCONTINUED = 7  # missing → discontinued_candidate
-MISSING_DAYS_FINAL = 365       # discontinued_candidate → discontinued (1년 이상 미수집)
+# 연속 미수집 N일 이상 → 상태 전환 기준 (CLAUDE.md 9-3 준수)
+MISSING_DAYS_CANDIDATE = 1     # active → missing
+MISSING_DAYS_DISCONTINUED = 60  # missing → discontinued_candidate
+MISSING_DAYS_FINAL = 365        # discontinued_candidate → discontinued (1년 이상 미수집)
 
 
 def process_master_update(wholesaler_id: int, items: list, snapshot_date: date = None) -> dict:
@@ -262,15 +262,22 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
 
             # 마스터 갱신
             master.last_seen_date = snapshot_date
-            master.missing_days = 0
 
-            # 품절 상태 처리: OOS로 수집되면 옵션 유무와 무관하게 out_of_stock으로 표시
+            # 품절 상태 처리
             item_status = item.get("status", "active")
-            if item_status == "out_of_stock":
+
+            # discontinued 확정 상태는 자동 active 복귀 금지 — 수동 복구만 허용 (CLAUDE.md 9-3)
+            # last_seen_date 만 위에서 갱신했으므로 수동 복구 시 참조 가능. status·missing_days 변경 안 함.
+            if master.current_status == "discontinued":
+                pass
+            elif item_status == "out_of_stock":
+                # out_of_stock 누적: 품절 일수도 missing_days 에 함께 카운팅 (CLAUDE.md 9-3)
+                master.missing_days = (master.missing_days or 0) + 1
                 if master.current_status != "out_of_stock":
                     master.last_status_change_date = snapshot_date
                 master.current_status = "out_of_stock"
             else:
+                master.missing_days = 0
                 if master.current_status != "active":
                     master.last_status_change_date = snapshot_date
                 master.current_status = "active"
