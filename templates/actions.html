@@ -276,7 +276,7 @@
           {{ row.product_name }}
         </td>
         <td>{{ row.seller_code }}</td>
-        <td style="font-size:12px; color:#666;">{{ row.origin_product_no or '-' }}</td>
+        <td style="font-size:12px; color:#666;">{{ row.channel_product_no or '-' }}</td>
         <td><span class="badge badge-{{ row.sale_badge }}" style="font-size:11px;">{{ row.sale_label }}</span></td>
         <td><span class="badge badge-{{ row.display_badge }}" style="font-size:11px;">{{ row.display_label }}</span></td>
         {% if row.signal_type == 'OPTION_PRICE_CHANGE' %}

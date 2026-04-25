@@ -278,7 +278,7 @@ def actions_page():
             "store_name": s.store.naver_store.store_name if s.store and s.store.naver_store else "-",
             "product_name": s.master.product_name if s.master else "-",
             "seller_code": s.store.seller_management_code if s.store else "-",
-            "origin_product_no": s.store.origin_product_no if s.store else None,
+            "channel_product_no": s.store.channel_product_no if s.store else None,
             "wholesale_price": wholesale_price,
             "margin_price": margin_price,
             "sale_price": sale_price,
