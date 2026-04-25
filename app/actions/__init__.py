@@ -680,6 +680,21 @@ def _has_extra_price(master) -> bool:
         return False
 
 
+def _normalize_diffs_for_compare(diffs: str | None) -> str | None:
+    """비교용 정규화: 차액 전부 0이면 NULL 과 동일하게 취급.
+    저장 구조는 건드리지 않고 비교 시에만 사용한다.
+    master.option_diffs 는 이미 _normalize_diffs()(app/master/__init__.py)로 정규화돼 저장되므로
+    applied/executed 이력값(과거에 "0\n0\n0" 형태로 저장됐을 수 있음) 쪽을 정규화해서 비교한다."""
+    if not diffs or not diffs.strip():
+        return None
+    try:
+        if all(int(v.strip()) == 0 for v in diffs.split("\n") if v.strip()):
+            return None
+    except ValueError:
+        return diffs
+    return diffs
+
+
 # ---------------------------------------------------------------------------
 # [유형 1] 옵션 없는 상품 — 가격 실행
 # ---------------------------------------------------------------------------
@@ -1492,7 +1507,8 @@ def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dic
     key = (master.id, store.id, "OPTION_PRICE_CHANGE")
     existing = prev_opts.get(key)
 
-    if not master.options_text or not _has_extra_price(master):
+    # 단품(옵션명 없음) → 옵션 가격 변동 비교 자체가 무의미
+    if not master.options_text:
         if existing:
             db.session.delete(existing)
             prev_opts.pop(key, None)
@@ -1507,7 +1523,8 @@ def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dic
         return
 
     # 1순위: StoreProduct에 저장된 적용 이력 확인
-    if store.applied_option_diffs == master.option_diffs:
+    # applied 쪽이 "0\n0\n0" 같은 전부-0 문자열이면 NULL 과 동일 취급 (master 는 이미 정규화됨)
+    if _normalize_diffs_for_compare(store.applied_option_diffs) == master.option_diffs:
         if existing:
             db.session.delete(existing)
             prev_opts.pop(key, None)
@@ -1523,7 +1540,7 @@ def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dic
     )
     if last_executed:
         last_suggested = json.loads(last_executed.suggested_value or "{}")
-        if last_suggested.get("option_diffs") == master.option_diffs:
+        if _normalize_diffs_for_compare(last_suggested.get("option_diffs")) == master.option_diffs:
             if existing:
                 db.session.delete(existing)
                 prev_opts.pop(key, None)
@@ -1540,7 +1557,7 @@ def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dic
     )
     if last_add_exec:
         last_add = json.loads(last_add_exec.suggested_value or "{}")
-        if last_add.get("option_diffs") == master.option_diffs:
+        if _normalize_diffs_for_compare(last_add.get("option_diffs")) == master.option_diffs:
             if existing:
                 db.session.delete(existing)
                 prev_opts.pop(key, None)
@@ -1549,10 +1566,14 @@ def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dic
 
     if key not in pending:
         from app.settings import calculate_option_pricing
-        pricing = calculate_option_pricing(master.price, master.option_diffs)
+        # master.option_diffs 가 NULL(추가금 전부 0)이어도 pricing 계산 가능하도록 옵션 개수만큼 0 채움
+        # 실행 경로(OPTION_PRICE_CHANGE 1072 라인)도 빈 diffs 대신 "0\n0\n0" 형태를 받아야 정상 동작
+        n_opts = len([x for x in master.options_text.split("\n") if x.strip()])
+        diffs_for_calc = master.option_diffs or ("\n".join(["0"] * n_opts) if n_opts else "")
+        pricing = calculate_option_pricing(master.price, diffs_for_calc)
         new_suggested = json.dumps({
             "base_price":   master.price,
-            "option_diffs": master.option_diffs,
+            "option_diffs": diffs_for_calc,
             "options_text": master.options_text,
             "list_price":   pricing["list_price"],
             "discount":     pricing["discount"],
@@ -1561,7 +1582,8 @@ def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dic
         })
         if existing:
             old = json.loads(existing.suggested_value or "{}")
-            if old.get("option_diffs") == master.option_diffs:
+            # 기존 pending 의 diffs 도 정규화해서 비교 — 같은 detect 를 여러 번 돌려도 중복 업데이트 방지
+            if _normalize_diffs_for_compare(old.get("option_diffs")) == master.option_diffs:
                 return  # 값 동일, 기존 pending 유지
             existing.suggested_value = new_suggested
             existing.detected_at = kst_now()
