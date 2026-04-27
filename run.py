@@ -10,6 +10,77 @@ load_dotenv(base / ".env", override=True)
 load_dotenv(base / ".env.local", override=True)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# 서버 식별 배너 — 다른 프로젝트 콘솔과 헷갈리지 않게 명확히 표시
+# ─────────────────────────────────────────────────────────────────────────────
+
+# ANSI 색 (Windows 10+ 콘솔에서 동작)
+_RED = "\033[91m"
+_YELLOW = "\033[93m"
+_CYAN = "\033[96m"
+_BOLD = "\033[1m"
+_RESET = "\033[0m"
+
+
+def _enable_ansi_colors_windows():
+    """Windows 콘솔에 ANSI escape 처리 활성화 — 색이 안 들어오면 무시."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        h = kernel32.GetStdHandle(-11)  # STD_OUTPUT_HANDLE
+        mode = ctypes.c_ulong()
+        if kernel32.GetConsoleMode(h, ctypes.byref(mode)):
+            kernel32.SetConsoleMode(h, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+    except Exception:
+        pass
+
+
+def _set_console_title_windows(title: str):
+    """Windows 콘솔 창 제목줄 설정 — 작업표시줄에서 어떤 서버인지 식별."""
+    if os.name != "nt":
+        return
+    try:
+        import ctypes
+        ctypes.windll.kernel32.SetConsoleTitleW(title)
+    except Exception:
+        pass
+
+
+def _print_server_banner(port: int):
+    """서버 식별용 큰 배너 + 정보 블록 출력."""
+    _enable_ansi_colors_windows()
+    _set_console_title_windows(f"[Wholesaler] 도매처 통합 관리 서버 -- port {port}")
+
+    R = _RED
+    B = _BOLD
+    N = _RESET
+    line = "#" * 78
+
+    banner = f"""
+{R}{line}{N}
+{R}#{N}                                                                            {R}#{N}
+{R}#{N}     {B}W H O L E S A L E R   C O N T R O L   C E N T E R{N}                  {R}#{N}
+{R}#{N}                                                                            {R}#{N}
+{R}#{N}              {B}도매처 통합 관리 시스템{N}  --  port {B}{port}{N}                       {R}#{N}
+{R}#{N}                                                                            {R}#{N}
+{R}{line}{N}
+
+  디렉토리  : {base}
+  파이썬    : py -3.12
+  접속 URL  : http://localhost:{port}
+  PID       : {os.getpid()}
+
+  {R}* 이 창을 닫으면 서버가 종료됩니다.{N}
+  {R}* 빨간색 배너 = 도매처 통합 관리 서버 창 (다른 프로젝트와 혼동 주의){N}
+
+{'-' * 78}
+"""
+    print(banner, flush=True)
+
+
 def _cleanup_stuck_runs():
     """이전 서버 크래시로 running 상태에 걸린 collection_runs를 failed로 정리."""
     import sqlite3
@@ -50,6 +121,9 @@ app = create_app()
 if __name__ == "__main__":
     PORT = 5000
     PID_FILE = base / "server.pid"
+
+    # 식별 배너 — 콘솔 창 제목 + 큰 배너 (다른 프로젝트 서버와 헷갈림 방지)
+    _print_server_banner(PORT)
 
     # 이전 서버 PID 종료 (graceful → force 순서)
     if PID_FILE.exists():
