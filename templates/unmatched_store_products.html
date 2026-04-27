@@ -1,0 +1,187 @@
+{% extends "base.html" %}
+{% block title %}미매칭 검수{% endblock %}
+
+{% block content %}
+<style>
+  .group-cards { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 18px; }
+  .group-card {
+    background: white; border-radius: 8px; padding: 14px 20px;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08); text-align: center;
+    min-width: 130px; cursor: pointer; text-decoration: none; color: #333;
+    border: 2px solid transparent;
+  }
+  .group-card:hover { border-color: #2c3e50; }
+  .group-card.active { border-color: #2c3e50; background: #f0f4f8; }
+  .group-card .count { font-size: 22px; font-weight: bold; color: #2c3e50; }
+  .group-card .label { font-size: 12px; color: #666; margin-top: 2px; }
+  .group-card.gtotal .count { color: #111; }
+  .group-card.gactive .count { color: #d97706; }
+  .group-card.gdeprecated .count { color: #dc2626; }
+  .group-card.gunknown .count { color: #6b7280; }
+  .group-card.gempty .count { color: #2563eb; }
+
+  .filter-bar { display: flex; gap: 10px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+  .filter-bar select, .filter-bar input {
+    padding: 7px 12px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 14px;
+  }
+  .filter-bar input[type=text] { min-width: 220px; }
+  .filter-bar .spacer { flex: 1; }
+
+  .download-btn {
+    padding: 8px 18px; background: #059669; color: white; border: none;
+    border-radius: 4px; cursor: pointer; font-size: 14px; text-decoration: none;
+  }
+  .download-btn:hover { background: #047857; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { background: #f8f9fa; padding: 10px 12px; text-align: left; border-bottom: 2px solid #dee2e6; white-space: nowrap; }
+  td { padding: 9px 12px; border-bottom: 1px solid #f0f0f0; vertical-align: middle; }
+  tr:hover { background: #fafafa; }
+
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: bold; }
+  .badge-SALE { background: #d1fae5; color: #059669; }
+  .badge-SOLDOUT { background: #fef3c7; color: #d97706; }
+  .badge-SUSPENSION { background: #fee2e2; color: #dc2626; }
+  .badge-CLOSE { background: #e5e7eb; color: #6b7280; }
+  .badge-WAIT { background: #dbeafe; color: #2563eb; }
+  .badge-PROHIBITION { background: #ede9fe; color: #7c3aed; }
+
+  .group-pill { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; }
+  .group-pill.active     { background: #fef3c7; color: #92400e; }
+  .group-pill.deprecated { background: #fee2e2; color: #991b1b; }
+  .group-pill.unknown    { background: #e5e7eb; color: #4b5563; }
+  .group-pill.empty      { background: #dbeafe; color: #1e40af; }
+
+  .pagination { display: flex; gap: 6px; justify-content: center; margin-top: 20px; flex-wrap: wrap; }
+  .pagination a, .pagination span {
+    padding: 6px 12px; border-radius: 4px; font-size: 13px;
+    background: white; border: 1px solid #d1d5db; text-decoration: none; color: #333;
+  }
+  .pagination span.current { background: #2c3e50; color: white; border-color: #2c3e50; }
+</style>
+
+<div class="card">
+  <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+    <h2 style="font-size:18px; margin:0;">미매칭 스토어 상품 검수</h2>
+    <a class="download-btn" href="{{ url_for('store.unmatched_store_products_export', naver_store_id=selected_store_id, status=status_filter, group=group_filter, q=search_q) }}">
+      📥 엑셀 다운로드 (현재 필터)
+    </a>
+  </div>
+  <div style="font-size:12px; color:#6b7280; margin-bottom:16px;">
+    스마트스토어 등록 상품 중 도매처(master) 와 매칭되지 않은 행. 엑셀 받아 정정 후 재업로드 흐름은 별도 단계.
+  </div>
+
+  <!-- 그룹별 카운트 -->
+  <div class="group-cards">
+    <a href="{{ url_for('store.unmatched_store_products_page', naver_store_id=selected_store_id, status=status_filter, q=search_q) }}"
+       class="group-card gtotal {{ 'active' if not group_filter }}">
+      <div class="count">{{ total_unmatched }}</div>
+      <div class="label">전체 미매칭</div>
+    </a>
+    {% for code, label in group_labels.items() %}
+    <a href="{{ url_for('store.unmatched_store_products_page', naver_store_id=selected_store_id, status=status_filter, group=code, q=search_q) }}"
+       class="group-card g{{ code }} {{ 'active' if group_filter == code }}">
+      <div class="count">{{ group_counts.get(code, 0) }}</div>
+      <div class="label">{{ label }}</div>
+    </a>
+    {% endfor %}
+  </div>
+
+  <!-- 필터 -->
+  <form method="get" class="filter-bar">
+    <select name="naver_store_id" onchange="this.form.submit()">
+      <option value="">전체 스토어</option>
+      {% for s in stores %}
+      <option value="{{ s.id }}" {{ 'selected' if selected_store_id == s.id }}>{{ s.store_name }}</option>
+      {% endfor %}
+    </select>
+    <select name="status" onchange="this.form.submit()">
+      <option value="">전체 상태</option>
+      {% for code, label in status_labels.items() %}
+      <option value="{{ code }}" {{ 'selected' if status_filter == code }}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    {% if group_filter %}<input type="hidden" name="group" value="{{ group_filter }}">{% endif %}
+    <input type="text" name="q" value="{{ search_q }}" placeholder="코드 / 상품명 검색">
+    <button type="submit" style="padding:7px 14px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer; font-size:13px;">검색</button>
+    {% if search_q or status_filter or selected_store_id or group_filter %}
+    <a href="{{ url_for('store.unmatched_store_products_page') }}" style="font-size:12px; color:#6b7280;">필터 초기화</a>
+    {% endif %}
+  </form>
+
+  <!-- 미매칭 상품 목록 -->
+  {% if items %}
+  <div style="font-size:12px; color:#6b7280; margin-bottom:8px;">
+    {{ pagination.total }}건 중 {{ pagination.page }} / {{ pagination.pages }} 페이지
+  </div>
+  <table>
+    <thead>
+      <tr>
+        <th>스토어</th>
+        <th>판매자관리코드</th>
+        <th>상품명</th>
+        <th>판매가</th>
+        <th>상태</th>
+        <th>분류</th>
+        <th>추정 도매처</th>
+        <th>상품번호</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for e in items %}
+      <tr>
+        <td>{{ e.sp.naver_store.store_name if e.sp.naver_store else '-' }}</td>
+        <td style="font-family:monospace; font-size:12px;">{{ e.sp.seller_management_code or '(빈 칸)' }}</td>
+        <td>{{ e.sp.product_name or '-' }}</td>
+        <td>{{ '{:,}'.format(e.sp.sale_price) if e.sp.sale_price else '-' }}원</td>
+        <td>
+          <span class="badge badge-{{ e.sp.store_status }}">
+            {{ status_labels.get(e.sp.store_status, e.sp.store_status) }}
+          </span>
+        </td>
+        <td>
+          <span class="group-pill {{ e.group }}">{{ group_labels.get(e.group, e.group) }}</span>
+        </td>
+        <td style="font-size:12px; color:#374151;">{{ e.suspected or '-' }}</td>
+        <td style="font-size:12px; color:#6b7280;">{{ e.sp.channel_product_no or e.sp.origin_product_no or '-' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- 페이지네이션 -->
+  {% if pagination.pages > 1 %}
+  <div class="pagination">
+    {% if pagination.has_prev %}
+    <a href="{{ url_for('store.unmatched_store_products_page', naver_store_id=selected_store_id, status=status_filter, group=group_filter, q=search_q, page=pagination.prev_num) }}">이전</a>
+    {% endif %}
+    {% set p = pagination.page %}
+    {% set total_p = pagination.pages %}
+    {% set window_start = [1, p - 3] | max %}
+    {% set window_end = [total_p, p + 3] | min %}
+    {% if window_start > 1 %}
+    <a href="{{ url_for('store.unmatched_store_products_page', naver_store_id=selected_store_id, status=status_filter, group=group_filter, q=search_q, page=1) }}">1</a>
+    {% if window_start > 2 %}<span>…</span>{% endif %}
+    {% endif %}
+    {% for n in range(window_start, window_end + 1) %}
+      {% if n == p %}
+      <span class="current">{{ n }}</span>
+      {% else %}
+      <a href="{{ url_for('store.unmatched_store_products_page', naver_store_id=selected_store_id, status=status_filter, group=group_filter, q=search_q, page=n) }}">{{ n }}</a>
+      {% endif %}
+    {% endfor %}
+    {% if window_end < total_p %}
+    {% if window_end < total_p - 1 %}<span>…</span>{% endif %}
+    <a href="{{ url_for('store.unmatched_store_products_page', naver_store_id=selected_store_id, status=status_filter, group=group_filter, q=search_q, page=total_p) }}">{{ total_p }}</a>
+    {% endif %}
+    {% if pagination.has_next %}
+    <a href="{{ url_for('store.unmatched_store_products_page', naver_store_id=selected_store_id, status=status_filter, group=group_filter, q=search_q, page=pagination.next_num) }}">다음</a>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% else %}
+  <div style="text-align:center; padding:60px; color:#9ca3af;">조건에 맞는 미매칭 상품이 없습니다.</div>
+  {% endif %}
+</div>
+{% endblock %}

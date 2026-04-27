@@ -1,6 +1,7 @@
+import io
 import json
 import time
-from flask import render_template, request, redirect, url_for, flash, jsonify, Response, stream_with_context, current_app
+from flask import render_template, request, redirect, url_for, flash, jsonify, Response, stream_with_context, current_app, send_file
 from flask_login import login_required
 from sqlalchemy import func, case
 from app.infrastructure import db
@@ -9,6 +10,43 @@ from app.store.models import StoreProduct, NaverStore, SyncLog
 from app.master.models import MasterProduct
 from app.wholesalers.models import Wholesaler
 from app.actions.models import ActionSignal
+
+
+# 우리 시스템에서 제거된 도매처 prefix (옛 거래처) — 향후 추가 시 이 목록 갱신
+DEPRECATED_PREFIXES = ("DOTO_", "ONCH_")
+
+
+def _active_prefixes() -> list:
+    """현재 활성 도매처의 prefix 목록 — wholesalers 테이블에서 동적 조회."""
+    rows = Wholesaler.query.filter(
+        Wholesaler.is_active.is_(True),
+        Wholesaler.prefix.isnot(None),
+    ).all()
+    return [w.prefix for w in rows if w.prefix]
+
+
+def _prefix_to_wholesaler_name() -> dict:
+    """prefix → 도매처 이름 매핑 (활성·비활성 모두)."""
+    return {
+        w.prefix: w.name
+        for w in Wholesaler.query.filter(Wholesaler.prefix.isnot(None)).all()
+    }
+
+
+def _classify_unmatched(seller_code: str, active_prefixes: list) -> tuple:
+    """미매칭 store_product 의 seller_management_code 를 자동 분류.
+    Returns: (group, suspected_prefix)
+      group ∈ {'empty', 'active', 'deprecated', 'unknown'}
+    """
+    if not seller_code or not seller_code.strip():
+        return "empty", None
+    for p in active_prefixes:
+        if p and seller_code.startswith(p):
+            return "active", p
+    for p in DEPRECATED_PREFIXES:
+        if seller_code.startswith(p):
+            return "deprecated", p
+    return "unknown", None
 
 
 STATUS_LABELS = {
@@ -459,4 +497,226 @@ def store_products_page():
         counts=counts,
         pagination=pagination,
         products=pagination.items,
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 미매칭 스토어 상품 검수 페이지 (조회 + 엑셀 다운로드)
+# ─────────────────────────────────────────────────────────────────────────────
+
+GROUP_LABELS = {
+    "empty":      "코드 없음",
+    "active":     "활성 도매처 (코드 정정 필요)",
+    "deprecated": "폐기 도매처",
+    "unknown":    "미등록 도매처",
+}
+
+
+def _build_unmatched_query(naver_store_id, status_filter, search_q):
+    """공통 쿼리 빌더 — 페이지 / 엑셀에서 동시 사용."""
+    q = StoreProduct.query.filter(StoreProduct.master_product_id.is_(None))
+    if naver_store_id:
+        q = q.filter(StoreProduct.naver_store_id == naver_store_id)
+    if status_filter:
+        q = q.filter(StoreProduct.store_status == status_filter)
+    if search_q:
+        like = f"%{search_q}%"
+        q = q.filter(
+            db.or_(
+                StoreProduct.seller_management_code.ilike(like),
+                StoreProduct.product_name.ilike(like),
+            )
+        )
+    return q
+
+
+def _enrich_with_group(rows, active_prefixes, prefix_to_name):
+    """SQLAlchemy 결과 행에 group / suspected 정보를 부착해 반환."""
+    out = []
+    for sp in rows:
+        group, prefix = _classify_unmatched(sp.seller_management_code or "", active_prefixes)
+        suspected = prefix_to_name.get(prefix) if prefix else None
+        out.append({
+            "sp": sp,
+            "group": group,
+            "prefix": prefix,
+            "suspected": suspected,
+        })
+    return out
+
+
+@store_bp.route("/unmatched-store-products")
+@login_required
+def unmatched_store_products_page():
+    naver_store_id = request.args.get("naver_store_id", type=int)
+    status_filter = request.args.get("status", "")
+    group_filter = request.args.get("group", "")
+    search_q = request.args.get("q", "").strip()
+    page = request.args.get("page", 1, type=int)
+    per_page = 100
+
+    stores = _all_stores()
+    active_prefixes = _active_prefixes()
+    prefix_to_name = _prefix_to_wholesaler_name()
+
+    base_q = _build_unmatched_query(naver_store_id, status_filter, search_q)
+
+    # 그룹별 카운트 — 미매칭 전체에서 그룹 분류 후 집계 (SQL 단계로 prefix 분류 어려워 Python 집계)
+    # 큰 데이터셋에서도 seller_management_code + 약간의 메타만 들고와서 카운트 — 성능 OK
+    count_rows = base_q.with_entities(StoreProduct.seller_management_code).all()
+    group_counts = {"empty": 0, "active": 0, "deprecated": 0, "unknown": 0}
+    for (code,) in count_rows:
+        g, _ = _classify_unmatched(code or "", active_prefixes)
+        group_counts[g] = group_counts.get(g, 0) + 1
+    total_unmatched = sum(group_counts.values())
+
+    # 그룹 필터를 적용한 페이지네이션 — 그룹은 SQL 직접 표현이 어려워서 in-memory 페이지네이션 사용
+    if group_filter:
+        # 그룹 필터 + 페이지 처리
+        all_rows = base_q.order_by(StoreProduct.id.desc()).all()
+        all_enriched = _enrich_with_group(all_rows, active_prefixes, prefix_to_name)
+        filtered = [e for e in all_enriched if e["group"] == group_filter]
+        total_filtered = len(filtered)
+        # 단순 슬라이스 페이지네이션
+        start = (page - 1) * per_page
+        end = start + per_page
+        items = filtered[start:end]
+        # pagination 유사 객체
+        class _P:
+            pass
+        pagination = _P()
+        pagination.page = page
+        pagination.per_page = per_page
+        pagination.total = total_filtered
+        pagination.pages = max(1, (total_filtered + per_page - 1) // per_page)
+        pagination.has_prev = page > 1
+        pagination.has_next = end < total_filtered
+        pagination.prev_num = page - 1 if page > 1 else None
+        pagination.next_num = page + 1 if end < total_filtered else None
+        def _iter_pages(left_edge=2, right_edge=2, left_current=2, right_current=2):
+            yield from range(1, pagination.pages + 1)
+        pagination.iter_pages = _iter_pages
+    else:
+        sa_pagination = base_q.order_by(StoreProduct.id.desc()).paginate(
+            page=page, per_page=per_page, error_out=False
+        )
+        items = _enrich_with_group(sa_pagination.items, active_prefixes, prefix_to_name)
+        pagination = sa_pagination
+
+    return render_template(
+        "unmatched_store_products.html",
+        stores=stores,
+        selected_store_id=naver_store_id,
+        status_filter=status_filter,
+        group_filter=group_filter,
+        search_q=search_q,
+        status_labels=STATUS_LABELS,
+        group_labels=GROUP_LABELS,
+        group_counts=group_counts,
+        total_unmatched=total_unmatched,
+        items=items,
+        pagination=pagination,
+    )
+
+
+@store_bp.route("/unmatched-store-products/export")
+@login_required
+def unmatched_store_products_export():
+    """미매칭 상품을 현재 필터 기준으로 xlsx 다운로드.
+    엑셀 컬럼은 사용자가 도매처 코드 정정 후 다시 업로드할 때 그대로 쓸 수 있도록
+    빈 작업 컬럼 3개(새_도매처코드 / 처리방향 / 비고) 포함.
+    """
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill
+
+    naver_store_id = request.args.get("naver_store_id", type=int)
+    status_filter = request.args.get("status", "")
+    group_filter = request.args.get("group", "")
+    search_q = request.args.get("q", "").strip()
+
+    active_prefixes = _active_prefixes()
+    prefix_to_name = _prefix_to_wholesaler_name()
+
+    base_q = _build_unmatched_query(naver_store_id, status_filter, search_q)
+    rows = base_q.order_by(StoreProduct.naver_store_id.asc(), StoreProduct.id.asc()).all()
+    enriched = _enrich_with_group(rows, active_prefixes, prefix_to_name)
+    if group_filter:
+        enriched = [e for e in enriched if e["group"] == group_filter]
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "미매칭 상품"
+
+    headers = [
+        "store_product_id",
+        "store_name",
+        "seller_management_code",
+        "product_name",
+        "store_status",
+        "sale_price",
+        "origin_product_no",
+        "channel_product_no",
+        "last_synced_at",
+        "prefix_group",
+        "추정_도매처",
+        "새_도매처코드",     # 사용자 입력
+        "처리방향",          # 사용자 입력 (매칭/삭제/유지 등)
+        "비고",              # 사용자 입력
+    ]
+    ws.append(headers)
+    # 헤더 스타일
+    header_font = Font(bold=True)
+    header_fill = PatternFill(start_color="FFE5E7EB", end_color="FFE5E7EB", fill_type="solid")
+    for cell in ws[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+
+    for e in enriched:
+        sp = e["sp"]
+        store_name = sp.naver_store.store_name if sp.naver_store else "-"
+        last_synced = sp.last_synced_at.strftime("%Y-%m-%d %H:%M:%S") if sp.last_synced_at else ""
+        ws.append([
+            sp.id,
+            store_name,
+            sp.seller_management_code or "",
+            sp.product_name or "",
+            sp.store_status or "",
+            sp.sale_price if sp.sale_price is not None else "",
+            sp.origin_product_no if sp.origin_product_no is not None else "",
+            sp.channel_product_no if sp.channel_product_no is not None else "",
+            last_synced,
+            GROUP_LABELS.get(e["group"], e["group"]),
+            e["suspected"] or "",
+            "",  # 새_도매처코드
+            "",  # 처리방향
+            "",  # 비고
+        ])
+
+    # 컬럼 폭 자동 조정 (간단)
+    widths = [12, 12, 28, 50, 12, 10, 14, 14, 18, 22, 12, 24, 14, 24]
+    for i, w in enumerate(widths, start=1):
+        ws.column_dimensions[chr(64 + i) if i <= 26 else "A" + chr(64 + i - 26)].width = w
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+
+    from datetime import datetime
+    fname_parts = ["unmatched"]
+    if naver_store_id:
+        store = NaverStore.query.get(naver_store_id)
+        if store:
+            fname_parts.append(store.store_name.replace("/", "_"))
+    if group_filter:
+        fname_parts.append(group_filter)
+    if status_filter:
+        fname_parts.append(status_filter)
+    fname_parts.append(datetime.now().strftime("%Y%m%d_%H%M%S"))
+    filename = "_".join(fname_parts) + ".xlsx"
+
+    return send_file(
+        bio,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=filename,
     )
