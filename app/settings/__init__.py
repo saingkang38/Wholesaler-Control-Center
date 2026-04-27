@@ -1,10 +1,24 @@
 import math
-from flask import Blueprint, render_template, request, redirect, url_for, flash
+import threading
+from datetime import datetime
+from zoneinfo import ZoneInfo
+from flask import Blueprint, render_template, request, redirect, url_for, flash, jsonify, current_app
 from flask_login import login_required
 from app.infrastructure import db
 from app.settings.models import MarginRule
 
 settings_bp = Blueprint("settings", __name__)
+
+_KST = ZoneInfo("Asia/Seoul")
+
+_sync_option_state_status = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "result": None,
+    "error": None,
+}
+_sync_option_state_lock = threading.Lock()
 
 _margin_rules_cache = None
 
@@ -155,3 +169,50 @@ def delete_margin_rule(rule_id):
     _invalidate_margin_cache()
     flash("삭제됐습니다.", "success")
     return redirect(url_for("settings.margin_page"))
+
+
+@settings_bp.route("/settings/option-sync")
+@login_required
+def option_sync_page():
+    return render_template("option_sync_settings.html", status=_sync_option_state_status)
+
+
+@settings_bp.route("/settings/option-sync/run", methods=["POST"])
+@login_required
+def run_option_sync():
+    with _sync_option_state_lock:
+        if _sync_option_state_status["running"]:
+            return jsonify({"started": False, "reason": "이미 실행 중입니다."}), 409
+        _sync_option_state_status.update({
+            "running": True,
+            "started_at": datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S"),
+            "finished_at": None,
+            "result": None,
+            "error": None,
+        })
+
+    flask_app = current_app._get_current_object()
+
+    def _runner():
+        try:
+            from app.store import sync_store_option_state
+            result = sync_store_option_state(flask_app=flask_app)
+            with _sync_option_state_lock:
+                _sync_option_state_status["result"] = result
+        except Exception as e:
+            with _sync_option_state_lock:
+                _sync_option_state_status["error"] = str(e)
+        finally:
+            with _sync_option_state_lock:
+                _sync_option_state_status["running"] = False
+                _sync_option_state_status["finished_at"] = datetime.now(_KST).strftime("%Y-%m-%d %H:%M:%S")
+
+    threading.Thread(target=_runner, daemon=True).start()
+    return jsonify({"started": True}), 202
+
+
+@settings_bp.route("/settings/option-sync/status")
+@login_required
+def option_sync_status():
+    with _sync_option_state_lock:
+        return jsonify(dict(_sync_option_state_status))

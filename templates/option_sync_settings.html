@@ -1,0 +1,130 @@
+{% extends "base.html" %}
+{% block title %}스토어 옵션 동기화{% endblock %}
+
+{% block content %}
+<style>
+  .btn { padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; font-size: 14px; }
+  .btn-primary { background: #2c3e50; color: white; }
+  .btn-primary:disabled { background: #94a3b8; cursor: not-allowed; }
+  .btn:hover:not(:disabled) { opacity: 0.85; }
+  .info-box { background: #f8f9fa; padding: 14px 16px; border-radius: 6px; font-size: 13px; color: #555; line-height: 1.7; }
+  .warn-box { background: #fff7ed; border: 1px solid #fed7aa; padding: 14px 16px; border-radius: 6px; font-size: 13px; color: #9a3412; line-height: 1.7; margin-top: 12px; }
+  .status-box { margin-top: 20px; padding: 14px 16px; border-radius: 6px; font-size: 13px; line-height: 1.7; }
+  .status-idle { background: #f1f5f9; color: #475569; }
+  .status-running { background: #fef3c7; color: #92400e; }
+  .status-done { background: #d1fae5; color: #065f46; }
+  .status-error { background: #fee2e2; color: #991b1b; }
+  .label { font-weight: 600; min-width: 80px; display: inline-block; }
+</style>
+
+<div class="card">
+  <h2 style="font-size:18px; margin-bottom:16px;">스토어 옵션 동기화</h2>
+
+  <div class="info-box">
+    <strong>이 작업은 무엇인가요?</strong><br>
+    스마트스토어에 이미 올바르게 적용되어 있는 옵션 추가금을 시스템이 인식하도록 도장(applied_option_diffs)을 찍어주는 작업입니다.
+    이 작업이 한 번 돌고 나면 "이미 적용된 상품"에 대한 OPTION_ADD 가짜 신호가 정리됩니다.
+  </div>
+
+  <div class="warn-box">
+    <strong>실행 시 주의:</strong><br>
+    • 모든 활성 스토어의 매칭된 옵션 상품 전체를 대상으로 네이버 API를 호출합니다.<br>
+    • 상품 수에 따라 <strong>수십 분에서 1시간 이상</strong> 소요될 수 있습니다.<br>
+    • 진행 중에는 네이버 API 쿼터가 소비되므로 액션 승인 같은 다른 작업이 일시적으로 느려질 수 있습니다.<br>
+    • 한가한 시간(주말 등)에 1회 실행하는 것을 권장합니다.
+  </div>
+
+  <div style="margin-top:24px;">
+    <button id="run-btn" class="btn btn-primary" onclick="runSync()">옵션 동기화 시작</button>
+  </div>
+
+  <div id="status-area" class="status-box status-idle" style="display:none;"></div>
+</div>
+
+<script>
+let pollTimer = null;
+
+function fmtResult(r) {
+  if (!r) return '';
+  return `확인 ${r.checked || 0}건 / 일치(도장) ${r.matched || 0}건`;
+}
+
+function render(s) {
+  const area = document.getElementById('status-area');
+  const btn = document.getElementById('run-btn');
+  area.style.display = 'block';
+
+  if (s.running) {
+    area.className = 'status-box status-running';
+    area.innerHTML = `<span class="label">상태:</span> 실행 중<br>
+                      <span class="label">시작:</span> ${s.started_at || '-'}<br>
+                      <span style="color:#92400e;">백그라운드에서 진행됩니다. 이 페이지를 닫아도 작업은 계속됩니다.</span>`;
+    btn.disabled = true;
+    btn.textContent = '실행 중...';
+    return true;
+  }
+
+  if (s.error) {
+    area.className = 'status-box status-error';
+    area.innerHTML = `<span class="label">상태:</span> 오류 발생<br>
+                      <span class="label">시작:</span> ${s.started_at || '-'}<br>
+                      <span class="label">종료:</span> ${s.finished_at || '-'}<br>
+                      <span class="label">오류:</span> ${s.error}`;
+  } else if (s.finished_at) {
+    area.className = 'status-box status-done';
+    area.innerHTML = `<span class="label">상태:</span> 완료<br>
+                      <span class="label">시작:</span> ${s.started_at || '-'}<br>
+                      <span class="label">종료:</span> ${s.finished_at || '-'}<br>
+                      <span class="label">결과:</span> ${fmtResult(s.result)}`;
+  } else {
+    area.className = 'status-box status-idle';
+    area.innerHTML = '대기 중 (아직 한 번도 실행하지 않았습니다)';
+  }
+
+  btn.disabled = false;
+  btn.textContent = '옵션 동기화 시작';
+  return false;
+}
+
+async function poll() {
+  try {
+    const res = await fetch('/settings/option-sync/status');
+    const s = await res.json();
+    const stillRunning = render(s);
+    if (!stillRunning && pollTimer) {
+      clearInterval(pollTimer);
+      pollTimer = null;
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function runSync() {
+  if (!confirm('옵션 동기화를 시작할까요? 수십 분 이상 소요될 수 있습니다.')) return;
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+  try {
+    const res = await fetch('/settings/option-sync/run', { method: 'POST' });
+    const data = await res.json();
+    if (!data.started) {
+      alert(data.reason || '시작 실패');
+      btn.disabled = false;
+      return;
+    }
+    if (!pollTimer) pollTimer = setInterval(poll, 3000);
+    poll();
+  } catch (e) {
+    alert('요청 실패: ' + e);
+    btn.disabled = false;
+  }
+}
+
+// 페이지 로드 시 현재 상태 한 번 확인 (이전 실행이 진행 중이거나 완료된 경우)
+poll();
+const initialStatus = {{ status | tojson }};
+if (initialStatus && initialStatus.running) {
+  pollTimer = setInterval(poll, 3000);
+}
+</script>
+{% endblock %}
