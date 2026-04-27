@@ -1671,6 +1671,26 @@ def _check_option_add_signals(master: MasterProduct, store: StoreProduct, stats:
         return
     # 추가금 없는 상품 + applied 이력 없음: 실행 이력 확인 후 판단 (flooding 방지)
     if not _has_extra_price(master) and store.applied_options_text is None:
+        # naver_cached_additions 기반 사전 보정:
+        # Naver 실측 추가금이 모두 0 이고 옵션 개수가 master 와 일치하면
+        # = Naver 가 이미 동일 옵션 구조를 +0 으로 보유 → 신호 생성 보류 + applied_* 동기화
+        if store.naver_cached_additions:
+            cached_lines = [l.strip() for l in store.naver_cached_additions.split("\n") if l.strip()]
+            master_lines = [l.strip() for l in master.options_text.split("\n") if l.strip()]
+            if len(cached_lines) == len(master_lines):
+                try:
+                    if all(int(x) == 0 for x in cached_lines):
+                        store.applied_options_text = master.options_text
+                        store.applied_option_diffs = None
+                        store.applied_option_base_price = master.price
+                        if existing:
+                            db.session.delete(existing)
+                            prev_opts.pop(key, None)
+                            pending.discard(key)
+                        return
+                except ValueError:
+                    pass
+
         last_add = (
             ActionSignal.query
             .filter_by(store_product_id=store.id, signal_type="OPTION_ADD")
