@@ -11,7 +11,9 @@
       "Bash(/c/Windows/System32/tasklist.exe *)",
       "Bash(py *)",
       "Bash(git *)",
-      "Bash(powershell.exe *)"
+      "Bash(powershell.exe *)",
+      "Bash(PYTHONIOENCODING=utf-8 py -3.12 -c \"import ast; ast.parse\\(open\\('collectors/sikjaje/__init__.py', encoding='utf-8'\\).read\\(\\)\\); print\\('SYNTAX OK'\\)\")",
+      "Bash(PYTHONIOENCODING=utf-8 py *)"
     ]
   }
 }

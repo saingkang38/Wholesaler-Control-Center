@@ -21,3 +21,5 @@ scheduler_out.txt
 flask_out.txt
 flask_out_check.txt
 server.pid
+# 런타임 로그 디렉토리
+logs/
