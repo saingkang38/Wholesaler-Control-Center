@@ -43,6 +43,7 @@ def trigger_collection(wholesaler_code):
             }), 409
         _running.add(wholesaler_code)
 
+    timer_started = False
     try:
         wholesaler = Wholesaler.query.filter_by(code=wholesaler_code, is_active=True).first()
         if wholesaler:
@@ -52,8 +53,6 @@ def trigger_collection(wholesaler_code):
             ).first()
             if already:
                 started = already.started_at.strftime("%H:%M") if already.started_at else "?"
-                with _running_lock:
-                    _running.discard(wholesaler_code)
                 return jsonify({
                     "success": False,
                     "already_running": True,
@@ -65,8 +64,6 @@ def trigger_collection(wholesaler_code):
             from collectors.ownerclan import OwnerclanCollector
             trigger_result = OwnerclanCollector().run(phase="trigger")
             if not trigger_result.get("success"):
-                with _running_lock:
-                    _running.discard(wholesaler_code)
                 return jsonify({
                     "success": False,
                     "error": trigger_result.get("error_summary") or trigger_result.get("error", "트리거 실패"),
@@ -76,12 +73,15 @@ def trigger_collection(wholesaler_code):
             uid = current_user.id
 
             def _do_download():
-                with app.app_context():
-                    run_collection("ownerclan", trigger_type="manual", user_id=uid, phase="download")
-                with _running_lock:
-                    _running.discard("ownerclan")
+                try:
+                    with app.app_context():
+                        run_collection("ownerclan", trigger_type="manual", user_id=uid, phase="download")
+                finally:
+                    with _running_lock:
+                        _running.discard("ownerclan")
 
             threading.Timer(wait, _do_download).start()
+            timer_started = True
             return jsonify({
                 "success": True,
                 "pending": True,
@@ -95,8 +95,9 @@ def trigger_collection(wholesaler_code):
         )
         return jsonify(result)
     finally:
-        # ownerclan은 타이머에서 직접 discard하므로 여기서는 건너뜀
-        if wholesaler_code != "ownerclan":
+        # ownerclan + Timer 정상 예약된 경우에만 Timer가 discard 책임짐.
+        # 그 외 모든 경로(예외/조기 return/비-ownerclan)는 여기서 discard.
+        if not (wholesaler_code == "ownerclan" and timer_started):
             with _running_lock:
                 _running.discard(wholesaler_code)
 
