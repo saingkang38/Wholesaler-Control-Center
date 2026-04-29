@@ -1594,7 +1594,7 @@ def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dic
                 store_product_id=store.id,
                 signal_type="OPTION_PRICE_CHANGE",
                 current_value=json.dumps({
-                    "options_text": master.options_text,
+                    "options_text": store.applied_options_text or "",
                     "store_list_price": store.option_list_price,
                     "store_discount": store.option_discount_amount,
                 }),
@@ -1759,7 +1759,7 @@ def _check_option_add_signals(master: MasterProduct, store: StoreProduct, stats:
         "option_diffs": master.option_diffs,
         "options_text": master.options_text,
     })
-    new_current = json.dumps({"options_text": master.options_text})
+    new_current = json.dumps({"options_text": store.applied_options_text or ""})
     if existing:
         old = json.loads(existing.suggested_value or "{}")
         if (old.get("options_text") == master.options_text and
