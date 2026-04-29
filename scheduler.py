@@ -9,14 +9,30 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from pathlib import Path
 from dotenv import load_dotenv
 
+# Windows cp949 환경에서도 한글/em dash 등 비-ASCII 로그가 인코딩 에러 없이
+# 출력되도록 UTF-8로 재구성. errors='replace'는 인코딩 실패 시 ?로 대체해
+# 프로세스가 죽지 않게 함.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+
 base = Path(__file__).resolve().parent
 load_dotenv(base / ".env")
 load_dotenv(base / ".env.local", override=True)
 
+# 로그 파일 디렉토리 보장 + 파일/콘솔 동시 출력 (회전 없는 단일 파일 → 큰 부담 없음)
+_log_dir = base / "logs"
+_log_dir.mkdir(parents=True, exist_ok=True)
+_file_handler = logging.FileHandler(str(_log_dir / "scheduler.log"), mode="a", encoding="utf-8")
+_file_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)],
+    handlers=[logging.StreamHandler(sys.stdout), _file_handler],
 )
 logger = logging.getLogger(__name__)
 
@@ -449,3 +465,7 @@ if __name__ == "__main__":
         scheduler.start()
     except (KeyboardInterrupt, SystemExit):
         logger.info("[scheduler] 종료")
+    except Exception:
+        # 예상 못 한 예외 → 워치독이 살릴 수 있도록 traceback 남기고 재발생
+        logger.exception("[scheduler] 치명적 예외로 종료 — 워치독 재기동 대상")
+        raise
