@@ -15,6 +15,21 @@ logger = logging.getLogger(__name__)
 _sync_progress: dict = {}   # store_id → {logs, percent, done, error}
 _sync_lock = threading.Lock()
 
+# ── 옵션 불일치 감지 백그라운드 실행 상태 ──────────────────
+_detect_mismatch_status = {
+    "running": False,
+    "started_at": None,
+    "finished_at": None,
+    "current_store": "",
+    "store_progress": "",      # "2/3" 형식
+    "items_processed": 0,
+    "items_total": 0,
+    "created": 0,
+    "updated": 0,
+    "error": None,
+}
+_detect_mismatch_lock = threading.Lock()
+
 
 def _push_log(store_id: int, msg: str, percent: int = None):
     with _sync_lock:
@@ -535,10 +550,16 @@ def sync_store_option_state(flask_app=None) -> dict:
 
 # ── 도매처 단품 ↔ Naver 옵션 불일치 감지 ────────────────────
 
-def detect_option_mismatches(flask_app=None) -> dict:
+def detect_option_mismatches(flask_app=None, progress_cb=None) -> dict:
     """
     master.options_text = NULL 이지만 Naver 스토어에 optionCombinations 가 있는 상품을 탐지.
     StoreOptionMismatch 레코드를 생성/갱신한다 (pending만 갱신, resolved/ignored는 건드리지 않음).
+
+    progress_cb(stage, **kwargs): 진행 상황 콜백 (선택)
+      - stage='store_start': store_idx, total_stores, store_name, items_total
+      - stage='item_progress': items_processed, created, updated
+      - stage='store_end': store_name, items_processed
+      - stage='all_done': total_created, total_updated
     """
     import json
     from store.naver.products import get_origin_product
@@ -552,7 +573,7 @@ def detect_option_mismatches(flask_app=None) -> dict:
         created = 0
         updated = 0
 
-        for naver_store in stores:
+        for store_idx, naver_store in enumerate(stores, 1):
             # 도매처 단품(options_text NULL) + 매칭된 스토어 상품만 대상
             targets = (
                 db.session.query(StoreProduct)
@@ -566,6 +587,16 @@ def detect_option_mismatches(flask_app=None) -> dict:
                 .all()
             )
 
+            if progress_cb:
+                progress_cb(
+                    stage="store_start",
+                    store_idx=store_idx,
+                    total_stores=len(stores),
+                    store_name=naver_store.store_name,
+                    items_total=len(targets),
+                )
+
+            processed_in_store = 0
             for sp in targets:
                 try:
                     data = get_origin_product(
@@ -609,11 +640,38 @@ def detect_option_mismatches(flask_app=None) -> dict:
                 except Exception as e:
                     logger.debug(f"[mismatch] origin={sp.origin_product_no} 오류: {e}")
 
+                processed_in_store += 1
+
+                # 50건마다 중간 commit + 진행 보고
+                if processed_in_store % 50 == 0:
+                    try:
+                        db.session.commit()
+                    except Exception as ce:
+                        db.session.rollback()
+                        logger.error(f"[mismatch] 중간 커밋 실패: {ce}")
+                    if progress_cb:
+                        progress_cb(
+                            stage="item_progress",
+                            items_processed=processed_in_store,
+                            created=created,
+                            updated=updated,
+                        )
+
             try:
                 db.session.commit()
             except Exception as ce:
                 db.session.rollback()
                 logger.error(f"[mismatch] 커밋 실패: {ce}")
+
+            if progress_cb:
+                progress_cb(
+                    stage="store_end",
+                    store_name=naver_store.store_name,
+                    items_processed=processed_in_store,
+                )
+
+        if progress_cb:
+            progress_cb(stage="all_done", total_created=created, total_updated=updated)
 
         logger.info(f"[mismatch] 감지 완료: 신규 {created}건, 갱신 {updated}건")
         return {"created": created, "updated": updated}
@@ -666,6 +724,8 @@ def option_mismatch_page():
 
     pending_count = StoreOptionMismatch.query.filter_by(status="pending").count()
     naver_stores = NaverStore.query.filter_by(is_active=True).order_by(NaverStore.store_name).all()
+    with _detect_mismatch_lock:
+        detect_status = dict(_detect_mismatch_status)
     return render_template(
         "option_mismatch.html",
         rows=rows,
@@ -673,6 +733,7 @@ def option_mismatch_page():
         store_filter=store_filter,
         pending_count=pending_count,
         naver_stores=naver_stores,
+        detect_status=detect_status,
     )
 
 
@@ -815,9 +876,74 @@ def ignore_option_mismatch(mismatch_id):
 @store_bp.route("/option-mismatch/detect", methods=["POST"])
 @login_required
 def trigger_detect_mismatch():
-    """수동 감지 실행"""
-    result = detect_option_mismatches()
-    return {"ok": True, "created": result["created"], "updated": result["updated"]}
+    """수동 감지 실행 — 백그라운드 스레드로 시작."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    from flask import current_app
+
+    _kst = ZoneInfo("Asia/Seoul")
+
+    with _detect_mismatch_lock:
+        if _detect_mismatch_status["running"]:
+            return {"ok": False, "started": False, "reason": "이미 감지가 진행 중입니다."}, 409
+        _detect_mismatch_status.update({
+            "running": True,
+            "started_at": datetime.now(_kst).strftime("%Y-%m-%d %H:%M:%S"),
+            "finished_at": None,
+            "current_store": "",
+            "store_progress": "",
+            "items_processed": 0,
+            "items_total": 0,
+            "created": 0,
+            "updated": 0,
+            "error": None,
+        })
+
+    flask_app = current_app._get_current_object()
+
+    def _cb(stage, **kwargs):
+        with _detect_mismatch_lock:
+            if stage == "store_start":
+                _detect_mismatch_status.update({
+                    "current_store": kwargs.get("store_name", ""),
+                    "store_progress": f"{kwargs.get('store_idx')}/{kwargs.get('total_stores')}",
+                    "items_processed": 0,
+                    "items_total": kwargs.get("items_total", 0),
+                })
+            elif stage == "item_progress":
+                _detect_mismatch_status.update({
+                    "items_processed": kwargs.get("items_processed", 0),
+                    "created": kwargs.get("created", 0),
+                    "updated": kwargs.get("updated", 0),
+                })
+            elif stage == "store_end":
+                _detect_mismatch_status["items_processed"] = kwargs.get("items_processed", 0)
+            elif stage == "all_done":
+                _detect_mismatch_status["created"] = kwargs.get("total_created", 0)
+                _detect_mismatch_status["updated"] = kwargs.get("total_updated", 0)
+
+    def _runner():
+        try:
+            detect_option_mismatches(flask_app=flask_app, progress_cb=_cb)
+        except Exception as e:
+            logger.exception("[mismatch] 백그라운드 감지 실패")
+            with _detect_mismatch_lock:
+                _detect_mismatch_status["error"] = str(e)
+        finally:
+            with _detect_mismatch_lock:
+                _detect_mismatch_status["running"] = False
+                _detect_mismatch_status["finished_at"] = datetime.now(_kst).strftime("%Y-%m-%d %H:%M:%S")
+
+    threading.Thread(target=_runner, daemon=True).start()
+    return {"ok": True, "started": True}, 202
+
+
+@store_bp.route("/option-mismatch/detect/status")
+@login_required
+def detect_mismatch_status():
+    """현재 감지 진행 상태 조회"""
+    with _detect_mismatch_lock:
+        return dict(_detect_mismatch_status)
 
 
 # ── 관리 페이지 ──────────────────────────────────────────

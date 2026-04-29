@@ -34,8 +34,18 @@
       도매 단품 ↔ 스토어 옵션 불일치
       {% if pending_count %}<span class="badge badge-warning" style="margin-left:8px;">{{ pending_count }}</span>{% endif %}
     </h2>
-    <button class="btn" style="background:#2c3e50;color:white;" onclick="detectNow()">지금 감지 실행</button>
+    <button id="detect-btn" class="btn" style="background:#2c3e50;color:white;" onclick="detectNow()">지금 감지 실행</button>
   </div>
+
+  <!-- 감지 진행 상태 표시 -->
+  <div id="detect-progress" style="display:none; margin-bottom:16px; padding:14px 16px; background:#fef3c7; border:1px solid #fbbf24; border-radius:6px; font-size:13px;">
+    <div style="font-weight:600; color:#92400e; margin-bottom:8px;">⏳ 감지 진행 중 (페이지 닫아도 백그라운드에서 계속됩니다)</div>
+    <div id="dp-line1" style="margin-bottom:4px;">시작 시각: <span id="dp-started">-</span></div>
+    <div id="dp-line2" style="margin-bottom:4px;">현재 스토어: <span id="dp-store">-</span> <span id="dp-storeprog" style="color:#9ca3af;"></span></div>
+    <div id="dp-line3" style="margin-bottom:4px;">처리: <span id="dp-items">0 / 0</span></div>
+    <div id="dp-line4">발견: 신규 <span id="dp-created">0</span>건, 갱신 <span id="dp-updated">0</span>건</div>
+  </div>
+  <div id="detect-result" style="display:none; margin-bottom:16px; padding:14px 16px; background:#d1fae5; border:1px solid #86efac; border-radius:6px; font-size:13px; color:#065f46;"></div>
 
   <div class="tab-bar">
     <a href="?status=pending{% if store_filter %}&store_id={{ store_filter }}{% endif %}"
@@ -299,23 +309,100 @@ async function ignoreRow(id, btn) {
   }
 }
 
-async function detectNow() {
-  const btn = event.target;
+let _detectPollTimer = null;
+
+function showDetectProgress(s) {
+  document.getElementById('detect-progress').style.display = 'block';
+  document.getElementById('detect-result').style.display = 'none';
+  document.getElementById('dp-started').textContent = s.started_at || '-';
+  document.getElementById('dp-store').textContent = s.current_store || '대기 중';
+  document.getElementById('dp-storeprog').textContent = s.store_progress ? `(${s.store_progress})` : '';
+  document.getElementById('dp-items').textContent = `${(s.items_processed||0).toLocaleString()} / ${(s.items_total||0).toLocaleString()}`;
+  document.getElementById('dp-created').textContent = (s.created||0).toLocaleString();
+  document.getElementById('dp-updated').textContent = (s.updated||0).toLocaleString();
+  const btn = document.getElementById('detect-btn');
   btn.disabled = true;
   btn.textContent = '감지 중...';
+}
+
+function showDetectResult(s) {
+  document.getElementById('detect-progress').style.display = 'none';
+  const result = document.getElementById('detect-result');
+  result.style.display = 'block';
+  if (s.error) {
+    result.style.background = '#fee2e2';
+    result.style.borderColor = '#fca5a5';
+    result.style.color = '#991b1b';
+    result.innerHTML = `❌ 감지 실패 — ${s.error}`;
+  } else {
+    result.style.background = '#d1fae5';
+    result.style.borderColor = '#86efac';
+    result.style.color = '#065f46';
+    result.innerHTML = `✅ 감지 완료 (${s.finished_at || '-'}) — 신규 <b>${(s.created||0).toLocaleString()}</b>건, 갱신 <b>${(s.updated||0).toLocaleString()}</b>건. <a href="javascript:location.reload()" style="margin-left:10px; color:#065f46; text-decoration:underline;">새로고침해서 목록 보기</a>`;
+  }
+  const btn = document.getElementById('detect-btn');
+  btn.disabled = false;
+  btn.textContent = '지금 감지 실행';
+}
+
+async function pollDetectStatus() {
+  try {
+    const r = await fetch('/option-mismatch/detect/status');
+    const s = await r.json();
+    if (s.running) {
+      showDetectProgress(s);
+    } else {
+      // 종료됨
+      if (s.finished_at) {
+        showDetectResult(s);
+      }
+      if (_detectPollTimer) {
+        clearInterval(_detectPollTimer);
+        _detectPollTimer = null;
+      }
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+async function detectNow() {
+  const btn = document.getElementById('detect-btn');
+  btn.disabled = true;
+  btn.textContent = '시작 중...';
   try {
     const r = await fetch('/option-mismatch/detect', {method:'POST'});
     const d = await r.json();
-    if (d.ok) {
-      alert(`감지 완료: 신규 ${d.created}건, 갱신 ${d.updated}건`);
-      location.reload();
+    if (d.ok && d.started) {
+      // 즉시 폴링 시작
+      pollDetectStatus();
+      if (!_detectPollTimer) _detectPollTimer = setInterval(pollDetectStatus, 3000);
+    } else if (!d.ok && d.reason) {
+      alert(d.reason);
+      btn.disabled = false;
+      btn.textContent = '지금 감지 실행';
+      // 이미 진행 중이면 폴링은 시작
+      pollDetectStatus();
+      if (!_detectPollTimer) _detectPollTimer = setInterval(pollDetectStatus, 3000);
+    } else {
+      btn.disabled = false;
+      btn.textContent = '지금 감지 실행';
     }
-  } catch(e) {
-    alert('감지 실패: ' + e.message);
-  } finally {
+  } catch (e) {
+    alert('요청 실패: ' + e.message);
     btn.disabled = false;
     btn.textContent = '지금 감지 실행';
   }
 }
+
+// 페이지 로드 시 진행 중인 감지가 있으면 자동으로 폴링 시작
+(function () {
+  const initial = {{ detect_status | tojson }};
+  if (initial && initial.running) {
+    showDetectProgress(initial);
+    pollDetectStatus();
+    _detectPollTimer = setInterval(pollDetectStatus, 3000);
+  }
+})();
 </script>
 {% endblock %}
