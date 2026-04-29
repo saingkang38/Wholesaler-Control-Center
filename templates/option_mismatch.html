@@ -62,7 +62,10 @@
 
   <p style="font-size:13px; color:#6b7280; margin-bottom:16px;">
     도매처에 옵션 없는 단품인데 스마트스토어에 옵션이 있는 상품 목록입니다.
-    <b>추가금 초기화</b>를 누르면 스마트스토어 옵션 추가금을 전부 0원으로 만들고 도매가 기준 가격을 적용합니다.
+    <b>옵션 제거 미리보기</b>를 누르면 현재 스토어 옵션 상태를 확인할 수 있고,
+    미리보기 화면에서 <b>확정</b> 시 스마트스토어 옵션이 제거되고 도매가 기준 가격이 적용됩니다.
+    <span style="color:#dc2626;">되돌릴 수 없는 작업이니 신중하게 검토해주세요.</span>
+    의도적으로 옵션을 두신 상품은 <b>무시</b>를 누르세요.
   </p>
 
   {% if rows %}
@@ -117,8 +120,8 @@
         <td style="font-size:12px; color:#9ca3af;">{{ row.created_at }}</td>
         <td style="white-space:nowrap;">
           {% if row.status == 'pending' %}
-          <button class="btn" style="background:#059669;color:white;"
-                  onclick="resolve({{ row.id }}, this)">추가금 초기화</button>
+          <button class="btn" style="background:#dc2626;color:white;"
+                  onclick="openPreview({{ row.id }}, this)">옵션 제거 미리보기</button>
           <button class="btn" style="background:#9ca3af;color:white; margin-top:4px;"
                   onclick="ignoreRow({{ row.id }}, this)">무시</button>
           {% endif %}
@@ -138,29 +141,144 @@
   {% endif %}
 </div>
 
+<!-- 옵션 제거 미리보기 모달 -->
+<div id="preview-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.45); z-index:1000; align-items:center; justify-content:center;">
+  <div style="background:#fff; border-radius:10px; width:90%; max-width:680px; max-height:85vh; display:flex; flex-direction:column; overflow:hidden;">
+    <div style="padding:16px 20px; border-bottom:1px solid #eee; background:#fef2f2; display:flex; justify-content:space-between; align-items:center;">
+      <h3 style="margin:0; font-size:16px; color:#991b1b;">⚠ 옵션 제거 미리보기</h3>
+      <button onclick="closePreview()" style="background:none; border:none; font-size:22px; cursor:pointer; color:#999;">×</button>
+    </div>
+    <div id="preview-body" style="padding:20px; overflow-y:auto; flex:1;">
+      <div style="text-align:center; color:#9ca3af;">조회 중...</div>
+    </div>
+    <div style="padding:14px 20px; border-top:1px solid #eee; background:#f8f9fa; display:flex; gap:8px; justify-content:flex-end;">
+      <button id="confirm-btn" class="btn" style="background:#dc2626;color:white;" onclick="confirmRemove()" disabled>확정 (옵션 제거)</button>
+      <button class="btn" style="background:#e5e7eb;color:#374151;" onclick="closePreview()">취소</button>
+    </div>
+  </div>
+</div>
+
 <script>
-async function resolve(id, btn) {
-  if (!confirm('스마트스토어 옵션 추가금을 전부 0원으로 초기화하고 도매가 기준 가격을 반영합니다. 진행할까요?')) return;
+let _previewMismatchId = null;
+let _previewBtn = null;
+
+function fmtKRW(n) {
+  if (n === null || n === undefined) return '-';
+  return Number(n).toLocaleString() + '원';
+}
+
+async function openPreview(id, btn) {
+  _previewMismatchId = id;
+  _previewBtn = btn;
   btn.disabled = true;
-  btn.textContent = '처리중...';
+  btn.textContent = '조회중...';
+
+  document.getElementById('preview-body').innerHTML = '<div style="text-align:center; color:#9ca3af;">네이버에서 현재 옵션 정보 조회 중...</div>';
+  document.getElementById('confirm-btn').disabled = true;
+  document.getElementById('preview-modal').style.display = 'flex';
+
+  try {
+    const r = await fetch(`/option-mismatch/${id}/preview`);
+    const d = await r.json();
+    if (d.ok) {
+      renderPreview(d);
+      document.getElementById('confirm-btn').disabled = false;
+    } else {
+      document.getElementById('preview-body').innerHTML = `<div style="color:#dc2626; padding:20px; text-align:center;">조회 실패: ${d.error || '알 수 없는 오류'}</div>`;
+    }
+  } catch (e) {
+    document.getElementById('preview-body').innerHTML = `<div style="color:#dc2626; padding:20px; text-align:center;">요청 실패: ${e.message}</div>`;
+  } finally {
+    _previewBtn.disabled = false;
+    _previewBtn.textContent = '옵션 제거 미리보기';
+  }
+}
+
+function renderPreview(d) {
+  const combosHtml = d.current_combinations.length === 0
+    ? '<span style="color:#9ca3af;">옵션 없음</span>'
+    : d.current_combinations.map(c => {
+        const stockTxt = c.stock !== null && c.stock !== undefined ? ` <span style="color:#6b7280; font-size:11px;">(재고 ${c.stock})</span>` : '';
+        const priceTxt = c.price !== 0 ? ` <b style="color:#d97706;">+${Number(c.price).toLocaleString()}</b>` : ' <span style="color:#9ca3af;">+0</span>';
+        const usableTxt = c.usable === false ? ' <span style="color:#dc2626; font-size:11px;">(비활성)</span>' : '';
+        return `<span style="display:inline-block; background:#f3f4f6; border:1px solid #d1d5db; border-radius:3px; padding:2px 8px; margin:2px 3px 0 0; font-size:13px;">${escapeHtml(c.name)}${priceTxt}${stockTxt}${usableTxt}</span>`;
+      }).join('');
+
+  document.getElementById('preview-body').innerHTML = `
+    <div style="margin-bottom:14px;">
+      <div style="font-size:13px; color:#6b7280;">상품명</div>
+      <div style="font-size:15px; font-weight:600;">${escapeHtml(d.product_name)}</div>
+    </div>
+    <div style="display:flex; gap:14px; margin-bottom:14px; font-size:13px;">
+      <div style="flex:1;"><span style="color:#6b7280;">스토어:</span> ${escapeHtml(d.store_name)}</div>
+      <div style="flex:1;"><span style="color:#6b7280;">도매처:</span> ${escapeHtml(d.wholesaler_name)}</div>
+    </div>
+
+    <div style="background:#fffbeb; border:1px solid #fed7aa; border-radius:6px; padding:12px 14px; margin-bottom:12px;">
+      <div style="font-size:12px; color:#92400e; font-weight:600; margin-bottom:6px;">현재 스마트스토어 상태</div>
+      <div style="font-size:13px; margin-bottom:6px;">판매가: <b>${fmtKRW(d.current_sale_price)}</b></div>
+      <div style="font-size:13px; margin-bottom:4px;">옵션 ${d.combo_count}개:</div>
+      <div>${combosHtml}</div>
+    </div>
+
+    <div style="font-size:13px; color:#9ca3af; text-align:center; margin:6px 0;">↓ 변경 후 ↓</div>
+
+    <div style="background:#ecfdf5; border:1px solid #a7f3d0; border-radius:6px; padding:12px 14px; margin-bottom:12px;">
+      <div style="font-size:12px; color:#065f46; font-weight:600; margin-bottom:6px;">변경 후 (도매처 기준)</div>
+      <div style="font-size:13px; margin-bottom:4px;">옵션: <b>모두 제거 → 단품</b></div>
+      <div style="font-size:13px; margin-bottom:4px;">도매가: ${fmtKRW(d.wholesale_price)}</div>
+      <div style="font-size:13px;">판매가: <b style="color:#059669;">${fmtKRW(d.new_sale_price)}</b> (마진 적용)</div>
+    </div>
+
+    <div style="background:#fee2e2; border:1px solid #fecaca; border-radius:6px; padding:10px 14px; font-size:12px; color:#991b1b; line-height:1.6;">
+      <b>주의:</b> 옵션 제거 후엔 시스템 자동 되돌리기 불가합니다. 옵션별 재고/리뷰 표시가 영향받을 수 있으며, 진행 중 주문이 있으면 처리가 거부될 수 있습니다.
+      카테고리 옵션 필수인 상품(예: 의류)은 네이버 API가 거부할 수 있습니다.
+    </div>
+  `;
+}
+
+function escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
+}
+
+function closePreview() {
+  document.getElementById('preview-modal').style.display = 'none';
+  _previewMismatchId = null;
+}
+
+async function confirmRemove() {
+  if (!_previewMismatchId) return;
+  if (!confirm('정말로 옵션을 제거하시겠습니까?\n네이버에서 옵션이 영구 제거되며 되돌릴 수 없습니다.')) return;
+
+  const id = _previewMismatchId;
+  const confirmBtn = document.getElementById('confirm-btn');
+  confirmBtn.disabled = true;
+  confirmBtn.textContent = '처리중...';
+
   try {
     const r = await fetch(`/option-mismatch/${id}/resolve`, {method:'POST'});
     const d = await r.json();
     if (d.ok) {
+      closePreview();
       const row = document.getElementById(`row-${id}`);
       if (row) row.style.opacity = '0.4';
-      btn.textContent = '완료';
-      btn.style.background = '#d1fae5';
-      btn.style.color = '#059669';
+      if (_previewBtn) {
+        _previewBtn.textContent = '완료';
+        _previewBtn.style.background = '#d1fae5';
+        _previewBtn.style.color = '#059669';
+        _previewBtn.disabled = true;
+      }
+      alert(`옵션 ${d.removed_count || 0}개 제거 완료. 새 가격: ${fmtKRW(d.new_price)}`);
     } else {
-      alert('오류: ' + (d.error || '알 수 없는 오류'));
-      btn.disabled = false;
-      btn.textContent = '추가금 초기화';
+      alert('처리 실패: ' + (d.error || '알 수 없는 오류'));
+      confirmBtn.disabled = false;
+      confirmBtn.textContent = '확정 (옵션 제거)';
     }
-  } catch(e) {
+  } catch (e) {
     alert('요청 실패: ' + e.message);
-    btn.disabled = false;
-    btn.textContent = '추가금 초기화';
+    confirmBtn.disabled = false;
+    confirmBtn.textContent = '확정 (옵션 제거)';
   }
 }
 

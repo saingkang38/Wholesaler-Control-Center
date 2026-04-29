@@ -676,12 +676,11 @@ def option_mismatch_page():
     )
 
 
-@store_bp.route("/option-mismatch/<int:mismatch_id>/resolve", methods=["POST"])
+@store_bp.route("/option-mismatch/<int:mismatch_id>/preview")
 @login_required
-def resolve_option_mismatch(mismatch_id):
-    """Naver 옵션 추가금 전부 0으로 초기화 + 도매처 기준 가격 반영 → resolved"""
-    import json as _json
-    from store.naver.products import get_origin_product, update_origin_product
+def preview_option_removal(mismatch_id):
+    """옵션 제거 미리보기 — 네이버 현재 옵션 정보와 변경 후 모습을 반환 (API 변경 없음)."""
+    from store.naver.products import get_origin_product
     from app.settings import apply_margin
 
     m = StoreOptionMismatch.query.get_or_404(mismatch_id)
@@ -694,7 +693,6 @@ def resolve_option_mismatch(mismatch_id):
         return {"ok": False, "error": "스토어 정보 없음"}, 400
 
     try:
-        from store.naver import update_price as _naver_update_price
         client_id = sp.naver_store.client_id
         client_secret = sp.naver_store.client_secret
 
@@ -703,30 +701,83 @@ def resolve_option_mismatch(mismatch_id):
         option_info = origin.get("detailAttribute", {}).get("optionInfo", {})
         combinations = option_info.get("optionCombinations", [])
 
+        current_combos = [
+            {
+                "name": (c.get("optionName1") or c.get("optionName2") or "").strip() or "(이름없음)",
+                "price": c.get("price", 0),
+                "stock": c.get("stockQuantity"),
+                "usable": c.get("usable", True),
+            }
+            for c in combinations
+        ]
+
+        new_price = apply_margin(master.price)
+
+        return {
+            "ok": True,
+            "product_name": master.product_name or "-",
+            "store_name": sp.naver_store.store_name,
+            "wholesaler_name": master.wholesaler.name if master.wholesaler else "-",
+            "current_sale_price": origin.get("salePrice"),
+            "current_combinations": current_combos,
+            "combo_count": len(current_combos),
+            "wholesale_price": master.price,
+            "new_sale_price": new_price,
+        }
+
+    except Exception as e:
+        logger.error(f"[mismatch] 미리보기 실패: {e}")
+        return {"ok": False, "error": str(e)}, 500
+
+
+@store_bp.route("/option-mismatch/<int:mismatch_id>/resolve", methods=["POST"])
+@login_required
+def resolve_option_mismatch(mismatch_id):
+    """옵션 자체를 제거하고 도매가 기준 가격을 적용 → resolved.
+    도매처가 단품인데 스마트스토어에 옵션이 있는 케이스를 도매처 기준으로 원복."""
+    from store.naver.products import get_origin_product, update_origin_product
+    from store.naver import update_price as _naver_update_price
+    from app.settings import apply_margin
+
+    m = StoreOptionMismatch.query.get_or_404(mismatch_id)
+    sp = m.store_product
+    master = sp.master if sp else None
+
+    if not sp or not master or not sp.origin_product_no:
+        return {"ok": False, "error": "상품 정보 없음"}, 400
+    if not sp.naver_store:
+        return {"ok": False, "error": "스토어 정보 없음"}, 400
+
+    try:
+        client_id = sp.naver_store.client_id
+        client_secret = sp.naver_store.client_secret
+
+        product_data = get_origin_product(sp.origin_product_no, client_id, client_secret)
+        origin = product_data.get("originProduct", {})
+        detail = origin.setdefault("detailAttribute", {})
+        option_info = detail.get("optionInfo", {})
+        combinations = option_info.get("optionCombinations", [])
+
         new_price = apply_margin(master.price)
 
         if combinations:
-            # Step 1: 기존 salePrice 유지하면서 combo 추가금만 0으로 초기화
-            # (기존 salePrice 기준으로 0은 항상 허용 범위 → Naver 검증 통과)
-            for combo in combinations:
-                combo["price"] = 0
-            option_info["optionCombinations"] = combinations
-            origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
-            # salePrice, customerBenefit은 이 단계에서 변경 안 함
+            # Step 1: 옵션 제거 — optionCombinations 비우고 그룹명도 정리
+            detail["optionInfo"] = {"optionCombinations": []}
             payload = {
                 "originProduct": origin,
                 "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
             }
             update_origin_product(sp.origin_product_no, payload, client_id, client_secret)
             logger.info(
-                f"[mismatch] Step1: combo 추가금 → 0 초기화 "
-                f"(store_product_id={sp.id}, combo_count={len(combinations)})"
+                f"[mismatch] Step1: 옵션 제거 (store_product_id={sp.id}, "
+                f"removed_count={len(combinations)})"
             )
 
-        # Step 2: combo 전부 0이므로 이제 새 salePrice 적용 (항상 안전)
+        # Step 2: 도매가 기준 새 salePrice 적용 (옵션 비웠으니 안전)
         _naver_update_price(sp.origin_product_no, new_price, client_id=client_id, client_secret=client_secret)
         logger.info(f"[mismatch] Step2: 가격 반영 (store_product_id={sp.id}, price={new_price})")
 
+        # 단품 상태로 store_products 캐시 정리
         sp.sale_price = new_price
         sp.option_list_price = new_price
         sp.option_discount_amount = None
@@ -739,14 +790,14 @@ def resolve_option_mismatch(mismatch_id):
         db.session.commit()
 
         logger.info(
-            f"[mismatch] 추가금 초기화 완료: store_product_id={sp.id}, "
-            f"combo_count={len(combinations)}, price={new_price}"
+            f"[mismatch] 옵션 제거 완료: store_product_id={sp.id}, "
+            f"removed_count={len(combinations)}, price={new_price}"
         )
-        return {"ok": True}
+        return {"ok": True, "removed_count": len(combinations), "new_price": new_price}
 
     except Exception as e:
         db.session.rollback()
-        logger.error(f"[mismatch] 처리 실패: {e}")
+        logger.error(f"[mismatch] 옵션 제거 실패: {e}")
         return {"ok": False, "error": str(e)}, 500
 
 
