@@ -615,28 +615,27 @@ def detect_option_mismatches(flask_app=None, progress_cb=None) -> dict:
                         if sp.option_mismatch and sp.option_mismatch.status == "pending":
                             sp.option_mismatch.status = "resolved"
                             sp.option_mismatch.resolved_at = kst_now()
-                        continue
-
-                    combo_data = json.dumps(
-                        [{"name": c.get("optionName1") or c.get("optionName2") or "", "price": c.get("price", 0)}
-                         for c in combos],
-                        ensure_ascii=False,
-                    )
-
-                    existing = sp.option_mismatch
-                    if existing:
-                        if existing.status == "pending":
-                            existing.naver_combos = combo_data
-                            existing.updated_at = kst_now()
-                            updated += 1
-                        # resolved/ignored는 건드리지 않음
                     else:
-                        db.session.add(StoreOptionMismatch(
-                            store_product_id=sp.id,
-                            naver_combos=combo_data,
-                            status="pending",
-                        ))
-                        created += 1
+                        combo_data = json.dumps(
+                            [{"name": c.get("optionName1") or c.get("optionName2") or "", "price": c.get("price", 0)}
+                             for c in combos],
+                            ensure_ascii=False,
+                        )
+
+                        existing = sp.option_mismatch
+                        if existing:
+                            if existing.status == "pending":
+                                existing.naver_combos = combo_data
+                                existing.updated_at = kst_now()
+                                updated += 1
+                            # resolved/ignored는 건드리지 않음
+                        else:
+                            db.session.add(StoreOptionMismatch(
+                                store_product_id=sp.id,
+                                naver_combos=combo_data,
+                                status="pending",
+                            ))
+                            created += 1
                 except Exception as e:
                     logger.debug(f"[mismatch] origin={sp.origin_product_no} 오류: {e}")
 
