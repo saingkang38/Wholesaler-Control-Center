@@ -8,6 +8,9 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from app.collectors.base import BaseCollector
 
+# 옵션 placeholder/그룹 구분자 패턴 (cafe24 표준 select 구조에서 헤더성 행)
+_OPT_PLACEHOLDER_RE = re.compile(r"^[\-=*\s]+$|^선택\s*$|^옵션\s*선택\s*$")
+
 BASE_URL = "https://www.ds1008.com"
 LOGIN_URL = f"{BASE_URL}/member/login.html"
 
@@ -284,14 +287,25 @@ class Ds1008Collector(BaseCollector):
         for sel_el in soup.select(".xans-product-option select, select[name*=option]"):
             for opt in sel_el.find_all("option"):
                 text = opt.get_text(strip=True)
-                if not text or "선택해 주세요" in text:
+                # placeholder/그룹 구분자/빈 옵션 제거 (표준 R5, R7)
+                if not text:
+                    continue
+                if "선택해 주세요" in text:
+                    continue
+                if _OPT_PLACEHOLDER_RE.match(text):
                     continue
                 all_option_values.append(text)
                 price_match = re.search(r"([+-])\s*([\d,]+)\s*원", text)
                 if price_match:
                     sign = 1 if price_match.group(1) == "+" else -1
                     opt_diff = int(price_match.group(2).replace(",", "")) * sign
-                    all_option_prices.append(str(opt_diff))
+                    # 부호 정규화: 0 / +500 / -100
+                    if opt_diff > 0:
+                        all_option_prices.append(f"+{opt_diff}")
+                    elif opt_diff < 0:
+                        all_option_prices.append(str(opt_diff))
+                    else:
+                        all_option_prices.append("0")
                 else:
                     all_option_prices.append("0")
 
