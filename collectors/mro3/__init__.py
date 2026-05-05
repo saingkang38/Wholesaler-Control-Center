@@ -213,18 +213,36 @@ class Mro3Collector(BaseCollector):
             parts = [p.strip() for p in raw.split(",")]
             # 첫 번째는 옵션명(키워드), 나머지가 실제 옵션값
             values = parts[1:] if len(parts) > 1 else parts
+            # 빈 옵션값 제거 (표준 R7)
+            values = [v for v in values if v]
+            if not values:
+                i += 1
+                continue
 
             opt_price_el = product.find(f"option{i}price")
             raw_prices = (opt_price_el.text or "").strip() if opt_price_el is not None else ""
             price_parts = [p.strip() for p in raw_prices.split(",") if p.strip()] if raw_prices else []
 
+            # 표준 R1: 옵션값 수와 가격 수 미일치 시 경고 (가격 비어있으면 통과)
+            if price_parts and len(price_parts) != len(values):
+                logger.warning(
+                    f"[mro3] option{i} 줄 수 미일치 (값={len(values)}, 가격={len(price_parts)}) "
+                    f"code={product.get('code')}"
+                )
+
             for j, val in enumerate(values):
                 abs_price = self._parse_price(price_parts[j]) if j < len(price_parts) else None
+                # 부호 정규화: 0 / +500 / -100
                 if abs_price is None or abs_price == 0:
                     diff_str = "0"
                 else:
                     diff = abs_price - (base_price or 0)
-                    diff_str = f"+{diff}" if diff > 0 else str(diff)
+                    if diff > 0:
+                        diff_str = f"+{diff}"
+                    elif diff < 0:
+                        diff_str = str(diff)
+                    else:
+                        diff_str = "0"
                 all_names.append(val)
                 all_diffs.append(diff_str)
 

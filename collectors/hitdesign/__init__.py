@@ -8,6 +8,9 @@ from bs4 import BeautifulSoup
 from playwright.sync_api import sync_playwright
 from app.collectors.base import BaseCollector
 
+# 옵션 placeholder 패턴 (cafe24 표준 옵션 select 헤더성 값)
+_OPT_PLACEHOLDER_RE = re.compile(r"^[\-=*\s]+$|^선택\s*$|^옵션\s*선택\s*$")
+
 BASE_URL = "https://b2b-hitdesign.com"
 LOGIN_URL = f"{BASE_URL}/member/login.html"
 LOGIN_ACTION = f"{BASE_URL}/exec/front/Member/login/"
@@ -303,15 +306,25 @@ class HitdesignCollector(BaseCollector):
             for opt in sel.select("option"):
                 val = opt.get("value", "")
                 text = opt.get_text(strip=True)
+                # placeholder/빈 옵션 제거 (표준 R5, R7)
                 if val in ("*", "**") or not text:
+                    continue
+                if _OPT_PLACEHOLDER_RE.match(text):
                     continue
                 all_option_values.append(text)
                 # 옵션가 파싱: 텍스트에서 (+1,000원) 또는 (-500원) 형태 추출
                 price_match = re.search(r"\(([+-][\d,]+)원\)", text)
                 if price_match:
-                    opt_diff = self._parse_price(price_match.group(1).replace("+", "").replace("-", ""))
-                    sign = "-" if "-" in price_match.group(1) else "+"
-                    all_option_prices.append(f"{sign}{opt_diff}" if opt_diff else "0")
+                    raw = price_match.group(1)
+                    sign = -1 if raw.startswith("-") else 1
+                    opt_diff = self._parse_price(raw.replace("+", "").replace("-", ""))
+                    # 부호 정규화: 0 / +1000 / -500
+                    if opt_diff is None or opt_diff == 0:
+                        all_option_prices.append("0")
+                    elif sign > 0:
+                        all_option_prices.append(f"+{opt_diff}")
+                    else:
+                        all_option_prices.append(f"-{opt_diff}")
                 else:
                     all_option_prices.append("0")
 
