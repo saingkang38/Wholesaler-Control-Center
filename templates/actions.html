@@ -131,6 +131,7 @@
       ('OPTION', '옵션변동'),
       ('OPTION_ADD', '옵션추가'),
       ('RESUME_POSSIBLE', '판매재개'),
+      ('OPTION_STOCK_REFILL_NEEDED', '재고복구'),
     ] %}
     {% for val, label in sig_items %}
     <a href="/actions?status=pending&per_page={{ per_page }}{{ otq }}{{ sq }}{% if val %}&signal_type={{ val }}{% endif %}"

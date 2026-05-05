@@ -110,6 +110,77 @@ def _get_prefixes() -> list:
     return [w.prefix for w in Wholesaler.query.filter(Wholesaler.prefix.isnot(None)).all()]
 
 
+# ── 오너클랜 옵션 차원 자동 매칭 헬퍼 ────────────────────────────────
+# master.options_text가 "청색_230mm" 같이 1차원으로 합쳐져 있는데
+# Naver는 (청색, 230mm) 다차원으로 등록된 케이스를 안전 조건 하에 자동 인식.
+# 적용 범위는 오너클랜만, 완전 일치만 허용.
+
+def _is_ownerclan(master) -> bool:
+    """master가 오너클랜 도매처 상품인지"""
+    return bool(master and master.wholesaler and master.wholesaler.code == "ownerclan")
+
+
+def _split_ownerclan_options(options_text: str):
+    """오너클랜 1차원 옵션 텍스트를 (n1, n2) 리스트로 안전 분리.
+    안전 조건 미충족 시 None 반환:
+      - 빈 텍스트 / 빈 리스트
+      - 일부 줄에 _가 0개 또는 2개 이상 (혼합/3차원)
+      - 분리 결과 빈 토큰 발생
+    """
+    if not options_text:
+        return None
+    lines = [l.strip() for l in options_text.split("\n") if l.strip()]
+    if not lines:
+        return None
+    if not all(line.count("_") == 1 for line in lines):
+        return None
+    pairs = []
+    for line in lines:
+        n1, _, n2 = line.partition("_")
+        n1, n2 = n1.strip(), n2.strip()
+        if not n1 or not n2:
+            return None
+        pairs.append((n1, n2))
+    return pairs
+
+
+def _match_ownerclan_dim(master, naver_combos: list):
+    """오너클랜 master ↔ Naver 다차원 콤보 완전 일치 검증.
+    완전 일치 시 매칭 정보 dict 반환, 아니면 None.
+
+    반환 구조:
+      {"master_pairs": [(n1, n2), ...],          # master 순서 보존
+       "combo_index_by_pair": {(n1, n2): naver_combo_idx, ...}}
+
+    안전 조건:
+      - master 가 오너클랜
+      - master.options_text 모든 줄이 정확히 _ 1개 (혼합/3차원 금지)
+      - Naver 모든 콤보가 optionName1, optionName2 채워짐 (1차원 콤보 섞이면 거부)
+      - Naver 콤보 (n1, n2) 키 중복 없음
+      - master 분리 결과 집합 == Naver (n1, n2) 집합 (set equality)
+    """
+    if not _is_ownerclan(master):
+        return None
+    pairs = _split_ownerclan_options(master.options_text or "")
+    if pairs is None:
+        return None
+    if not naver_combos:
+        return None
+    n_index = {}
+    for i, c in enumerate(naver_combos):
+        n1 = (c.get("optionName1") or "").strip()
+        n2 = (c.get("optionName2") or "").strip()
+        if not n1 or not n2:
+            return None
+        key = (n1, n2)
+        if key in n_index:
+            return None
+        n_index[key] = i
+    if set(pairs) != set(n_index.keys()):
+        return None
+    return {"master_pairs": pairs, "combo_index_by_pair": n_index}
+
+
 def _build_master_map(seller_codes: set, prefixes: list) -> dict:
     """seller_code → MasterProduct 매핑 딕셔너리 — 배치 IN 쿼리로 N+1 + SQLite 변수 제한 방지"""
     if not seller_codes:
@@ -460,7 +531,8 @@ def sync_store_option_state(flask_app=None) -> dict:
             commit_batch = []
 
             def _fetch_additions(origin_no: int, master_price: int, master_diffs: str):
-                """API 호출 → (is_match, additions_str) 반환 — SQLAlchemy 객체 접근 없음"""
+                """API 호출 → (is_match, additions_str, stocks_str, usable_str, has_multi_dim, combos_for_mismatch) 반환.
+                SQLAlchemy 객체 접근 없음 (스레드 안전)."""
                 try:
                     data = get_origin_product(origin_no, naver_store.client_id, naver_store.client_secret)
                     combos = (
@@ -470,18 +542,35 @@ def sync_store_option_state(flask_app=None) -> dict:
                         .get("optionCombinations", [])
                     )
                     if not combos:
-                        return False, None
+                        return False, None, None, None, False, None
                     store_additions = [c.get("price", 0) for c in combos]
                     additions_str = "\n".join(str(a) for a in store_additions)
+                    # OPTION_STOCK_REFILL_NEEDED 감지용 — 옵션별 재고/usable 함께 캐시
+                    stocks_str = "\n".join(str(c.get("stockQuantity") or 0) for c in combos)
+                    usable_str = "\n".join("1" if c.get("usable", True) else "0" for c in combos)
+                    # dimension_mismatch 감지용 — optionName2가 채워진 콤보가 있으면 다차원
+                    has_multi_dim = any((c.get("optionName2") or "").strip() for c in combos)
+                    combos_for_mismatch = None
+                    if has_multi_dim:
+                        # mismatch 테이블 기록용 페이로드 (스레드 외부에서 사용)
+                        import json as _json
+                        combos_for_mismatch = _json.dumps(
+                            [{"name1": c.get("optionName1") or "",
+                              "name2": c.get("optionName2") or "",
+                              "price": c.get("price", 0),
+                              "stock": c.get("stockQuantity"),
+                              "usable": c.get("usable", True)} for c in combos],
+                            ensure_ascii=False,
+                        )
                     try:
                         expected = calculate_option_pricing(master_price, master_diffs)["additions"]
                         is_match = (len(store_additions) == len(expected) and store_additions == expected)
                     except Exception:
                         is_match = False
-                    return is_match, additions_str
+                    return is_match, additions_str, stocks_str, usable_str, has_multi_dim, combos_for_mismatch
                 except Exception as e:
                     logger.debug(f"[option_sync] origin={origin_no} 오류: {e}")
-                    return False, None
+                    return False, None, None, None, False, None
 
             # primitive 값만 추출 후 스레드에 전달 (SQLAlchemy 세션 스레드 안전성 문제 방지)
             task_data = [
@@ -499,12 +588,53 @@ def sync_store_option_state(flask_app=None) -> dict:
                     sp = future_map[future]
                     checked += 1
                     try:
-                        is_match, additions_str = future.result()
+                        is_match, additions_str, stocks_str, usable_str, has_multi_dim, mm_combos = future.result()
                     except Exception:
-                        is_match, additions_str = False, None
+                        is_match, additions_str, stocks_str, usable_str, has_multi_dim, mm_combos = False, None, None, None, False, None
 
                     if additions_str is not None:
                         sp.naver_cached_additions = additions_str
+                    if stocks_str is not None:
+                        sp.naver_cached_option_stocks = stocks_str
+                    if usable_str is not None:
+                        sp.naver_cached_option_usable = usable_str
+
+                    # dimension_mismatch 감지 — sync 대상은 master 옵션 + option_diffs 있는 상품이라
+                    # multi_dim이면 master(1차원) vs Naver(다차원) 불일치
+                    # 단 오너클랜 안전 매칭(완전 일치)이면 mismatch 아님
+                    ownerclan_match_in_sync = False
+                    if has_multi_dim and mm_combos is not None:
+                        # mm_combos 는 JSON 문자열 (name1/name2 키) — _match_ownerclan_dim 형식(optionName1/2)으로 변환
+                        try:
+                            parsed_combos = json.loads(mm_combos)
+                            naver_combo_dicts = [
+                                {"optionName1": c.get("name1", ""), "optionName2": c.get("name2", "")}
+                                for c in parsed_combos
+                            ]
+                            ownerclan_match_in_sync = bool(_match_ownerclan_dim(sp.master, naver_combo_dicts))
+                        except Exception:
+                            ownerclan_match_in_sync = False
+
+                    if has_multi_dim and mm_combos is not None and not ownerclan_match_in_sync:
+                        existing_mm = sp.option_mismatch
+                        if existing_mm:
+                            if existing_mm.status == "pending":
+                                existing_mm.naver_combos = mm_combos
+                                existing_mm.mismatch_type = "dimension_mismatch"
+                                existing_mm.updated_at = kst_now()
+                        else:
+                            db.session.add(StoreOptionMismatch(
+                                store_product_id=sp.id,
+                                naver_combos=mm_combos,
+                                mismatch_type="dimension_mismatch",
+                                status="pending",
+                            ))
+                    elif (not has_multi_dim) or ownerclan_match_in_sync:
+                        # 다차원 아님 또는 오너클랜 안전 매칭 → 기존 dimension_mismatch pending 자동 해소
+                        existing_mm = sp.option_mismatch
+                        if existing_mm and existing_mm.status == "pending" and existing_mm.mismatch_type == "dimension_mismatch":
+                            existing_mm.status = "resolved"
+                            existing_mm.resolved_at = kst_now()
 
                     if is_match:
                         sp.applied_options_text = sp.master.options_text
@@ -552,8 +682,11 @@ def sync_store_option_state(flask_app=None) -> dict:
 
 def detect_option_mismatches(flask_app=None, progress_cb=None) -> dict:
     """
-    master.options_text = NULL 이지만 Naver 스토어에 optionCombinations 가 있는 상품을 탐지.
-    StoreOptionMismatch 레코드를 생성/갱신한다 (pending만 갱신, resolved/ignored는 건드리지 않음).
+    StoreOptionMismatch 레코드 생성/갱신 (pending만 갱신, resolved/ignored 보존).
+
+    두 종류 통합 감지:
+      1. structure_naver_only: master.options_text = NULL + Naver에 콤보 있음 (도매처 단품 vs Naver 옵션)
+      2. dimension_mismatch:   master.options_text 있음(1차원) + Naver 콤보 중 optionName2 채워진 게 있음 (차원 불일치)
 
     progress_cb(stage, **kwargs): 진행 상황 콜백 (선택)
       - stage='store_start': store_idx, total_stores, store_name, items_total
@@ -574,15 +707,25 @@ def detect_option_mismatches(flask_app=None, progress_cb=None) -> dict:
         updated = 0
 
         for store_idx, naver_store in enumerate(stores, 1):
-            # 도매처 단품(options_text NULL) + 매칭된 스토어 상품만 대상
+            # 대상 = (master 단품) 또는 (master 옵션이지만 추가금 없음 — sync_store_option_state 비대상이라 여기서 함께 검사)
+            # 추가금 있는 master 옵션 상품의 dimension_mismatch는 sync_store_option_state가 처리
             targets = (
                 db.session.query(StoreProduct)
                 .join(MasterProduct, StoreProduct.master_product_id == MasterProduct.id)
                 .filter(
                     StoreProduct.naver_store_id == naver_store.id,
                     StoreProduct.origin_product_no != None,
-                    db.or_(MasterProduct.options_text == None, MasterProduct.options_text == ""),
                     MasterProduct.price != None,
+                    db.or_(
+                        # 케이스 1: master 단품 (structure_naver_only 후보)
+                        db.or_(MasterProduct.options_text == None, MasterProduct.options_text == ""),
+                        # 케이스 2: master 옵션 있지만 추가금 없음 (dimension_mismatch 후보 — sync 비대상)
+                        db.and_(
+                            MasterProduct.options_text != None,
+                            MasterProduct.options_text != "",
+                            db.or_(MasterProduct.option_diffs == None, MasterProduct.option_diffs == ""),
+                        ),
+                    ),
                 )
                 .all()
             )
@@ -610,22 +753,53 @@ def detect_option_mismatches(flask_app=None, progress_cb=None) -> dict:
                         .get("optionInfo", {})
                         .get("optionCombinations", [])
                     )
-                    if not combos:
-                        # Naver에도 옵션 없음 → 기존 불일치 해소
+
+                    # mismatch_type 판정
+                    master_has_options = bool(sp.master and sp.master.options_text and sp.master.options_text.strip())
+                    naver_has_combos = bool(combos)
+                    naver_has_multi_dim = naver_has_combos and any(
+                        (c.get("optionName2") or "").strip() for c in combos
+                    )
+
+                    if not master_has_options and naver_has_combos:
+                        new_type = "structure_naver_only"
+                    elif master_has_options and naver_has_multi_dim:
+                        # 오너클랜 옵션 차원 자동 매칭 — 완전 일치하면 mismatch 아님
+                        if _match_ownerclan_dim(sp.master, combos):
+                            new_type = None  # 의미상 동일 — mismatch 아님
+                        else:
+                            new_type = "dimension_mismatch"
+                    else:
+                        new_type = None  # 정상 — 불일치 아님
+
+                    if new_type is None:
+                        # 불일치 없음 → 기존 pending이 있으면 자동 해소
                         if sp.option_mismatch and sp.option_mismatch.status == "pending":
                             sp.option_mismatch.status = "resolved"
                             sp.option_mismatch.resolved_at = kst_now()
                     else:
-                        combo_data = json.dumps(
-                            [{"name": c.get("optionName1") or c.get("optionName2") or "", "price": c.get("price", 0)}
-                             for c in combos],
-                            ensure_ascii=False,
-                        )
+                        # dimension_mismatch는 optionName2도 함께 기록 (검토 시 정보 풍부)
+                        if new_type == "dimension_mismatch":
+                            combo_data = json.dumps(
+                                [{"name1": c.get("optionName1") or "",
+                                  "name2": c.get("optionName2") or "",
+                                  "price": c.get("price", 0),
+                                  "stock": c.get("stockQuantity"),
+                                  "usable": c.get("usable", True)} for c in combos],
+                                ensure_ascii=False,
+                            )
+                        else:
+                            combo_data = json.dumps(
+                                [{"name": c.get("optionName1") or c.get("optionName2") or "",
+                                  "price": c.get("price", 0)} for c in combos],
+                                ensure_ascii=False,
+                            )
 
                         existing = sp.option_mismatch
                         if existing:
                             if existing.status == "pending":
                                 existing.naver_combos = combo_data
+                                existing.mismatch_type = new_type
                                 existing.updated_at = kst_now()
                                 updated += 1
                             # resolved/ignored는 건드리지 않음
@@ -633,6 +807,7 @@ def detect_option_mismatches(flask_app=None, progress_cb=None) -> dict:
                             db.session.add(StoreOptionMismatch(
                                 store_product_id=sp.id,
                                 naver_combos=combo_data,
+                                mismatch_type=new_type,
                                 status="pending",
                             ))
                             created += 1
@@ -688,6 +863,7 @@ def option_mismatch_page():
     import json as _json
     status_filter = request.args.get("status", "pending")
     store_filter = request.args.get("store_id", type=int)
+    type_filter = request.args.get("mismatch_type", "")  # ""=전체, structure_naver_only, dimension_mismatch
 
     q = (
         db.session.query(StoreOptionMismatch)
@@ -698,6 +874,8 @@ def option_mismatch_page():
         q = q.filter(StoreOptionMismatch.status == status_filter)
     if store_filter:
         q = q.filter(StoreProduct.naver_store_id == store_filter)
+    if type_filter:
+        q = q.filter(StoreOptionMismatch.mismatch_type == type_filter)
 
     mismatches = q.order_by(StoreOptionMismatch.created_at.desc()).all()
 
@@ -710,6 +888,7 @@ def option_mismatch_page():
             "id": m.id,
             "store_product_id": sp.id if sp else None,
             "status": m.status,
+            "mismatch_type": m.mismatch_type,
             "product_name": master.product_name if master else "-",
             "seller_code": sp.seller_management_code if sp else "-",
             "origin_product_no": sp.origin_product_no if sp else None,
@@ -722,6 +901,8 @@ def option_mismatch_page():
         })
 
     pending_count = StoreOptionMismatch.query.filter_by(status="pending").count()
+    pending_struct_count = StoreOptionMismatch.query.filter_by(status="pending", mismatch_type="structure_naver_only").count()
+    pending_dim_count = StoreOptionMismatch.query.filter_by(status="pending", mismatch_type="dimension_mismatch").count()
     naver_stores = NaverStore.query.filter_by(is_active=True).order_by(NaverStore.store_name).all()
     with _detect_mismatch_lock:
         detect_status = dict(_detect_mismatch_status)
@@ -730,7 +911,10 @@ def option_mismatch_page():
         rows=rows,
         status_filter=status_filter,
         store_filter=store_filter,
+        type_filter=type_filter,
         pending_count=pending_count,
+        pending_struct_count=pending_struct_count,
+        pending_dim_count=pending_dim_count,
         naver_stores=naver_stores,
         detect_status=detect_status,
     )

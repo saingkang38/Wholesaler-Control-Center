@@ -200,6 +200,17 @@ class ZentraldeCollector(BaseCollector):
         # 상품명: <prdtname> CDATA 텍스트
         product_name = self._cdata_text(product, "prdtname")
 
+        # baseinfo 속성 → 원산지/브랜드/제조사/모델명 매핑
+        baseinfo_el = product.find("baseinfo")
+        baseinfo_attrs = baseinfo_el.attrib if baseinfo_el is not None else {}
+        origin_val = (baseinfo_attrs.get("madein") or "").strip() or None
+        brand_val = (baseinfo_attrs.get("brand") or "").strip() or None
+        manufacturer_val = (baseinfo_attrs.get("productcom") or "").strip() or None
+        model_val = (baseinfo_attrs.get("model") or "").strip() or None
+
+        # 키워드: <keyword> CDATA 텍스트
+        keywords_val = self._cdata_text(product, "keyword")
+
         # 옵션 파싱 → 표준 문자열 형식 변환
         option_el = product.find("option")
         options = self._parse_options(option_el.text if option_el is not None else None)
@@ -234,6 +245,9 @@ class ZentraldeCollector(BaseCollector):
             if attr != "code":
                 extra[f"attr_{attr}"] = val
 
+        # 상세 HTML: 실제 zentrade XML 은 <content> 태그 사용. 옛 호환을 위해 detailed_source 도 폴백.
+        detail_html = self._cdata_text(product, "content") or self._cdata_text(product, "detailed_source")
+
         return {
             "source_product_code": code,
             "product_name": product_name,
@@ -244,10 +258,14 @@ class ZentraldeCollector(BaseCollector):
             "detail_url": None,
             "stock_qty": None,
             "category_name": category_name,
-            "origin": None,
+            "origin": origin_val,
+            "brand_name": brand_val,
+            "manufacturer": manufacturer_val,
+            "model_name": model_val,
+            "keywords": keywords_val,
             "shipping_fee": None,
             "shipping_condition": None,
-            "detail_description": self._cdata_text(product, "detailed_source"),
+            "detail_description": detail_html,
             "extra": extra,
         }
 

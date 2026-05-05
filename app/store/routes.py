@@ -409,6 +409,10 @@ def store_product_edit_form(product_id):
             "name": origin.get("name", p.product_name or ""),
             "sale_price": origin.get("salePrice", p.sale_price or 0),
             "status_type": origin.get("statusType", p.store_status or "SALE"),
+            "detail_html": origin.get("detailContent", ""),
+            "detail_html_length": len(origin.get("detailContent", "") or ""),
+            "master_detail_html": (p.master.detail_description if p.master else "") or "",
+            "master_detail_html_length": len((p.master.detail_description if p.master else "") or ""),
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -422,9 +426,20 @@ def store_product_edit(product_id):
     if not p.origin_product_no:
         return jsonify({"error": "origin_product_no 없음"}), 400
 
-    new_name = request.form.get("name", "").strip()
-    new_price = request.form.get("sale_price", type=int)
-    new_status = request.form.get("status_type", "").strip()
+    payload_json = request.get_json(silent=True) or {}
+    new_name = (payload_json.get("name") if request.is_json else request.form.get("name", "")) or ""
+    new_name = new_name.strip()
+    new_price = payload_json.get("sale_price") if request.is_json else request.form.get("sale_price", type=int)
+    new_status = (payload_json.get("status_type") if request.is_json else request.form.get("status_type", "")) or ""
+    new_status = new_status.strip()
+    detail_html = payload_json.get("detail_html") if request.is_json else request.form.get("detail_html")
+    sync_master_detail = payload_json.get("sync_master_detail") if request.is_json else request.form.get("sync_master_detail")
+
+    if detail_html is None and str(sync_master_detail or "").lower() in ("1", "true", "y", "yes", "on"):
+        detail_html = (p.master.detail_description if p.master else "") or ""
+
+    if detail_html is not None and not str(detail_html).strip():
+        return jsonify({"error": "상세 HTML이 비어 있습니다."}), 400
 
     try:
         from store.naver.products import get_origin_product, update_origin_product
@@ -437,6 +452,8 @@ def store_product_edit(product_id):
             origin["salePrice"] = new_price
         if new_status:
             origin["statusType"] = new_status
+        if detail_html is not None:
+            origin["detailContent"] = str(detail_html)
 
         payload = {"originProduct": origin, "smartstoreChannelProduct": data.get("smartstoreChannelProduct", {})}
         update_origin_product(p.origin_product_no, payload, store.client_id, store.client_secret)
@@ -451,6 +468,71 @@ def store_product_edit(product_id):
         db.session.commit()
 
         return jsonify({"ok": True})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@store_bp.route("/store-products/<int:product_id>/detail-html/preview", methods=["POST"])
+@login_required
+def store_product_detail_html_preview(product_id):
+    p = StoreProduct.query.get_or_404(product_id)
+
+    payload_json = request.get_json(silent=True) or {}
+    raw_html = payload_json.get("detail_html")
+    source = "request"
+    if raw_html is None:
+        raw_html = (p.master.detail_description if p.master else "") or ""
+        source = "master"
+    if not str(raw_html).strip():
+        return jsonify({"error": "미리볼 상세 HTML이 없습니다."}), 400
+
+    from store.naver.detail_html import sanitize_detail_html
+
+    cleaned_html, report = sanitize_detail_html(str(raw_html))
+    return jsonify({
+        "ok": True,
+        "source": source,
+        "raw_length": len(str(raw_html)),
+        "sanitized_length": len(cleaned_html),
+        "report": report,
+        "preview": cleaned_html[:2000],
+    })
+
+
+@store_bp.route("/store-products/<int:product_id>/detail-html/sync", methods=["POST"])
+@login_required
+def store_product_detail_html_sync(product_id):
+    p = StoreProduct.query.get_or_404(product_id)
+    store = NaverStore.query.get_or_404(p.naver_store_id)
+    if not p.origin_product_no:
+        return jsonify({"error": "origin_product_no ?놁쓬"}), 400
+
+    payload_json = request.get_json(silent=True) or {}
+    raw_html = payload_json.get("detail_html")
+    source = "request"
+    if raw_html is None:
+        raw_html = (p.master.detail_description if p.master else "") or ""
+        source = "master"
+    if not str(raw_html).strip():
+        return jsonify({"error": "동기화할 상세 HTML이 없습니다."}), 400
+
+    try:
+        from store.naver.products import sync_detail_content
+
+        result = sync_detail_content(
+            p.origin_product_no,
+            str(raw_html),
+            store.client_id,
+            store.client_secret,
+        )
+        return jsonify({
+            "ok": True,
+            "source": source,
+            "origin_product_no": p.origin_product_no,
+            "raw_length": len(str(raw_html)),
+            "sanitized_length": len(result["sanitized_html"]),
+            "report": result["report"],
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

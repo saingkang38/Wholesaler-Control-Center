@@ -362,6 +362,7 @@ class OwnerclanCollector(BaseCollector):
                         "tax_type": self._cell(row, col.get("tax_type")),
                         "certification": self._cell(row, col.get("certification")),
                         "shipping_fee": self._parse_price(self._cell(row, col.get("shipping_fee"))),
+                        "shipping_condition": self._cell(row, col.get("shipping_condition")),
                         "extra": extra,
                     })
 
@@ -406,6 +407,8 @@ class OwnerclanCollector(BaseCollector):
                 mapping["keywords"] = i
             elif any(k in h for k in ["원산지", "생산지"]) and "origin" not in mapping:
                 mapping["origin"] = i
+            elif any(k in h for k in ["무료배송조건", "무료배송"]) and "shipping_condition" not in mapping:
+                mapping["shipping_condition"] = i
             elif any(k in h for k in ["배송비"]) and "shipping_fee" not in mapping:
                 mapping["shipping_fee"] = i
             elif any(k in h for k in ["과세"]) and "tax_type" not in mapping:

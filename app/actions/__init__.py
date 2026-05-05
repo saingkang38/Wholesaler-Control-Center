@@ -22,6 +22,7 @@ SIGNAL_LABELS = {
     "OPTION_PRICE_CHANGE": {"label": "옵션가 변동", "badge": "warning"},
     "OPTION_STOCK_CHANGE": {"label": "옵션 재고 변동", "badge": "secondary"},
     "OPTION_ADD":          {"label": "옵션 추가/변경", "badge": "primary"},
+    "OPTION_STOCK_REFILL_NEEDED": {"label": "옵션 재고 복구", "badge": "info"},
 }
 
 
@@ -50,7 +51,7 @@ def actions_page():
     if signal_type_filter == "PRICE":
         query = query.filter(ActionSignal.signal_type.in_(["PRICE_UP_NEEDED", "PRICE_DOWN_POSSIBLE"]))
     elif signal_type_filter == "OPTION":
-        query = query.filter(ActionSignal.signal_type.in_(["OPTION_PRICE_CHANGE", "OPTION_ADD", "OPTION_STOCK_CHANGE"]))
+        query = query.filter(ActionSignal.signal_type.in_(["OPTION_PRICE_CHANGE", "OPTION_ADD", "OPTION_STOCK_CHANGE", "OPTION_STOCK_REFILL_NEEDED"]))
     elif signal_type_filter:
         query = query.filter(ActionSignal.signal_type == signal_type_filter)
     if option_type_filter:
@@ -132,6 +133,12 @@ def actions_page():
             discount        = 0
             option_count    = None
         elif s.signal_type == "OPTION_STOCK_CHANGE":
+            wholesale_price = None
+            margin_price    = None
+            sale_price      = s.store.sale_price if s.store else None
+            discount        = 0
+            option_count    = None
+        elif s.signal_type == "OPTION_STOCK_REFILL_NEEDED":
             wholesale_price = None
             margin_price    = None
             sale_price      = s.store.sale_price if s.store else None
@@ -647,18 +654,134 @@ def _revert_signal(signal: ActionSignal):
 
 
 def _parse_naver_error(e) -> str:
-    """Naver API HTTPError에서 사람이 읽을 수 있는 오류 메시지 추출"""
+    """Naver API HTTPError에서 사람이 읽을 수 있는 오류 메시지 추출.
+    invalidInputs[].name(필드 경로)이 있으면 메시지 앞에 prefix로 붙여 진단 용이성 확보."""
     try:
         import requests as req_lib
         if isinstance(e, req_lib.HTTPError) and e.response is not None:
             data = e.response.json()
             invalid = data.get("invalidInputs") or []
             if invalid:
-                return " / ".join(i.get("message", "") for i in invalid if i.get("message"))
+                parts = []
+                for i in invalid:
+                    msg = i.get("message", "")
+                    if not msg:
+                        continue
+                    name = i.get("name", "")
+                    parts.append(f"{name}: {msg}" if name else msg)
+                if parts:
+                    return " / ".join(parts)
             return data.get("message") or str(e)
     except Exception:
         pass
     return str(e)
+
+
+# ---------------------------------------------------------------------------
+# Naver PUT 자동 보강 (화이트리스트 — sellerTags 등록불가 단어만)
+# ---------------------------------------------------------------------------
+
+def _extract_naver_invalid_inputs(e) -> list:
+    """Naver HTTPError 응답에서 invalidInputs 리스트만 추출.
+    실패 시 빈 리스트 반환 (raise 안 함 — 호출부에서 안전 처리)."""
+    try:
+        import requests as req_lib
+        if isinstance(e, req_lib.HTTPError) and e.response is not None:
+            data = e.response.json()
+            invalid = data.get("invalidInputs")
+            if isinstance(invalid, list):
+                return invalid
+    except Exception:
+        pass
+    return []
+
+
+def _extract_forbidden_tag_word(message: str):
+    """'태그 항목에 등록불가인 단어(WORD)가 포함되어 있습니다' 메시지에서 WORD 추출.
+    매치 안 되면 None 반환."""
+    if not message:
+        return None
+    import re
+    m = re.search(r"등록불가인 단어\(([^)]+)\)", message)
+    return m.group(1).strip() if m else None
+
+
+def _remove_exact_seller_tag(payload: dict, target: str) -> bool:
+    """payload의 originProduct.detailAttribute.seoInfo.sellerTags 에서
+    `tag.strip() == target.strip()` 인 태그만 정확 일치로 제거.
+
+    - 부분 문자열 매치 절대 금지 (예: target='보온' → '보온병' 보존)
+    - 콤마/공백 분리 안 함 (태그 1개 = 한 덩어리 완성 문자열)
+    - 태그가 dict({"text": "..."}) 형태든 string이든 둘 다 처리
+    - 제거 발생 시 True, 아니면 False
+    """
+    if not target:
+        return False
+    target_norm = target.strip()
+    if not target_norm:
+        return False
+    origin = (payload or {}).get("originProduct")
+    if not isinstance(origin, dict):
+        return False
+    detail = origin.get("detailAttribute")
+    if not isinstance(detail, dict):
+        return False
+    seo = detail.get("seoInfo")
+    if not isinstance(seo, dict):
+        return False
+    tags = seo.get("sellerTags")
+    if not isinstance(tags, list):
+        return False
+    new_tags = []
+    removed = False
+    for tag in tags:
+        if isinstance(tag, dict):
+            tag_text = (tag.get("text") or "").strip()
+        else:
+            tag_text = str(tag or "").strip()
+        # 정확 일치만 제거
+        if not removed and tag_text == target_norm:
+            removed = True
+            continue
+        new_tags.append(tag)
+    if removed:
+        seo["sellerTags"] = new_tags
+    return removed
+
+
+def _put_with_safe_retry(origin_product_no, payload: dict, client_id: str, client_secret: str):
+    """update_origin_product 호출 + 화이트리스트 기반 1회 재시도.
+
+    화이트리스트 (이번 작업에서는 단 1개):
+      - originProduct.detailAttribute.seoInfo.sellerTags 등록불가 단어 → 정확 일치 태그 1개 제거 후 재시도
+
+    화이트리스트 외 모든 에러는 보강하지 않고 그대로 raise → 기존 failed 처리 흐름 유지.
+    재시도는 hard cap 1회. 재시도도 실패하면 그대로 raise.
+    """
+    from store.naver.products import update_origin_product
+    try:
+        return update_origin_product(origin_product_no, payload, client_id, client_secret)
+    except Exception as e:
+        invalids = _extract_naver_invalid_inputs(e)
+        if not invalids:
+            raise
+        # 화이트리스트 매치 시도 — sellerTags 등록불가 단어만
+        modified = False
+        for inv in invalids:
+            name = (inv.get("name") or "").strip()
+            msg = inv.get("message") or ""
+            if name == "originProduct.detailAttribute.seoInfo.sellerTags":
+                forbidden = _extract_forbidden_tag_word(msg)
+                if forbidden and _remove_exact_seller_tag(payload, forbidden):
+                    modified = True
+                    logger.info(
+                        f"[autofix] sellerTags 등록불가 단어 정확 일치 제거: '{forbidden}' "
+                        f"(origin_no={origin_product_no})"
+                    )
+        if not modified:
+            raise  # 화이트리스트 외 케이스 — 자동 보강 안 함
+        # 1회 재시도
+        return update_origin_product(origin_product_no, payload, client_id, client_secret)
 
 
 # ---------------------------------------------------------------------------
@@ -739,7 +862,7 @@ def _execute_price_no_option(store, suggested: dict, client_id: str, client_secr
                 "originProduct": origin,
                 "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
             }
-            update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+            _put_with_safe_retry(store.origin_product_no, payload, client_id, client_secret)
             logger.info(f"[actions][no_option] Step1: 1개 combo 추가금 → 0 (store_id={store.id})")
             update_price(store.origin_product_no, new_price, client_id=client_id, client_secret=client_secret)
             store.option_list_price = new_price
@@ -820,7 +943,7 @@ def _execute_price_option_no_extra(store, master, suggested: dict, client_id: st
         "originProduct": origin,
         "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
     }
-    update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+    _put_with_safe_retry(store.origin_product_no, payload, client_id, client_secret)
 
     store.sale_price = new_price
     store.option_list_price = new_price
@@ -948,7 +1071,7 @@ def _execute_price_option_with_extra(store, master, suggested: dict, client_id: 
         "originProduct": origin,
         "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
     }
-    resp_data = update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+    resp_data = _put_with_safe_retry(store.origin_product_no, payload, client_id, client_secret)
 
     # supplement ID 동기화 (신규 생성 시 Naver가 ID 부여)
     if supplement_products:
@@ -1014,21 +1137,80 @@ def _execute_signal(signal: ActionSignal):
             else:
                 _execute_price_option_with_extra(store, master, suggested, client_id, client_secret, signal)
 
-        # ── 상태 변동: 옵션 유형 무관 ─────────────────────────────────────
-        elif signal.signal_type in ("SUSPEND_NEEDED", "RESUME_POSSIBLE", "DISCONTINUE_NEEDED"):
+        # ── 판매재개: 재고 0 옵션/단품을 999로 보강 후 SALE 전환 ─────────
+        # Naver는 재고 0 상태에서 SALE 전환을 거부함("재고수량 항목을 입력해 주세요").
+        # 도매처가 active로 돌아온 시점이므로 999로 보강해 재개 가능 상태로 만든다.
+        elif signal.signal_type == "RESUME_POSSIBLE":
+            from store.naver.products import get_origin_product, update_origin_product
+
+            new_status = suggested.get("store_status")  # "SALE"
+            if not new_status:
+                raise ValueError("RESUME_POSSIBLE: store_status 정보 없음")
+
+            product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
+            origin = product_data.get("originProduct", {})
+            option_info = origin.get("detailAttribute", {}).get("optionInfo", {}) or {}
+            combinations = option_info.get("optionCombinations", []) or []
+
+            refilled = 0
+            needs_update = False
+
+            if _has_options(master):
+                # 옵션 상품: usable=True 옵션의 재고 0만 999로
+                for combo in combinations:
+                    if combo.get("usable", True) is False:
+                        continue
+                    if (combo.get("stockQuantity") or 0) == 0:
+                        combo["stockQuantity"] = 999
+                        refilled += 1
+                        needs_update = True
+            else:
+                # 단품: originProduct.stockQuantity + Naver 잔존 옵션 모두 보정
+                if (origin.get("stockQuantity") or 0) == 0:
+                    origin["stockQuantity"] = 999
+                    refilled += 1
+                    needs_update = True
+                for combo in combinations:
+                    if combo.get("usable", True) is False:
+                        continue
+                    if (combo.get("stockQuantity") or 0) == 0:
+                        combo["stockQuantity"] = 999
+                        refilled += 1
+                        needs_update = True
+
+            # 재고 변경이 발생한 경우에만 PUT (불필요한 update 회피)
+            # update 실패 시 예외 → 같은 try 블록에서 잡혀 SALE 호출 안 됨
+            if needs_update:
+                if combinations:
+                    option_info["optionCombinations"] = combinations
+                    origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
+                # Naver PUT은 originProduct.statusType을 필수로 요구하며 SOLDOUT 등 시스템 관리값은 거부함.
+                # writable 값인 SUSPENSION으로 명시 → 검증 통과. 실제 SALE 전환은 아래 change_status가 담당.
+                origin["statusType"] = "SUSPENSION"
+                logger.info(
+                    f"[actions][resume] PUT 직전 statusType={origin.get('statusType')!r}, "
+                    f"refilled={refilled} (store_id={store.id})"
+                )
+                _put_with_safe_retry(store.origin_product_no, {"originProduct": origin}, client_id, client_secret)
+                logger.info(f"[actions][resume] 재고 보강 {refilled}개 → 999 (store_id={store.id})")
+
+            change_status(store.origin_product_no, new_status, client_id=client_id, client_secret=client_secret)
+            store.store_status = new_status
+
+        # ── 판매중지·단종: 상태만 전환 ───────────────────────────────────
+        elif signal.signal_type in ("SUSPEND_NEEDED", "DISCONTINUE_NEEDED"):
             new_status = suggested.get("store_status")
             if new_status:
                 change_status(store.origin_product_no, new_status, client_id=client_id, client_secret=client_secret)
                 store.store_status = new_status
             # 판매중지·단종 실행 시 pending 옵션 시그널 즉시 삭제
             # (판매중지 상태에서는 옵션 재고/가격/구성 변동이 고객에게 무의미)
-            if signal.signal_type in ("SUSPEND_NEEDED", "DISCONTINUE_NEEDED"):
-                ActionSignal.query.filter(
-                    ActionSignal.store_product_id == store.id,
-                    ActionSignal.status == "pending",
-                    ActionSignal.signal_type.in_(["OPTION_ADD", "OPTION_PRICE_CHANGE", "OPTION_STOCK_CHANGE"]),
-                ).delete(synchronize_session=False)
-                logger.info(f"[actions] 판매중지/단종 실행 → pending 옵션 시그널 정리 (store_id={store.id})")
+            ActionSignal.query.filter(
+                ActionSignal.store_product_id == store.id,
+                ActionSignal.status == "pending",
+                ActionSignal.signal_type.in_(["OPTION_ADD", "OPTION_PRICE_CHANGE", "OPTION_STOCK_CHANGE"]),
+            ).delete(synchronize_session=False)
+            logger.info(f"[actions] 판매중지/단종 실행 → pending 옵션 시그널 정리 (store_id={store.id})")
 
         # ── 옵션 재고 변동: 옵션 있는 상품 전용 ──────────────────────────
         elif signal.signal_type == "OPTION_STOCK_CHANGE":
@@ -1067,21 +1249,67 @@ def _execute_signal(signal: ActionSignal):
                     f"{len(combinations)}개 신규 생성 (store_id={store.id})"
                 )
 
-            for i, combo in enumerate(combinations):
-                name = combo.get("optionName1") or combo.get("optionName2") or ""
-                matched_idx = next((j for j, n in enumerate(option_names) if n == name), None)
-                if matched_idx is None and i < len(option_stocks):
-                    logger.warning(
-                        f"[actions][option_stock] 옵션명 매칭 실패 → 순서 폴백 "
-                        f"(store_product_id={store.id}, combo_idx={i}, name='{name}')"
-                    )
-                    matched_idx = i
-                if matched_idx is not None and matched_idx < len(option_stocks):
-                    combo["stockQuantity"] = max(0, option_stocks[matched_idx])
+            # 오너클랜 다차원 안전 매칭 시도 — 완전 일치하면 (n1, n2)로 정확 매칭
+            from app.store import _match_ownerclan_dim
+            ownerclan_match = _match_ownerclan_dim(master, combinations)
+            if ownerclan_match:
+                pair_to_idx = ownerclan_match["combo_index_by_pair"]
+                pairs = ownerclan_match["master_pairs"]
+                for master_idx, pair in enumerate(pairs):
+                    if master_idx >= len(option_stocks):
+                        continue
+                    combo_idx = pair_to_idx[pair]
+                    combinations[combo_idx]["stockQuantity"] = max(0, option_stocks[master_idx])
+                logger.info(
+                    f"[actions][option_stock] 오너클랜 다차원 매칭 적용 — {len(pairs)}개 옵션 (store_id={store.id})"
+                )
+            else:
+                # 기존 1차원 매칭 (옵션명 직접 비교 + 순서 폴백)
+                for i, combo in enumerate(combinations):
+                    name = combo.get("optionName1") or combo.get("optionName2") or ""
+                    matched_idx = next((j for j, n in enumerate(option_names) if n == name), None)
+                    if matched_idx is None and i < len(option_stocks):
+                        logger.warning(
+                            f"[actions][option_stock] 옵션명 매칭 실패 → 순서 폴백 "
+                            f"(store_product_id={store.id}, combo_idx={i}, name='{name}')"
+                        )
+                        matched_idx = i
+                    if matched_idx is not None and matched_idx < len(option_stocks):
+                        combo["stockQuantity"] = max(0, option_stocks[matched_idx])
 
             option_info["optionCombinations"] = combinations
             origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
-            update_origin_product(store.origin_product_no, {"originProduct": origin}, client_id, client_secret)
+            _put_with_safe_retry(store.origin_product_no, {"originProduct": origin}, client_id, client_secret)
+
+        # ── SALE 상태에서 일부 옵션만 재고 0인 케이스 보강 ─────────────────
+        # 도매처는 active인데 Naver 옵션만 0으로 남은 경우 — 999로 채워 손님이 다시 살 수 있게 함.
+        # statusType은 이미 SALE이라 round-trip OK (RESUME_POSSIBLE의 SUSPENSION 트릭 불필요).
+        elif signal.signal_type == "OPTION_STOCK_REFILL_NEEDED":
+            from store.naver.products import get_origin_product, update_origin_product
+
+            product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
+            origin = product_data.get("originProduct", {})
+            option_info = origin.get("detailAttribute", {}).get("optionInfo", {}) or {}
+            combinations = option_info.get("optionCombinations", []) or []
+
+            if not combinations:
+                raise ValueError("Naver 옵션 없음 — 보강 대상 아님")
+
+            refilled = 0
+            for combo in combinations:
+                if combo.get("usable", True) is False:
+                    continue
+                if (combo.get("stockQuantity") or 0) == 0:
+                    combo["stockQuantity"] = 999
+                    refilled += 1
+
+            if refilled == 0:
+                raise ValueError("usable=True 옵션 중 재고 0인 옵션이 이미 없음 (다른 경로로 복구됨)")
+
+            option_info["optionCombinations"] = combinations
+            origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
+            _put_with_safe_retry(store.origin_product_no, {"originProduct": origin}, client_id, client_secret)
+            logger.info(f"[actions][stock_refill] 옵션 재고 보강 {refilled}개 → 999 (store_id={store.id})")
 
         # ── 옵션 추가금 변동: 추가금 있는 상품 전용 ──────────────────────
         elif signal.signal_type == "OPTION_PRICE_CHANGE":
@@ -1138,26 +1366,51 @@ def _execute_signal(signal: ActionSignal):
                     f"{len(combinations)}개 신규 생성 (store_id={store.id})"
                 )
 
-            # keep 옵션만 combo 업데이트
-            new_combos = []
-            for i, combo in enumerate(combinations):
-                name = combo.get("optionName1") or combo.get("optionName2") or ""
-                decision = policies.get(name, "keep")
-                if decision in ("addon", "exclude"):
-                    continue
-                matched_idx = next((j for j, n in enumerate(option_names) if n == name), None)
-                if matched_idx is None and i < len(additions):
-                    logger.warning(
-                        f"[actions][option_price] 옵션명 매칭 실패 → 순서 폴백 "
-                        f"(store_product_id={store.id}, combo_idx={i}, name='{name}')"
-                    )
-                    matched_idx = i
-                if matched_idx is not None and matched_idx < len(additions):
-                    combo["price"] = additions[matched_idx]
-                new_combos.append(combo)
+            # 오너클랜 다차원 안전 매칭 시도
+            from app.store import _match_ownerclan_dim
+            ownerclan_match = _match_ownerclan_dim(master, combinations)
+            if ownerclan_match:
+                pair_to_idx = ownerclan_match["combo_index_by_pair"]
+                pairs = ownerclan_match["master_pairs"]
+                # master 1차원 옵션명 (정책 키 — keep/addon/exclude 판정용)
+                m_lines = [l.strip() for l in (master.options_text or "").split("\n") if l.strip()]
+                new_combos = []
+                for master_idx, pair in enumerate(pairs):
+                    policy_key = m_lines[master_idx] if master_idx < len(m_lines) else ""
+                    decision = policies.get(policy_key, "keep")
+                    if decision in ("addon", "exclude"):
+                        continue
+                    combo_idx = pair_to_idx[pair]
+                    combo = combinations[combo_idx]
+                    if master_idx < len(additions):
+                        combo["price"] = additions[master_idx]
+                    new_combos.append(combo)
+                if not new_combos:
+                    new_combos = combinations
+                logger.info(
+                    f"[actions][option_price] 오너클랜 다차원 매칭 적용 — {len(pairs)}개 옵션 (store_id={store.id})"
+                )
+            else:
+                # 기존 1차원 매칭
+                new_combos = []
+                for i, combo in enumerate(combinations):
+                    name = combo.get("optionName1") or combo.get("optionName2") or ""
+                    decision = policies.get(name, "keep")
+                    if decision in ("addon", "exclude"):
+                        continue
+                    matched_idx = next((j for j, n in enumerate(option_names) if n == name), None)
+                    if matched_idx is None and i < len(additions):
+                        logger.warning(
+                            f"[actions][option_price] 옵션명 매칭 실패 → 순서 폴백 "
+                            f"(store_product_id={store.id}, combo_idx={i}, name='{name}')"
+                        )
+                        matched_idx = i
+                    if matched_idx is not None and matched_idx < len(additions):
+                        combo["price"] = additions[matched_idx]
+                    new_combos.append(combo)
 
-            if not new_combos:
-                new_combos = combinations
+                if not new_combos:
+                    new_combos = combinations
 
             option_info["optionCombinations"] = new_combos
             detail["optionInfo"] = option_info
@@ -1182,7 +1435,7 @@ def _execute_signal(signal: ActionSignal):
                 "originProduct": origin,
                 "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
             }
-            resp_data = update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+            resp_data = _put_with_safe_retry(store.origin_product_no, payload, client_id, client_secret)
 
             if supplement_products:
                 has_new = any("id" not in s for s in supplement_products)
@@ -1233,49 +1486,91 @@ def _execute_signal(signal: ActionSignal):
             # 기존 Naver 콤보를 기반으로 매칭 후 가격 업데이트
             # (2차원 옵션 구조 보존 — optionName1/optionName2 그대로 유지)
             existing_combos = option_info.get("optionCombinations", [])
-            new_combos = []
-            handled_master_idx = set()
 
-            for combo in existing_combos:
-                n1 = combo.get("optionName1") or ""
-                n2 = combo.get("optionName2") or ""
-                # 마스터 옵션명이 optionName1 또는 optionName2 중 하나와 일치하면 매칭
-                matched_idx = next(
-                    (i for i, n in enumerate(master_names) if n == n1 or n == n2),
-                    None
+            # master.option_stocks 파싱 (다차원 PUT 시 옵션별 재고 반영)
+            master_stock_lines = [s.strip() for s in (master.option_stocks or "").split("\n") if s.strip()]
+            def _stock_for(idx: int) -> int:
+                if idx < len(master_stock_lines):
+                    try:
+                        return max(0, int(master_stock_lines[idx]))
+                    except ValueError:
+                        pass
+                return 999
+
+            # 오너클랜 다차원 안전 매칭 시도 — 완전 일치하면 (n1, n2)로 다차원 PUT
+            from app.store import _match_ownerclan_dim
+            ownerclan_match = _match_ownerclan_dim(master, existing_combos)
+
+            if ownerclan_match:
+                pair_to_idx = ownerclan_match["combo_index_by_pair"]
+                pairs = ownerclan_match["master_pairs"]
+                new_combos = []
+                for master_idx, pair in enumerate(pairs):
+                    policy_key = master_names[master_idx] if master_idx < len(master_names) else ""
+                    decision = policies.get(policy_key, "keep")
+                    if decision in ("addon", "exclude"):
+                        continue
+                    combo_idx = pair_to_idx[pair]
+                    combo = existing_combos[combo_idx]
+                    if master_idx < len(additions):
+                        combo["price"] = additions[master_idx]
+                    combo["stockQuantity"] = _stock_for(master_idx)
+                    new_combos.append(combo)
+                # 기존 그룹명 보존 (이미 다차원이라 들어있을 것). 안전 가드만.
+                groups = option_info.get("optionCombinationGroupNames") or {}
+                if not groups.get("optionGroupName1") or not groups.get("optionGroupName2"):
+                    groups = {"optionGroupName1": groups.get("optionGroupName1") or "옵션1",
+                              "optionGroupName2": groups.get("optionGroupName2") or "옵션2"}
+                    option_info["optionCombinationGroupNames"] = groups
+                logger.info(
+                    f"[actions][option_add] 오너클랜 다차원 매칭 적용 — {len(new_combos)}개 콤보 (store_id={store.id})"
                 )
-                if matched_idx is None:
-                    continue  # 마스터에 없는 옵션 → 제거
-                decision = policies.get(master_names[matched_idx], "keep")
-                if decision in ("addon", "exclude"):
-                    continue
-                combo["price"] = additions[matched_idx] if matched_idx < len(additions) else 0
-                new_combos.append(combo)
-                handled_master_idx.add(matched_idx)
+            else:
+                # 기존 1차원 매칭 (옵션명 직접 비교 + 마스터에 없는 옵션 제거 + 신규 추가)
+                new_combos = []
+                handled_master_idx = set()
 
-            # 기존 Naver에 없는 신규 마스터 옵션 추가
-            for i, name in enumerate(master_names):
-                if i in handled_master_idx:
-                    continue
-                decision = policies.get(name, "keep")
-                if decision in ("addon", "exclude"):
-                    continue
-                new_combos.append({
-                    "optionName1":  name,
-                    "price":        additions[i] if i < len(additions) else 0,
-                    "stockQuantity": 999,
-                    "usable":       True,
-                })
+                for combo in existing_combos:
+                    n1 = combo.get("optionName1") or ""
+                    n2 = combo.get("optionName2") or ""
+                    # 마스터 옵션명이 optionName1 또는 optionName2 중 하나와 일치하면 매칭
+                    matched_idx = next(
+                        (i for i, n in enumerate(master_names) if n == n1 or n == n2),
+                        None
+                    )
+                    if matched_idx is None:
+                        continue  # 마스터에 없는 옵션 → 제거
+                    decision = policies.get(master_names[matched_idx], "keep")
+                    if decision in ("addon", "exclude"):
+                        continue
+                    combo["price"] = additions[matched_idx] if matched_idx < len(additions) else 0
+                    combo["stockQuantity"] = _stock_for(matched_idx)
+                    new_combos.append(combo)
+                    handled_master_idx.add(matched_idx)
 
-            if not new_combos:  # 안전장치: master 기준 강제 생성 (기존 Naver 콤보 복원 금지)
-                logger.warning(
-                    f"[actions][option_add] 매칭된 콤보 없음 → master 기준 강제 생성: store_id={store.id}"
-                )
-                new_combos = [
-                    {"optionName1": n, "price": additions[i] if i < len(additions) else 0,
-                     "stockQuantity": 999, "usable": True}
-                    for i, n in enumerate(master_names)
-                ]
+                # 기존 Naver에 없는 신규 마스터 옵션 추가
+                for i, name in enumerate(master_names):
+                    if i in handled_master_idx:
+                        continue
+                    decision = policies.get(name, "keep")
+                    if decision in ("addon", "exclude"):
+                        continue
+                    new_combos.append({
+                        "optionName1":  name,
+                        "price":        additions[i] if i < len(additions) else 0,
+                        "stockQuantity": _stock_for(i),
+                        "usable":       True,
+                    })
+
+                if not new_combos:  # 안전장치: master 기준 강제 생성 (기존 Naver 콤보 복원 금지)
+                    logger.warning(
+                        f"[actions][option_add] 매칭된 콤보 없음 → master 기준 강제 생성: store_id={store.id}"
+                    )
+                    new_combos = [
+                        {"optionName1": n, "price": additions[i] if i < len(additions) else 0,
+                         "stockQuantity": _stock_for(i), "usable": True}
+                        for i, n in enumerate(master_names)
+                    ]
 
             logger.info(
                 f"[actions][option_add] 전체교체: store_id={store.id}, "
@@ -1304,7 +1599,7 @@ def _execute_signal(signal: ActionSignal):
                 "originProduct": origin,
                 "smartstoreChannelProduct": product_data.get("smartstoreChannelProduct", {}),
             }
-            resp_data = update_origin_product(store.origin_product_no, payload, client_id, client_secret)
+            resp_data = _put_with_safe_retry(store.origin_product_no, payload, client_id, client_secret)
 
             if supplement_products:
                 has_new = any("id" not in s for s in supplement_products)
@@ -1361,6 +1656,7 @@ def detect_action_signals(wholesaler_id: int) -> dict:
         "OPTION_PRICE_CHANGE": 0,
         "OPTION_STOCK_CHANGE": 0,
         "OPTION_ADD": 0,
+        "OPTION_STOCK_REFILL_NEEDED": 0,
     }
 
     # 해당 도매처의 매칭된 스토어 상품만 조회 — 전체 로드 방지, 관계 미리 로드
@@ -1379,7 +1675,7 @@ def detect_action_signals(wholesaler_id: int) -> dict:
 
     # 옵션 시그널(OPTION_ADD/OPTION_PRICE_CHANGE/OPTION_STOCK_CHANGE)은 값이 바뀔 때만 갱신.
     # pending을 먼저 로드한 뒤 PRICE/STATUS 시그널만 삭제한다.
-    OPTION_TYPES = {"OPTION_ADD", "OPTION_PRICE_CHANGE", "OPTION_STOCK_CHANGE"}
+    OPTION_TYPES = {"OPTION_ADD", "OPTION_PRICE_CHANGE", "OPTION_STOCK_CHANGE", "OPTION_STOCK_REFILL_NEEDED"}
     PRICE_STATUS_TYPES = [
         "PRICE_UP_NEEDED", "PRICE_DOWN_POSSIBLE",
         "SUSPEND_NEEDED", "RESUME_POSSIBLE", "DISCONTINUE_NEEDED",
@@ -1436,6 +1732,7 @@ def detect_action_signals(wholesaler_id: int) -> dict:
         _check_option_add_signals(master, store, stats, existing_pending, prev_opts)
         _check_option_signals(master, store, stats, existing_pending, prev_opts)
         _check_option_stock_signals(master, store, stats, existing_pending, prev_opts)
+        _check_option_stock_refill_signals(master, store, stats, existing_pending, prev_opts)
 
     db.session.commit()
     logger.info(f"[actions] 시그널 감지 완료: {stats}")
@@ -1503,9 +1800,21 @@ def _check_price_signals(master: MasterProduct, store: StoreProduct, stats: dict
             stats["PRICE_DOWN_POSSIBLE"] += 1
 
 
+def _is_dimension_mismatch_blocked(store: StoreProduct) -> bool:
+    """옵션 차원 불일치 (master 1차원 vs Naver 다차원) pending 상태인 상품인지.
+    True면 OPTION_ADD / OPTION_STOCK_CHANGE / OPTION_PRICE_CHANGE 자동 시그널 생성 금지.
+    기존 pending 시그널은 보존 (자동 정리 안 함)."""
+    mm = getattr(store, "option_mismatch", None)
+    return bool(mm and mm.status == "pending" and mm.mismatch_type == "dimension_mismatch")
+
+
 def _check_option_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set, prev_opts: dict):
     key = (master.id, store.id, "OPTION_PRICE_CHANGE")
     existing = prev_opts.get(key)
+
+    # 옵션 차원 불일치 가드: 자동 시그널 생성 차단 (기존 pending은 보존)
+    if _is_dimension_mismatch_blocked(store):
+        return
 
     # 단품(옵션명 없음) → 옵션 가격 변동 비교 자체가 무의미
     if not master.options_text:
@@ -1609,6 +1918,10 @@ def _check_option_stock_signals(master: MasterProduct, store: StoreProduct, stat
     key = (master.id, store.id, "OPTION_STOCK_CHANGE")
     existing = prev_opts.get(key)
 
+    # 옵션 차원 불일치 가드: 자동 시그널 생성 차단 (기존 pending은 보존)
+    if _is_dimension_mismatch_blocked(store):
+        return
+
     if not master.options_text or master.option_stocks is None:
         if existing:
             db.session.delete(existing)
@@ -1658,10 +1971,88 @@ def _check_option_stock_signals(master: MasterProduct, store: StoreProduct, stat
             stats["OPTION_STOCK_CHANGE"] += 1
 
 
+def _check_option_stock_refill_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set, prev_opts: dict):
+    """SALE 상태 + 도매처 active 인데 Naver 옵션 재고만 0인 옵션 감지.
+    sync_store_option_state 가 캐시한 stockQuantity / usable 기반.
+    가드:
+      - 캐시 데이터 없음 → 스킵 (sync 미실행)
+      - master.current_status != active → 스킵
+      - 같은 상품에 OPTION_STOCK_CHANGE pending → 스킵 (master 기준 보정이 우선)
+      - master.option_stocks 가 있고 0 포함 → 스킵 (도매처도 품절이라 보정 위험)
+    """
+    key = (master.id, store.id, "OPTION_STOCK_REFILL_NEEDED")
+    existing = prev_opts.get(key)
+
+    def _drop():
+        if existing:
+            db.session.delete(existing)
+            prev_opts.pop(key, None)
+            pending.discard(key)
+
+    if not store.naver_cached_option_stocks or not store.naver_cached_option_usable:
+        _drop()
+        return
+    if master.current_status != "active":
+        _drop()
+        return
+    if not store.origin_product_no:
+        _drop()
+        return
+    if (master.id, store.id, "OPTION_STOCK_CHANGE") in pending:
+        _drop()
+        return
+    if master.option_stocks:
+        try:
+            if any(int(v.strip()) == 0 for v in master.option_stocks.split("\n") if v.strip()):
+                _drop()
+                return
+        except ValueError:
+            pass
+
+    try:
+        stocks = [s.strip() for s in store.naver_cached_option_stocks.split("\n") if s.strip()]
+        usables = [u.strip() for u in store.naver_cached_option_usable.split("\n") if u.strip()]
+    except Exception:
+        return
+    if len(stocks) != len(usables) or not stocks:
+        return
+
+    refill_indices = [i for i, (stk, us) in enumerate(zip(stocks, usables)) if us == "1" and stk == "0"]
+    if not refill_indices:
+        _drop()
+        return
+
+    new_current = json.dumps({"option_stocks_cache": store.naver_cached_option_stocks})
+    new_suggested = json.dumps({"refill_count": len(refill_indices), "refill_indices": refill_indices})
+
+    if existing:
+        old_sv = json.loads(existing.suggested_value or "{}")
+        if old_sv.get("refill_indices") == refill_indices:
+            return  # 동일 — 기존 pending 유지
+        existing.current_value = new_current
+        existing.suggested_value = new_suggested
+        existing.detected_at = kst_now()
+        stats["OPTION_STOCK_REFILL_NEEDED"] += 1
+    else:
+        db.session.add(ActionSignal(
+            master_product_id=master.id,
+            store_product_id=store.id,
+            signal_type="OPTION_STOCK_REFILL_NEEDED",
+            current_value=new_current,
+            suggested_value=new_suggested,
+        ))
+        pending.add(key)
+        stats["OPTION_STOCK_REFILL_NEEDED"] += 1
+
+
 def _check_option_add_signals(master: MasterProduct, store: StoreProduct, stats: dict, pending: set, prev_opts: dict):
     """도매처에 새 옵션이 추가되었거나 옵션 구성이 바뀐 경우 감지"""
     key = (master.id, store.id, "OPTION_ADD")
     existing = prev_opts.get(key)
+
+    # 옵션 차원 불일치 가드: 자동 시그널 생성 차단 (기존 pending은 보존)
+    if _is_dimension_mismatch_blocked(store):
+        return
 
     if not master.options_text:
         if existing:

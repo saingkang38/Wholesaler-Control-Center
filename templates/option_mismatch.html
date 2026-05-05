@@ -11,6 +11,8 @@
   .badge-warning  { background:#fef3c7; color:#d97706; }
   .badge-success  { background:#d1fae5; color:#059669; }
   .badge-secondary{ background:#f3f4f6; color:#6b7280; }
+  .badge-info     { background:#dbeafe; color:#1d4ed8; }
+  .badge-danger   { background:#fee2e2; color:#dc2626; }
   .btn { padding:5px 12px; border:none; border-radius:4px; cursor:pointer; font-size:13px; }
   .btn:hover { opacity:.85; }
   .combo-tag {
@@ -31,8 +33,10 @@
 <div class="card">
   <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
     <h2 style="font-size:18px; margin:0;">
-      도매 단품 ↔ 스토어 옵션 불일치
+      옵션 불일치 관리
       {% if pending_count %}<span class="badge badge-warning" style="margin-left:8px;">{{ pending_count }}</span>{% endif %}
+      {% if pending_struct_count %}<span class="badge badge-secondary" style="margin-left:4px; font-size:11px;" title="단품↔옵션 불일치">단품 {{ pending_struct_count }}</span>{% endif %}
+      {% if pending_dim_count %}<span class="badge badge-info" style="margin-left:4px; font-size:11px;" title="옵션 차원 불일치 (master 1차원 vs Naver 다차원)">차원 {{ pending_dim_count }}</span>{% endif %}
     </h2>
     <button id="detect-btn" class="btn" style="background:#2c3e50;color:white;" onclick="detectNow()">지금 감지 실행</button>
   </div>
@@ -47,15 +51,31 @@
   </div>
   <div id="detect-result" style="display:none; margin-bottom:16px; padding:14px 16px; background:#d1fae5; border:1px solid #86efac; border-radius:6px; font-size:13px; color:#065f46;"></div>
 
+  {% set tq = ('&store_id=' ~ store_filter) if store_filter else '' %}
+  {% set ttq = ('&mismatch_type=' ~ type_filter) if type_filter else '' %}
   <div class="tab-bar">
-    <a href="?status=pending{% if store_filter %}&store_id={{ store_filter }}{% endif %}"
+    <a href="?status=pending{{ tq }}{{ ttq }}"
        class="{{ 'active' if status_filter == 'pending' }}">대기중</a>
-    <a href="?status=resolved{% if store_filter %}&store_id={{ store_filter }}{% endif %}"
+    <a href="?status=resolved{{ tq }}{{ ttq }}"
        class="{{ 'active' if status_filter == 'resolved' }}">처리완료</a>
-    <a href="?status=ignored{% if store_filter %}&store_id={{ store_filter }}{% endif %}"
+    <a href="?status=ignored{{ tq }}{{ ttq }}"
        class="{{ 'active' if status_filter == 'ignored' }}">무시됨</a>
-    <a href="?status=all{% if store_filter %}&store_id={{ store_filter }}{% endif %}"
+    <a href="?status=all{{ tq }}{{ ttq }}"
        class="{{ 'active' if status_filter == 'all' }}">전체</a>
+  </div>
+
+  {# 유형 필터 #}
+  <div style="margin-bottom:14px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+    <span style="font-size:12px; color:#666;">유형:</span>
+    {% set type_items = [('', '전체', pending_struct_count + pending_dim_count),
+                         ('structure_naver_only', '단품↔옵션 불일치', pending_struct_count),
+                         ('dimension_mismatch', '옵션 차원 불일치', pending_dim_count)] %}
+    {% for tval, tlabel, tcnt in type_items %}
+    <a href="?status={{ status_filter }}{{ tq }}{% if tval %}&mismatch_type={{ tval }}{% endif %}"
+       style="padding:5px 12px; border-radius:4px; font-size:13px; text-decoration:none;
+              background:{{ '#2c3e50' if type_filter == tval else '#e9ecef' }};
+              color:{{ 'white' if type_filter == tval else '#555' }};">{{ tlabel }} ({{ tcnt }})</a>
+    {% endfor %}
   </div>
 
   {% if naver_stores|length > 1 %}
@@ -82,6 +102,7 @@
   <table>
     <thead>
       <tr>
+        <th>유형</th>
         <th>도매처</th>
         <th>스토어</th>
         <th>상품명</th>
@@ -97,6 +118,13 @@
     <tbody>
       {% for row in rows %}
       <tr id="row-{{ row.id }}">
+        <td style="font-size:12px;">
+          {% if row.mismatch_type == 'dimension_mismatch' %}
+            <span class="badge badge-info" title="master 1차원 vs Naver 다차원">차원 불일치</span>
+          {% else %}
+            <span class="badge badge-secondary" title="도매처 단품 vs Naver 옵션">단품↔옵션</span>
+          {% endif %}
+        </td>
         <td style="font-size:13px; color:#666;">{{ row.wholesaler_name }}</td>
         <td style="font-size:13px; color:#2563eb; font-weight:500;">{{ row.store_name }}</td>
         <td>{{ row.product_name }}</td>
@@ -106,8 +134,12 @@
         <td>
           {% for combo in row.combos %}
           <span class="combo-tag {{ 'has-price' if combo.price != 0 }}">
-            {{ combo.name or '(이름없음)' }}
-            {% if combo.price != 0 %}
+            {% if row.mismatch_type == 'dimension_mismatch' %}
+              {{ combo.name1 or '(이름없음)' }}{% if combo.name2 %} / {{ combo.name2 }}{% endif %}
+            {% else %}
+              {{ combo.name or '(이름없음)' }}
+            {% endif %}
+            {% if combo.price and combo.price != 0 %}
               <b style="color:#d97706;">+{{ '{:,}'.format(combo.price) }}</b>
             {% else %}
               <span style="color:#9ca3af;">+0</span>
@@ -130,10 +162,17 @@
         <td style="font-size:12px; color:#9ca3af;">{{ row.created_at }}</td>
         <td style="white-space:nowrap;">
           {% if row.status == 'pending' %}
-          <button class="btn" style="background:#dc2626;color:white;"
-                  onclick="openPreview({{ row.id }}, this)">옵션 제거 미리보기</button>
-          <button class="btn" style="background:#9ca3af;color:white; margin-top:4px;"
-                  onclick="ignoreRow({{ row.id }}, this)">무시</button>
+            {% if row.mismatch_type == 'structure_naver_only' %}
+              <button class="btn" style="background:#dc2626;color:white;"
+                      onclick="openPreview({{ row.id }}, this)">옵션 제거 미리보기</button>
+              <button class="btn" style="background:#9ca3af;color:white; margin-top:4px;"
+                      onclick="ignoreRow({{ row.id }}, this)">무시</button>
+            {% else %}
+              {# dimension_mismatch — 자동 보정 안 함, 무시 처리만 가능 #}
+              <button class="btn" style="background:#9ca3af;color:white;"
+                      onclick="ignoreRow({{ row.id }}, this)">무시</button>
+              <div style="font-size:11px; color:#6b7280; margin-top:4px;">자동 처리 차단됨</div>
+            {% endif %}
           {% endif %}
         </td>
       </tr>

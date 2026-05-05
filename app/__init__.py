@@ -89,6 +89,9 @@ def create_app():
             "ALTER TABLE store_products ADD COLUMN applied_option_base_price INTEGER",
             "ALTER TABLE store_products ADD COLUMN naver_cached_additions TEXT",
             "ALTER TABLE store_products ADD COLUMN applied_options_text TEXT",
+            "ALTER TABLE store_products ADD COLUMN naver_cached_option_stocks TEXT",
+            "ALTER TABLE store_products ADD COLUMN naver_cached_option_usable TEXT",
+            "ALTER TABLE store_option_mismatches ADD COLUMN mismatch_type TEXT DEFAULT 'structure_naver_only'",
         ]
         for sql in migrations:
             try:

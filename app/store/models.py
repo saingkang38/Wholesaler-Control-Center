@@ -46,6 +46,9 @@ class StoreProduct(db.Model):
 
     # 스마트스토어 실제 옵션 추가금 캐시 (sync_store_option_state 에서 갱신, 표시 전용)
     naver_cached_additions     = db.Column(db.Text, nullable=True)     # 실제 Naver 추가금 (줄바꿈 구분)
+    # Naver 옵션 재고/usable 캐시 (sync_store_option_state 에서 갱신, OPTION_STOCK_REFILL_NEEDED 감지용)
+    naver_cached_option_stocks = db.Column(db.Text, nullable=True)     # Naver 옵션별 재고 (줄바꿈 구분, 예: "999\n0\n10")
+    naver_cached_option_usable = db.Column(db.Text, nullable=True)     # Naver 옵션별 usable (줄바꿈 구분, 예: "1\n1\n0")
 
     # 마스터 매칭
     master_product_id = db.Column(db.Integer, db.ForeignKey("master_products.id"), nullable=True)
@@ -89,16 +92,19 @@ class ProductExclusion(db.Model):
 
 class StoreOptionMismatch(db.Model):
     """
-    도매처 단품 ↔ Naver 스토어 옵션 불일치 레코드.
-    master.options_text = NULL 이지만 Naver 상품에 optionCombinations 가 있는 경우 생성.
-    운영자가 확인 후 처리(추가금 초기화 or 무시)한다.
+    도매처 ↔ Naver 스토어 옵션 불일치 레코드.
+    두 종류 통합 관리 (mismatch_type으로 구분):
+      - structure_naver_only: master.options_text=NULL인데 Naver는 옵션 상품 (도매처 단품 vs Naver 옵션)
+      - dimension_mismatch: master는 1차원 옵션인데 Naver는 다차원 (optionName2 채워진 콤보 존재)
+    운영자가 확인 후 처리(추가금 초기화/무시 or 수동 정리).
     """
     __tablename__ = "store_option_mismatches"
 
     id               = db.Column(db.Integer, primary_key=True)
     store_product_id = db.Column(db.Integer, db.ForeignKey("store_products.id"), unique=True, nullable=False)
-    naver_combos     = db.Column(db.Text)          # JSON: [{name, price}, ...]
+    naver_combos     = db.Column(db.Text)          # JSON: [{name, price}, ...] (또는 dimension_mismatch는 [{name1, name2, price}, ...])
     status           = db.Column(db.String(20), default="pending")  # pending/resolved/ignored
+    mismatch_type    = db.Column(db.String(32), nullable=False, default="structure_naver_only")  # structure_naver_only / dimension_mismatch
     resolved_at      = db.Column(db.DateTime)
     created_at       = db.Column(db.DateTime, default=kst_now)
     updated_at       = db.Column(db.DateTime, default=kst_now, onupdate=kst_now)

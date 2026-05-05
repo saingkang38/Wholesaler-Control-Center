@@ -235,6 +235,9 @@ class ChingudomeCollector(BaseCollector):
             if attr != "goodsno":
                 extra[f"attr_{attr}"] = val
 
+        # 원산지: <madein> 태그 (예: "해외|아시아|중국") — API 검증 완료
+        origin_val = self._text(product, "madein") or None
+
         return {
             "source_product_code": goodsno,
             "product_name": self._text(product, "goodsnm"),
@@ -245,7 +248,7 @@ class ChingudomeCollector(BaseCollector):
             "detail_url": None,
             "stock_qty": None,
             "category_name": self._text(product, "category"),
-            "origin": None,
+            "origin": origin_val,
             "shipping_fee": None,
             "shipping_condition": None,
             "detail_description": self._text(product, "detailed_source"),

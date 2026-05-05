@@ -168,13 +168,56 @@ class JtckoreaCollector(BaseCollector):
             inner_html = detail_box.decode_contents()
             detail_html = f'<div style="text-align:center;">{inner_html}</div>'
 
+        # 옵션 수집 — JTC select 구조: name="optionSnoInput".
+        # PC/모바일용 select가 같은 name으로 2개 있으므로 첫 번째만 사용.
+        # option value 패턴: "{ID}||{가격차액}||||0^|^{옵션명}"
+        #   예: "1625||100||||0^|^11mm" → 옵션명 "11mm", 차액 +100원
+        # value가 빈 문자열인 option은 placeholder ("=옵션:가격:재고=" 헤더) 라 제외.
+        options_text = None
+        option_diffs = None
+        option_sel = soup.select_one('select[name="optionSnoInput"]')
+        if option_sel:
+            opt_names = []
+            opt_diffs = []
+            for opt in option_sel.find_all("option"):
+                value = (opt.get("value") or "").strip()
+                if not value:
+                    continue  # placeholder 제외
+                # value를 "||"로 분리: [ID, 차액, ..., "0^|^옵션명"]
+                parts = value.split("||")
+                if len(parts) < 2:
+                    continue
+                # 옵션명: "^|^" 뒤
+                if "^|^" in value:
+                    opt_name = value.rsplit("^|^", 1)[-1].strip()
+                else:
+                    # fallback — 텍스트에서 추출 (앞 단어만)
+                    opt_name = opt.get_text(strip=True).split("\n")[0].strip()
+                if not opt_name:
+                    continue
+                # 가격차액: parts[1] (음수 가능)
+                try:
+                    diff_val = int(parts[1].strip()) if parts[1].strip() else 0
+                except ValueError:
+                    diff_val = 0
+                opt_names.append(opt_name)
+                opt_diffs.append(str(diff_val))
+            if opt_names:
+                options_text = "\n".join(opt_names)
+                option_diffs = "\n".join(opt_diffs)
+
+        extra = {}
+        if options_text:
+            extra["옵션"] = options_text
+            extra["옵션가"] = option_diffs
+
         result = {
             "origin": origin,
             "own_code": own_code,
             "detail_description": detail_html,
             "shipping_fee": shipping_fee,
             "shipping_condition": shipping_condition,
-            "extra": {},
+            "extra": extra,
         }
         if price is not None:
             result["price"] = price

@@ -1,26 +1,34 @@
 import io
+
 import requests
+
 from store.naver import API_BASE, _get_access_token
+from store.naver.detail_html import sanitize_detail_html
 from store.naver.rate_control import call as _api_call
 
 
 def get_origin_product(origin_product_no: int, client_id: str, client_secret: str) -> dict:
     token = _get_access_token(client_id, client_secret)
-    resp = _api_call("GET",
-                     f"{API_BASE}/v2/products/origin-products/{origin_product_no}",
-                     token, timeout=15)
+    resp = _api_call(
+        "GET",
+        f"{API_BASE}/v2/products/origin-products/{origin_product_no}",
+        token,
+        timeout=15,
+    )
     return resp.json()
 
 
 def upload_image_from_url(image_url: str, client_id: str, client_secret: str) -> str:
-    """외부 이미지 URL을 네이버 CDN에 업로드하고 네이버 URL 반환"""
+    """Download an image URL and re-upload it through Naver's image API."""
     token = _get_access_token(client_id, client_secret)
     img_resp = requests.get(image_url, timeout=15)
     img_resp.raise_for_status()
     content_type = img_resp.headers.get("Content-Type", "image/jpeg")
     ext = "jpg" if "jpeg" in content_type else content_type.split("/")[-1]
     resp = _api_call(
-        "POST", f"{API_BASE}/v2/products/images/upload", token,
+        "POST",
+        f"{API_BASE}/v2/products/images/upload",
+        token,
         files={"imageFiles": (f"image.{ext}", io.BytesIO(img_resp.content), content_type)},
         timeout=30,
     )
@@ -31,8 +39,17 @@ def upload_image_from_url(image_url: str, client_id: str, client_secret: str) ->
     return images[0].get("url", "")
 
 
+def _sanitize_payload_detail_content(payload: dict) -> None:
+    origin = payload.get("originProduct", {})
+    detail_content = origin.get("detailContent")
+    if isinstance(detail_content, str):
+        cleaned, _ = sanitize_detail_html(detail_content)
+        origin["detailContent"] = cleaned
+
+
 def register_product(payload: dict, client_id: str, client_secret: str) -> dict:
     """상품 신규 등록. payload: originProduct + smartstoreChannelProduct"""
+    _sanitize_payload_detail_content(payload)
     token = _get_access_token(client_id, client_secret)
     resp = requests.post(
         f"{API_BASE}/v2/products",
@@ -46,8 +63,36 @@ def register_product(payload: dict, client_id: str, client_secret: str) -> dict:
 
 
 def update_origin_product(origin_product_no: int, payload: dict, client_id: str, client_secret: str) -> dict:
+    _sanitize_payload_detail_content(payload)
     token = _get_access_token(client_id, client_secret)
-    resp = _api_call("PUT",
-                     f"{API_BASE}/v2/products/origin-products/{origin_product_no}",
-                     token, json_body=payload, timeout=15)
+    resp = _api_call(
+        "PUT",
+        f"{API_BASE}/v2/products/origin-products/{origin_product_no}",
+        token,
+        json_body=payload,
+        timeout=15,
+    )
     return resp.json() if resp.text else {}
+
+
+def sync_detail_content(origin_product_no: int, raw_html: str, client_id: str, client_secret: str) -> dict:
+    """Fetch the current product, sanitize detail HTML, and overwrite detailContent."""
+    product_data = get_origin_product(origin_product_no, client_id, client_secret)
+    origin = product_data.get("originProduct", {})
+    cleaned_html, report = sanitize_detail_html(raw_html)
+    if not cleaned_html:
+        raise ValueError("정리 후 상세 HTML이 비어 있습니다.")
+
+    origin["detailContent"] = cleaned_html
+    payload = {"originProduct": origin}
+    smartstore_channel_product = product_data.get("smartstoreChannelProduct")
+    if smartstore_channel_product:
+        payload["smartstoreChannelProduct"] = smartstore_channel_product
+
+    response = update_origin_product(origin_product_no, payload, client_id, client_secret)
+    return {
+        "origin_product_no": origin_product_no,
+        "sanitized_html": cleaned_html,
+        "report": report,
+        "response": response,
+    }
