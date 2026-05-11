@@ -115,10 +115,41 @@
     <a href="/actions?status=failed&per_page={{ per_page }}{{ otq }}{{ sq }}" class="{{ 'active' if status_filter == 'failed' }}">
       실패{% if failed_count > 0 %} <span style="background:#dc2626;color:white;border-radius:10px;padding:1px 7px;font-size:11px;">{{ failed_count }}</span>{% endif %}
     </a>
+    <a href="/actions?status=awaiting_input&per_page={{ per_page }}{{ otq }}{{ sq }}" class="{{ 'active' if status_filter == 'awaiting_input' }}">
+      입력대기{% if awaiting_input_count > 0 %} <span style="background:#7c3aed;color:white;border-radius:10px;padding:1px 7px;font-size:11px;">{{ awaiting_input_count }}</span>{% endif %}
+    </a>
     <a href="/actions?status=reverted&per_page={{ per_page }}{{ otq }}{{ sq }}" class="{{ 'active' if status_filter == 'reverted' }}">되돌림</a>
     <a href="/actions?status=rejected&per_page={{ per_page }}{{ otq }}{{ sq }}" class="{{ 'active' if status_filter == 'rejected' }}">거절</a>
     <a href="/actions?status=skipped&per_page={{ per_page }}{{ otq }}{{ sq }}" class="{{ 'active' if status_filter == 'skipped' }}">건너뜀</a>
   </div>
+
+  {# 2-A. failed 탭 빠른 필터 — 등록불가 태그 케이스 분류 #}
+  {% if status_filter == 'failed' %}
+  <div style="margin-bottom:14px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+    <span style="font-size:12px; color:#666;">실패 분류:</span>
+    <a href="/actions?status=failed&per_page={{ per_page }}"
+       style="padding:5px 12px; border-radius:4px; font-size:13px; text-decoration:none;
+              background:{{ '#2c3e50' if not failure_kind_filter else '#e9ecef' }};
+              color:{{ 'white' if not failure_kind_filter else '#555' }};">전체 ({{ failed_count }})</a>
+    <a href="/actions?status=failed&per_page={{ per_page }}&failure_kind=tag_blocked"
+       style="padding:5px 12px; border-radius:4px; font-size:13px; text-decoration:none;
+              background:{{ '#dc2626' if failure_kind_filter == 'tag_blocked' else '#fee2e2' }};
+              color:{{ 'white' if failure_kind_filter == 'tag_blocked' else '#991b1b' }};">🏷 등록불가 태그 ({{ tag_blocked_count }})</a>
+    <a href="/actions?status=failed&per_page={{ per_page }}&failure_kind=consumption_date"
+       style="padding:5px 12px; border-radius:4px; font-size:13px; text-decoration:none;
+              background:{{ '#d97706' if failure_kind_filter == 'consumption_date' else '#fef3c7' }};
+              color:{{ 'white' if failure_kind_filter == 'consumption_date' else '#92400e' }};">🍞 소비기한 ({{ consumption_date_count }})</a>
+    <a href="/actions?status=failed&per_page={{ per_page }}&failure_kind=close_status"
+       style="padding:5px 12px; border-radius:4px; font-size:13px; text-decoration:none;
+              background:{{ '#7c3aed' if failure_kind_filter == 'close_status' else '#ede9fe' }};
+              color:{{ 'white' if failure_kind_filter == 'close_status' else '#5b21b6' }};">🚫 판매종료 복구필요 ({{ close_status_count }})</a>
+    {% if failure_kind_filter == 'close_status' and close_status_count > 0 %}
+    <a href="/actions/export/close-status.xlsx" download
+       style="margin-left:10px; padding:6px 14px; border-radius:4px; font-size:13px; text-decoration:none;
+              background:#059669; color:white; font-weight:500;">📥 엑셀 다운로드 ({{ close_status_count }}건)</a>
+    {% endif %}
+  </div>
+  {% endif %}
 
   {# 3. 시그널 타입 필터 (대기중일 때만) #}
   {% if status_filter == 'pending' %}
@@ -132,6 +163,7 @@
       ('OPTION_ADD', '옵션추가'),
       ('RESUME_POSSIBLE', '판매재개'),
       ('OPTION_STOCK_REFILL_NEEDED', '재고복구'),
+      ('DETAIL_CHANGE', '상세페이지'),
     ] %}
     {% for val, label in sig_items %}
     <a href="/actions?status=pending&per_page={{ per_page }}{{ otq }}{{ sq }}{% if val %}&signal_type={{ val }}{% endif %}"
@@ -231,6 +263,9 @@
     <span style="margin-left:10px; font-size:13px; color:#666;">선택:</span>
     <button class="btn" style="background:#2563eb;color:white;" onclick="bulkRetry()">선택 재시도</button>
     <button class="btn btn-exclude" onclick="bulkExcludeFailed()">선택 예외처리</button>
+    {% if failure_kind_filter == 'tag_blocked' %}
+    <button class="btn" style="background:#dc2626;color:white;" onclick="bulkForceTagStrip()">🏷 선택 강제 재시도(태그 제거)</button>
+    {% endif %}
     {% endif %}
   </div>
 
@@ -254,7 +289,8 @@
         <th>판매가격</th>
         <th>감지일시</th>
         {% if status_filter == 'failed' %}<th>오류 내용</th>{% endif %}
-        {% if status_filter in ('pending', 'executed', 'failed') %}<th>처리</th>{% endif %}
+        {% if status_filter == 'awaiting_input' %}<th>누락 필드</th>{% endif %}
+        {% if status_filter in ('pending', 'executed', 'failed', 'awaiting_input') %}<th>처리</th>{% endif %}
       </tr>
     </thead>
     <tbody>
@@ -301,6 +337,15 @@
         {% if status_filter == 'failed' %}
         <td style="font-size:12px; color:#dc2626; max-width:260px;">{{ row.error_message or '-' }}</td>
         {% endif %}
+        {% if status_filter == 'awaiting_input' %}
+        <td style="font-size:12px; color:#6d28d9; max-width:260px;">
+          {% if row.required_fields_list %}
+            {% for f in row.required_fields_list %}
+              <div>· {{ f.label or f.name }}</div>
+            {% endfor %}
+          {% else %}-{% endif %}
+        </td>
+        {% endif %}
         {% if status_filter == 'pending' %}
         <td style="white-space:nowrap;">
           <button class="btn btn-approve" onclick="resolve({{ row.id }}, 'approve')">승인</button>
@@ -315,7 +360,14 @@
         {% elif status_filter == 'failed' %}
         <td style="white-space:nowrap;">
           <button class="btn" style="background:#2563eb;color:white;" onclick="retry({{ row.id }}, this)">재시도</button>
+          {% if failure_kind_filter == 'tag_blocked' %}
+          <button class="btn" style="background:#dc2626;color:white;" onclick="forceTagStrip({{ row.id }}, this)">강제 재시도</button>
+          {% endif %}
           <button class="btn btn-exclude" onclick="exclude({{ row.store_product_id }}, this)">예외</button>
+        </td>
+        {% elif status_filter == 'awaiting_input' %}
+        <td style="white-space:nowrap;">
+          <button class="btn" style="background:#7c3aed;color:white;" onclick="openFillModal({{ row.id }})">필수값 입력</button>
         </td>
         {% endif %}
       </tr>
@@ -423,7 +475,46 @@
   {% endif %}
 </div>
 
+<!-- 필수값 입력 모달 -->
+<div id="fillModal" class="modal-overlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:9999; align-items:center; justify-content:center;">
+  <div style="background:white; border-radius:8px; padding:24px; max-width:520px; width:90%; max-height:80vh; overflow:auto;">
+    <h3 id="fillModalTitle" style="margin:0 0 12px; font-size:17px;">필수값 입력</h3>
+    <div id="fillModalSubtitle" style="font-size:12px; color:#666; margin-bottom:14px;"></div>
+    <div id="fillModalBody"></div>
+    <div id="fillModalError" style="color:#dc2626; font-size:12px; margin:8px 0; display:none;"></div>
+    <div style="margin-top:16px; display:flex; gap:8px; justify-content:flex-end; align-items:center;">
+      <button class="btn" style="background:#0ea5e9;color:white;" onclick="openDetailHtmlPreview()">📄 상세페이지 미리보기</button>
+      <button class="btn btn-skip" onclick="closeFillModal()">취소</button>
+      <button id="fillModalSaveBtn" class="btn btn-approve" onclick="submitFillModal()">저장하고 PUT 재시도</button>
+    </div>
+  </div>
+</div>
+
+<!-- 상세 HTML 미리보기 모달 (필수값 입력 모달 위에 겹쳐 표시) -->
+<div id="detailHtmlModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:10000; align-items:center; justify-content:center;">
+  <div style="background:white; border-radius:8px; padding:0; width:90%; max-width:900px; height:85vh; display:flex; flex-direction:column;">
+    <div style="padding:14px 20px; border-bottom:1px solid #e5e7eb; display:flex; align-items:center; justify-content:space-between;">
+      <h3 style="margin:0; font-size:16px;">📄 상세페이지 미리보기</h3>
+      <button onclick="closeDetailHtmlModal()" style="background:none; border:none; font-size:22px; cursor:pointer; color:#6b7280; padding:0 6px;">×</button>
+    </div>
+    <div style="flex:1; overflow:hidden; background:#f9fafb;">
+      <iframe id="detailHtmlFrame" sandbox="allow-same-origin"
+              style="width:100%; height:100%; border:none; background:white;"></iframe>
+    </div>
+  </div>
+</div>
+
 <script>
+// awaiting_input 행별 누락 필드 매핑 (Jinja → JS)
+const REQUIRED_FIELDS_BY_SIGNAL = {
+  {% for row in rows %}
+    {% if row.required_fields_list %}
+    {{ row.id }}: {{ row.required_fields_list|tojson }},
+    {% endif %}
+  {% endfor %}
+};
+let _fillModalCurrentId = null;
+
 function toggleAll(cb) {
   document.querySelectorAll('.row-check').forEach(c => c.checked = cb.checked);
 }
@@ -439,11 +530,234 @@ function resolve(id, action) {
     if (data.ok) {
       const row = document.getElementById('row-' + id);
       if (row) row.remove();
+    } else if (data.status === 'awaiting_input') {
+      // Naver가 필수값을 요구함 — 입력 모달 즉시 노출
+      REQUIRED_FIELDS_BY_SIGNAL[id] = data.required_fields || [];
+      openFillModal(id);
     } else {
       alert('오류: ' + (data.error || '알 수 없는 오류'));
     }
   })
   .catch(() => alert('처리 중 오류가 발생했습니다.'));
+}
+
+function openFillModal(id) {
+  const fields = REQUIRED_FIELDS_BY_SIGNAL[id] || [];
+  if (!fields.length) {
+    alert('이 시그널에 누락 필드 정보가 없습니다. 페이지를 새로고침해 주세요.');
+    return;
+  }
+  _fillModalCurrentId = id;
+  const row = document.getElementById('row-' + id);
+  const productName = row ? (row.querySelector('td:nth-child(5)')?.textContent?.trim() || '') : '';
+  document.getElementById('fillModalSubtitle').textContent = productName ? `대상: ${productName}` : '';
+  document.getElementById('fillModalError').style.display = 'none';
+
+  const body = document.getElementById('fillModalBody');
+  body.innerHTML = '';
+  fields.forEach(f => {
+    const wrap = document.createElement('div');
+    wrap.style.cssText = 'margin-bottom:14px;';
+    const label = document.createElement('label');
+    label.style.cssText = 'display:block; font-size:13px; font-weight:600; margin-bottom:4px; color:#374151;';
+    label.textContent = (f.label || f.name) + (f.optional ? ' (선택)' : '');
+    wrap.appendChild(label);
+
+    if (f.message) {
+      const msg = document.createElement('div');
+      msg.style.cssText = 'font-size:11px; color:#dc2626; margin-bottom:4px;';
+      msg.textContent = f.message;
+      wrap.appendChild(msg);
+    }
+
+    if (f.kind === 'yn') {
+      const radioWrap = document.createElement('div');
+      radioWrap.style.cssText = 'display:flex; gap:14px; padding:6px 0;';
+      ['Y', 'N'].forEach(v => {
+        const lab = document.createElement('label');
+        lab.style.cssText = 'cursor:pointer; font-size:13px;';
+        const r = document.createElement('input');
+        r.type = 'radio';
+        r.name = `fill__${f.name}`;
+        r.value = v;
+        r.dataset.fieldName = f.name;
+        r.dataset.kind = 'yn';
+        r.style.marginRight = '4px';
+        lab.appendChild(r);
+        lab.appendChild(document.createTextNode(v === 'Y' ? 'Y (사용)' : 'N (미사용)'));
+        radioWrap.appendChild(lab);
+      });
+      wrap.appendChild(radioWrap);
+    } else if (f.kind === 'select') {
+      const sel = document.createElement('select');
+      sel.dataset.fieldName = f.name;
+      sel.dataset.kind = 'select';
+      sel.style.cssText = 'width:100%; padding:7px 9px; border:1px solid #d1d5db; border-radius:5px; font-size:13px; background:white;';
+      const placeholder = document.createElement('option');
+      placeholder.value = '';
+      placeholder.textContent = '— 선택 —';
+      sel.appendChild(placeholder);
+      (f.options || []).forEach(opt => {
+        const o = document.createElement('option');
+        o.value = opt.value;
+        o.textContent = opt.label || opt.value;
+        sel.appendChild(o);
+      });
+      wrap.appendChild(sel);
+    } else if (f.kind === 'number') {
+      const inp = document.createElement('input');
+      inp.type = 'number';
+      inp.step = 'any';
+      inp.dataset.fieldName = f.name;
+      inp.dataset.kind = 'number';
+      inp.style.cssText = 'width:100%; padding:7px 9px; border:1px solid #d1d5db; border-radius:5px; font-size:13px;';
+      if (f.hint) inp.placeholder = f.hint;
+      wrap.appendChild(inp);
+    } else if (f.kind === 'date') {
+      const inp = document.createElement('input');
+      inp.type = 'date';
+      inp.dataset.fieldName = f.name;
+      inp.dataset.kind = 'date';
+      inp.style.cssText = 'width:100%; padding:7px 9px; border:1px solid #d1d5db; border-radius:5px; font-size:13px;';
+      wrap.appendChild(inp);
+    } else {
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.dataset.fieldName = f.name;
+      inp.dataset.kind = 'text';
+      inp.style.cssText = 'width:100%; padding:7px 9px; border:1px solid #d1d5db; border-radius:5px; font-size:13px;';
+      if (f.hint) inp.placeholder = f.hint;
+      wrap.appendChild(inp);
+    }
+
+    if (f.hint && f.kind !== 'yn') {
+      const hint = document.createElement('div');
+      hint.style.cssText = 'font-size:11px; color:#9ca3af; margin-top:3px;';
+      hint.textContent = f.hint;
+      wrap.appendChild(hint);
+    }
+
+    body.appendChild(wrap);
+  });
+
+  document.getElementById('fillModal').style.display = 'flex';
+}
+
+function closeFillModal() {
+  document.getElementById('fillModal').style.display = 'none';
+  _fillModalCurrentId = null;
+}
+
+function openDetailHtmlPreview() {
+  const id = _fillModalCurrentId;
+  if (!id) return;
+  const frame = document.getElementById('detailHtmlFrame');
+  // 로딩 상태 srcdoc — sandbox 격리 안에서 동작
+  frame.srcdoc = '<!doctype html><html><body style="font-family:system-ui;color:#666;padding:24px;">불러오는 중...</body></html>';
+  document.getElementById('detailHtmlModal').style.display = 'flex';
+
+  fetch(`/actions/${id}/detail-html`)
+    .then(r => r.json())
+    .then(d => {
+      if (d.ok) {
+        // 외부 자원(이미지 등)이 정상 로드되도록 base 스타일만 감싸 noscript-friendly로 노출
+        const wrapped = `<!doctype html><html><head><meta charset="utf-8">
+          <style>body{font-family:system-ui,-apple-system,sans-serif;margin:0;padding:16px;color:#222;line-height:1.55;}
+          img{max-width:100%;height:auto;}table{max-width:100%;}</style>
+          </head><body>${d.html}</body></html>`;
+        frame.srcdoc = wrapped;
+      } else {
+        frame.srcdoc = `<!doctype html><html><body style="font-family:system-ui;color:#dc2626;padding:24px;">${d.error || '미리보기 실패'}</body></html>`;
+      }
+    })
+    .catch(e => {
+      frame.srcdoc = `<!doctype html><html><body style="font-family:system-ui;color:#dc2626;padding:24px;">오류: ${e.message}</body></html>`;
+    });
+}
+
+function closeDetailHtmlModal() {
+  document.getElementById('detailHtmlModal').style.display = 'none';
+  document.getElementById('detailHtmlFrame').srcdoc = '';
+}
+
+function submitFillModal() {
+  const id = _fillModalCurrentId;
+  if (!id) return;
+
+  const values = {};
+  // 텍스트 입력
+  document.querySelectorAll('#fillModalBody input[type="text"]').forEach(inp => {
+    const v = inp.value.trim();
+    if (v) values[inp.dataset.fieldName] = v;
+  });
+  // 숫자 입력
+  document.querySelectorAll('#fillModalBody input[type="number"]').forEach(inp => {
+    const v = inp.value.trim();
+    if (v) values[inp.dataset.fieldName] = v;
+  });
+  // 날짜 입력
+  document.querySelectorAll('#fillModalBody input[type="date"]').forEach(inp => {
+    const v = inp.value.trim();  // yyyy-MM-dd
+    if (v) values[inp.dataset.fieldName] = v;
+  });
+  // 드롭다운
+  document.querySelectorAll('#fillModalBody select').forEach(sel => {
+    if (sel.value) values[sel.dataset.fieldName] = sel.value;
+  });
+  // 라디오 (체크된 것만)
+  document.querySelectorAll('#fillModalBody input[type="radio"]:checked').forEach(r => {
+    values[r.dataset.fieldName] = r.value;
+  });
+
+  // 빈 칸 검사 — 필수 필드(optional !== true)만 검증
+  const fieldDefs = REQUIRED_FIELDS_BY_SIGNAL[id] || [];
+  const required = fieldDefs.filter(f => !f.optional).map(f => f.name);
+  const missing = required.filter(n => !(n in values) || !values[n]);
+  if (missing.length) {
+    const errEl = document.getElementById('fillModalError');
+    errEl.textContent = '필수 항목을 채워야 합니다.';
+    errEl.style.display = 'block';
+    return;
+  }
+
+  const btn = document.getElementById('fillModalSaveBtn');
+  btn.disabled = true;
+  btn.textContent = '처리 중...';
+
+  fetch(`/actions/${id}/fill-required-fields`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({values})
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok && data.status === 'executed') {
+      closeFillModal();
+      const row = document.getElementById('row-' + id);
+      if (row) row.remove();
+      alert('정상 반영되었습니다.');
+    } else if (data.status === 'awaiting_input') {
+      // 추가 필드 요구 — 모달 갱신
+      REQUIRED_FIELDS_BY_SIGNAL[id] = data.required_fields || [];
+      openFillModal(id);
+      const errEl = document.getElementById('fillModalError');
+      errEl.textContent = 'Naver가 추가 필드를 요구합니다. 새로 표시된 필드를 채워 주세요.';
+      errEl.style.display = 'block';
+    } else {
+      const errEl = document.getElementById('fillModalError');
+      errEl.textContent = '실패: ' + (data.error || '알 수 없는 오류');
+      errEl.style.display = 'block';
+    }
+  })
+  .catch((e) => {
+    const errEl = document.getElementById('fillModalError');
+    errEl.textContent = '처리 중 네트워크 오류: ' + e.message;
+    errEl.style.display = 'block';
+  })
+  .finally(() => {
+    btn.disabled = false;
+    btn.textContent = '저장하고 PUT 재시도';
+  });
 }
 
 function exclude(store_product_id, btn) {
@@ -509,12 +823,16 @@ function updateProgressModal(current, total, ok, fail, name, status) {
   log.scrollTop = log.scrollHeight;
 }
 
-function finishProgressModal(ok, fail) {
+function finishProgressModal(ok, fail, awaiting) {
+  awaiting = awaiting || 0;
   const bar = document.getElementById('progressBar');
   bar.style.width = '100%';
-  bar.style.background = fail > 0 ? '#f59e0b' : '#059669';
-  document.getElementById('progressTitle').textContent =
-    fail > 0 ? `완료 — ${ok}개 성공, ${fail}개 실패 (실패 탭 확인)` : `완료 — ${ok}개 모두 성공`;
+  bar.style.background = (fail > 0 || awaiting > 0) ? '#f59e0b' : '#059669';
+  let msg = `완료 — ${ok}개 성공`;
+  if (fail > 0) msg += `, ${fail}개 실패 (실패 탭 확인)`;
+  if (awaiting > 0) msg += `, ${awaiting}개 입력대기 (입력대기 탭에서 값 입력)`;
+  if (fail === 0 && awaiting === 0) msg = `완료 — ${ok}개 모두 성공`;
+  document.getElementById('progressTitle').textContent = msg;
   document.getElementById('progressDoneBtns').style.display = 'block';
 }
 
@@ -533,7 +851,7 @@ async function bulkResolve(action) {
 
   openProgressModal(label, items.length);
 
-  let ok = 0, fail = 0;
+  let ok = 0, fail = 0, awaiting = 0;
   for (let i = 0; i < items.length; i++) {
     const {id, name} = items[i];
     let status = 'ok';
@@ -545,6 +863,7 @@ async function bulkResolve(action) {
       });
       const d = await r.json();
       if (d.ok) { ok++; status = 'ok'; }
+      else if (d.status === 'awaiting_input') { awaiting++; status = 'skip'; }
       else { fail++; status = 'fail'; }
     } catch { fail++; status = 'fail'; }
 
@@ -552,7 +871,7 @@ async function bulkResolve(action) {
 
     if (action === 'approve') await sleep(300);
   }
-  finishProgressModal(ok, fail);
+  finishProgressModal(ok, fail, awaiting);
 }
 
 async function bulkRetry() {
@@ -631,6 +950,65 @@ function retry(id, btn) {
     }
   })
   .catch(() => { alert('처리 중 오류가 발생했습니다.'); btn.disabled = false; });
+}
+
+function forceTagStrip(id, btn) {
+  if (!confirm('이 시그널을 강제 재시도합니다.\n메시지에 명시된 등록불가 단어가 포함된 모든 태그가 자동 삭제됩니다.\n계속할까요?')) return;
+  btn.disabled = true;
+  fetch(`/actions/${id}/retry-tag-strip`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.ok) {
+      const row = document.getElementById('row-' + id);
+      if (row) row.remove();
+    } else {
+      alert('실패: ' + (data.error || '알 수 없는 오류'));
+      btn.disabled = false;
+    }
+  })
+  .catch((e) => { alert('처리 중 오류: ' + e.message); btn.disabled = false; });
+}
+
+async function bulkForceTagStrip() {
+  const checked = [...document.querySelectorAll('.row-check:checked')];
+  if (checked.length === 0) { alert('선택된 항목이 없습니다.'); return; }
+  if (!confirm(
+    `선택한 ${checked.length}개를 강제 재시도합니다.\n` +
+    `각 시그널의 에러 메시지에 명시된 등록불가 단어가 포함된 모든 태그가 자동 삭제됩니다.\n` +
+    `이 작업은 되돌릴 수 없습니다.\n계속할까요?`
+  )) return;
+
+  // 클라이언트가 1건씩 순차 호출 — 진행 모달이 한 건마다 갱신되며,
+  // 서버/브라우저 타임아웃을 피하고 부분 실패도 안전하게 처리됨.
+  const items = checked.map(c => {
+    const tr = c.closest('tr');
+    const name = tr ? (tr.querySelector('td:nth-child(5)')?.textContent?.trim() || '') : '';
+    return {id: c.value, name};
+  });
+
+  openProgressModal('강제 재시도', items.length);
+
+  let ok = 0, fail = 0;
+  for (let i = 0; i < items.length; i++) {
+    const {id, name} = items[i];
+    let status = 'ok';
+    try {
+      const r = await fetch(`/actions/${id}/retry-tag-strip`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+      });
+      const d = await r.json();
+      if (d.ok) { ok++; status = 'ok'; }
+      else { fail++; status = 'fail'; }
+    } catch { fail++; status = 'fail'; }
+
+    updateProgressModal(i + 1, items.length, ok, fail, name, status);
+    await sleep(300);  // Naver API rate limit 방지
+  }
+  finishProgressModal(ok, fail, 0);
 }
 
 // === Phase 3-B: 도매처별 OPTION_ADD 일괄 승인 ===

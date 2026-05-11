@@ -23,3 +23,6 @@ flask_out_check.txt
 server.pid
 # 런타임 로그 디렉토리
 logs/
+
+# 작업용 임시 산출물
+temp/

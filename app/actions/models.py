@@ -20,9 +20,14 @@ class ActionSignal(db.Model):
     current_value = db.Column(db.Text)   # JSON (현재 스토어 값)
     suggested_value = db.Column(db.Text) # JSON (제안값)
 
-    # 처리 상태: pending / executed / reverted / rejected / skipped / failed
+    # 처리 상태: pending / executed / reverted / rejected / skipped / failed / awaiting_input
+    # awaiting_input — Naver가 필수값 누락으로 PUT 거부, 운영자가 직접 채워야 진행 가능
     status = db.Column(db.String(16), default="pending", nullable=False)
     error_message = db.Column(db.Text, nullable=True)  # 실패 시 Naver API 오류 메시지
+
+    # awaiting_input 상태에서 채워질 필드 메타데이터(JSON 배열)
+    # [{"name": "originProduct...consumptionDate", "message": "...", "kind": "text", "label": "...", "hint": "..."}]
+    required_fields_missing = db.Column(db.Text, nullable=True)
 
     detected_at = db.Column(db.DateTime, default=kst_now)
     resolved_at = db.Column(db.DateTime, nullable=True)

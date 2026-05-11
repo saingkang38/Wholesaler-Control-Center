@@ -147,7 +147,7 @@
 
 <!-- 상품 수정 모달 -->
 <div id="editModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:center; justify-content:center;">
-  <div style="background:white; border-radius:8px; padding:28px; width:420px; max-width:90vw;">
+  <div style="background:white; border-radius:8px; padding:28px; width:860px; max-width:95vw; max-height:92vh; overflow:auto;">
     <h3 style="margin:0 0 20px; font-size:16px;">상품 수정</h3>
     <div id="editLoading" style="text-align:center; padding:20px; color:#666;">불러오는 중...</div>
     <div id="editForm" style="display:none;">
@@ -160,7 +160,7 @@
         <label style="display:block; font-size:13px; margin-bottom:4px; color:#555;">판매가 (원)</label>
         <input id="editPrice" type="number" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box; font-size:13px;">
       </div>
-      <div style="margin-bottom:20px;">
+      <div style="margin-bottom:14px;">
         <label style="display:block; font-size:13px; margin-bottom:4px; color:#555;">판매 상태</label>
         <select id="editStatus" style="width:100%; padding:8px; border:1px solid #ccc; border-radius:4px; font-size:13px;">
           <option value="SALE">판매중</option>
@@ -169,10 +169,31 @@
           <option value="CLOSE">판매종료</option>
         </select>
       </div>
+
+      <div style="margin-bottom:14px; border-top:1px solid #e5e7eb; padding-top:14px;">
+        <label style="display:block; font-size:13px; margin-bottom:4px; color:#555; font-weight:600;">상세페이지 HTML</label>
+        <div style="font-size:11px; color:#888; margin-bottom:6px;">
+          현재 길이: <span id="editDetailLen">-</span>자 / 도매처 원본 길이: <span id="editMasterLen">-</span>자
+        </div>
+        <div style="display:flex; gap:6px; margin-bottom:6px;">
+          <button type="button" onclick="loadMasterDetail()"
+                  style="padding:5px 10px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer; font-size:12px;">
+            도매처 HTML로 교체
+          </button>
+          <button type="button" onclick="previewDetail()"
+                  style="padding:5px 10px; background:#e9ecef; color:#333; border:1px solid #ccc; border-radius:4px; cursor:pointer; font-size:12px;">
+            미리보기
+          </button>
+        </div>
+        <textarea id="editDetailHtml" style="width:100%; height:200px; padding:8px; border:1px solid #ccc; border-radius:4px; box-sizing:border-box; font-size:11px; font-family:monospace;"
+                  oninput="document.getElementById('editDetailLen').textContent = this.value.length;"></textarea>
+        <div id="editDetailPreview" style="display:none; margin-top:10px; padding:10px; border:1px solid #e5e7eb; border-radius:4px; background:#fafafa; max-height:300px; overflow:auto;"></div>
+      </div>
+
       <div id="editError" style="display:none; color:#c00; font-size:13px; margin-bottom:12px;"></div>
       <div style="display:flex; gap:10px; justify-content:flex-end;">
         <button onclick="closeEditModal()" style="padding:7px 18px; border:1px solid #ccc; border-radius:4px; background:white; cursor:pointer;">취소</button>
-        <button onclick="submitEdit()" style="padding:7px 18px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer;">저장</button>
+        <button onclick="submitEdit()" style="padding:7px 18px; background:#2c3e50; color:white; border:none; border-radius:4px; cursor:pointer;">저장 (네이버 즉시 반영)</button>
       </div>
     </div>
   </div>
@@ -187,11 +208,15 @@ function applyFilter(key, value) {
   window.location.href = url.toString();
 }
 
+let _editMasterDetailHtml = "";
+let _editOriginalDetailHtml = "";
+
 function openEditModal(productId) {
   document.getElementById('editModal').style.display = 'flex';
   document.getElementById('editLoading').style.display = 'block';
   document.getElementById('editForm').style.display = 'none';
   document.getElementById('editError').style.display = 'none';
+  document.getElementById('editDetailPreview').style.display = 'none';
 
   fetch(`/store-products/${productId}/edit-form`)
     .then(r => r.json())
@@ -201,6 +226,13 @@ function openEditModal(productId) {
       document.getElementById('editName').value = d.name;
       document.getElementById('editPrice').value = d.sale_price;
       document.getElementById('editStatus').value = d.status_type;
+
+      _editOriginalDetailHtml = d.detail_html || "";
+      _editMasterDetailHtml = d.master_detail_html || "";
+      document.getElementById('editDetailHtml').value = _editOriginalDetailHtml;
+      document.getElementById('editDetailLen').textContent = (d.detail_html_length || 0).toLocaleString();
+      document.getElementById('editMasterLen').textContent = (d.master_detail_html_length || 0).toLocaleString();
+
       document.getElementById('editLoading').style.display = 'none';
       document.getElementById('editForm').style.display = 'block';
     })
@@ -211,14 +243,54 @@ function closeEditModal() {
   document.getElementById('editModal').style.display = 'none';
 }
 
+function loadMasterDetail() {
+  if (!_editMasterDetailHtml) {
+    alert('도매처 상세 HTML이 없습니다.');
+    return;
+  }
+  if (!confirm('현재 상세페이지를 도매처 HTML로 교체할까요? (저장 누르기 전엔 네이버 반영 안 됨)')) return;
+  const ta = document.getElementById('editDetailHtml');
+  ta.value = _editMasterDetailHtml;
+  document.getElementById('editDetailLen').textContent = _editMasterDetailHtml.length.toLocaleString();
+}
+
+function previewDetail() {
+  const html = document.getElementById('editDetailHtml').value;
+  if (!html.trim()) { alert('미리볼 HTML이 비어있습니다.'); return; }
+  const id = document.getElementById('editProductId').value;
+  fetch(`/store-products/${id}/detail-html/preview`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({detail_html: html}),
+  })
+    .then(r => r.json())
+    .then(d => {
+      const box = document.getElementById('editDetailPreview');
+      if (d.error) { box.innerHTML = '<div style="color:#c00;">미리보기 실패: '+d.error+'</div>'; }
+      else { box.innerHTML = d.sanitized_html || d.html || ''; }
+      box.style.display = 'block';
+    })
+    .catch(e => alert('미리보기 실패: ' + e));
+}
+
 function submitEdit() {
   const id = document.getElementById('editProductId').value;
-  const form = new FormData();
-  form.append('name', document.getElementById('editName').value);
-  form.append('sale_price', document.getElementById('editPrice').value);
-  form.append('status_type', document.getElementById('editStatus').value);
+  const payload = {
+    name: document.getElementById('editName').value,
+    sale_price: parseInt(document.getElementById('editPrice').value, 10),
+    status_type: document.getElementById('editStatus').value,
+  };
+  const detailHtml = document.getElementById('editDetailHtml').value;
+  // 상세 HTML이 원본과 달라졌을 때만 전송 (안 보내면 그대로 유지)
+  if (detailHtml !== _editOriginalDetailHtml) {
+    payload.detail_html = detailHtml;
+  }
 
-  fetch(`/store-products/${id}/edit`, { method: 'POST', body: form })
+  fetch(`/store-products/${id}/edit`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  })
     .then(r => r.json())
     .then(d => {
       if (d.error) {
