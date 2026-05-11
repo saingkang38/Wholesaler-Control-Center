@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from datetime import date
 from app.utils import kst_now
 from flask import Blueprint
@@ -20,6 +21,108 @@ def _normalize_diffs(diffs: str | None) -> str | None:
     except ValueError:
         return None
     return diffs
+
+
+# 옵션 이름 안에 박힌 도매처 품절 표기 — 발견되면 그 옵션 자체를 제거.
+# 옵션이 사라지면 우리 시스템이 자동으로 옵션 구성 변동을 감지해 네이버 쪽도
+# 옵션 빼는 흐름으로 동기화됨(OPTION_ADD 시그널). 도매처가 다음에 표기를
+# 떼고 다시 보내면 옵션이 복원되어 자연 복귀.
+_OPTION_SOLD_OUT_PATTERNS = [
+    re.compile(r"\[\s*장기품절\s*\]"),
+    re.compile(r"\[\s*일시품절\s*\]"),
+    re.compile(r"\[\s*품절\s*\]"),
+    re.compile(r"\(\s*품\s*\)\s*\(\s*절\s*\)"),
+    re.compile(r"\(\s*품절\s*\)"),
+    re.compile(r"\*\s*품절\s*\*"),
+]
+
+
+def _is_option_sold_out(option_name: str) -> bool:
+    if not option_name:
+        return False
+    return any(p.search(option_name) for p in _OPTION_SOLD_OUT_PATTERNS)
+
+
+def _strip_sold_out_options(extra: dict) -> bool:
+    """extra의 옵션 텍스트에서 품절 표기 박힌 줄을 제거(in-place).
+
+    옵션/옵션가/옵션재고는 줄 순서 1:1 대응이라 같은 인덱스로 함께 제거.
+    하나라도 제거되면 True 반환.
+    """
+    opts_text = extra.get("옵션")
+    if not isinstance(opts_text, str) or not opts_text.strip():
+        return False
+    opt_lines = opts_text.split("\n")
+    diffs_text = extra.get("옵션가") if isinstance(extra.get("옵션가"), str) else ""
+    stocks_text = extra.get("옵션재고") if isinstance(extra.get("옵션재고"), str) else ""
+    diff_lines = diffs_text.split("\n") if diffs_text else []
+    stock_lines = stocks_text.split("\n") if stocks_text else []
+
+    kept_opts: list[str] = []
+    kept_diffs: list[str] = []
+    kept_stocks: list[str] = []
+    removed = 0
+    for i, opt in enumerate(opt_lines):
+        if _is_option_sold_out(opt):
+            removed += 1
+            continue
+        kept_opts.append(opt)
+        if diff_lines:
+            kept_diffs.append(diff_lines[i] if i < len(diff_lines) else "")
+        if stock_lines:
+            kept_stocks.append(stock_lines[i] if i < len(stock_lines) else "")
+
+    if removed == 0:
+        return False
+
+    extra["옵션"] = "\n".join(kept_opts)
+    if diff_lines:
+        extra["옵션가"] = "\n".join(kept_diffs)
+    if stock_lines:
+        extra["옵션재고"] = "\n".join(kept_stocks)
+    return True
+
+
+@master_bp.route("/image-check", methods=["GET", "POST"])
+def image_check_page():
+    """이미지 엑박 수동 검사 페이지.
+    GET = 폼만, POST = 선택된 도매처+개수만큼 검사 후 결과 함께 반환.
+    """
+    from flask_login import login_required as _lr, current_user
+    from flask import render_template, request
+    from app.wholesalers.models import Wholesaler
+    from app.image_check import check_batch
+
+    if not getattr(current_user, "is_authenticated", False):
+        from flask import redirect, url_for
+        return redirect(url_for("auth.login"))
+
+    wholesalers = Wholesaler.query.filter_by(is_active=True).order_by(Wholesaler.name).all()
+
+    results = None
+    checked_count = 0
+    selected_wholesaler_id = None
+    selected_limit = 50
+
+    if request.method == "POST":
+        selected_wholesaler_id = request.form.get("wholesaler_id", type=int)
+        selected_limit = max(1, min(request.form.get("limit", default=50, type=int) or 50, 200))
+        q = MasterProduct.query.filter(MasterProduct.current_status == "active")
+        if selected_wholesaler_id:
+            q = q.filter_by(wholesaler_id=selected_wholesaler_id)
+        masters = q.limit(selected_limit).all()
+        checked_count = len(masters)
+        results = check_batch(masters)
+
+    return render_template(
+        "image_check.html",
+        wholesalers=wholesalers,
+        results=results,
+        checked_count=checked_count,
+        broken_count=len(results) if results is not None else 0,
+        selected_wholesaler_id=selected_wholesaler_id,
+        selected_limit=selected_limit,
+    )
 
 
 @master_bp.route("/changes")
@@ -69,6 +172,16 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
     from app.wholesalers.models import Wholesaler
     wholesaler = Wholesaler.query.get(wholesaler_id)
     prefix = (wholesaler.prefix or "") if wholesaler else ""
+
+    # 도매처가 옵션 이름에 박아 보낸 품절 표기를 제거(옵션 자체를 빼버림).
+    # 도매처마다 표기 형식 다름: 철물박사 [장기품절]/[일시품절], 젠트레이드 (품)(절) 등.
+    _sold_out_removed_total = 0
+    for it in items:
+        extra = it.get("extra")
+        if isinstance(extra, dict) and _strip_sold_out_options(extra):
+            _sold_out_removed_total += 1
+    if _sold_out_removed_total:
+        logger.info(f"[master] 옵션 품절 표기 제거: {_sold_out_removed_total}개 상품에서 옵션 정리됨")
 
     today_map = {
         f"{prefix}{item['source_product_code']}": item
@@ -203,6 +316,35 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
                     after_value=json.dumps({"chars": len(new_detail), "url": master.product_url or ""}, ensure_ascii=False),
                 ))
                 stats["detail_change"] += 1
+                # 매칭된 네이버 스토어 상품마다 상세페이지 갱신 시그널 생성.
+                # 운영자가 액션관리 화면에서 승인하면 네이버 detailContent로 PUT.
+                # 중복 방지: 같은 (master, store) 쌍에 pending이 이미 있으면 skip.
+                from app.store.models import StoreProduct
+                from app.actions.models import ActionSignal
+                for _sp in StoreProduct.query.filter_by(master_product_id=master.id).all():
+                    if not _sp.origin_product_no:
+                        continue
+                    _exists = ActionSignal.query.filter_by(
+                        master_product_id=master.id,
+                        store_product_id=_sp.id,
+                        signal_type="DETAIL_CHANGE",
+                        status="pending",
+                    ).first()
+                    if _exists:
+                        continue
+                    db.session.add(ActionSignal(
+                        master_product_id=master.id,
+                        store_product_id=_sp.id,
+                        signal_type="DETAIL_CHANGE",
+                        current_value=json.dumps(
+                            {"chars": len(master.detail_description or "")},
+                            ensure_ascii=False,
+                        ),
+                        suggested_value=json.dumps(
+                            {"chars": len(new_detail or ""), "url": master.product_url or ""},
+                            ensure_ascii=False,
+                        ),
+                    ))
 
             # 배송비/배송조건 변동
             new_shipping_fee = item.get("shipping_fee")

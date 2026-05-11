@@ -1,6 +1,7 @@
 import json
 import logging
-from flask import Blueprint, render_template, request, jsonify
+import io
+from flask import Blueprint, render_template, request, jsonify, send_file
 from flask_login import login_required
 from app.utils import kst_now
 from sqlalchemy.orm import joinedload
@@ -23,7 +24,53 @@ SIGNAL_LABELS = {
     "OPTION_STOCK_CHANGE": {"label": "옵션 재고 변동", "badge": "secondary"},
     "OPTION_ADD":          {"label": "옵션 추가/변경", "badge": "primary"},
     "OPTION_STOCK_REFILL_NEEDED": {"label": "옵션 재고 복구", "badge": "info"},
+    "DETAIL_CHANGE":       {"label": "상세페이지 갱신", "badge": "info"},
 }
+
+
+def _refresh_required_fields_meta(stored_json: str | None) -> list:
+    """DB에 저장된 required_fields_missing JSON을 KNOWN_REQUIRED_FIELDS의 최신 메타와 머지.
+
+    저장 시점에 박힌 kind/label/hint/options가 코드 변경 후에도 화면에 그대로 보이지 않도록,
+    이름(name) + optional 플래그만 유지하고 메타는 최신 KNOWN 정의로 덮는다.
+
+    - KNOWN에서 제거된 옛날 추측 키는 폴백 없이 드롭 (라우트 가드와 일관성 유지)
+    - co_required는 자동 추가 — 옛 시그널도 즉시 진짜 키 모달로 갱신됨
+    """
+    if not stored_json:
+        return []
+    try:
+        stored = json.loads(stored_json) or []
+    except Exception:
+        return []
+    from app.actions.required_fields import _make_field_entry, KNOWN_REQUIRED_FIELDS
+    refreshed: list = []
+    seen: set = set()
+    for f in stored:
+        if not isinstance(f, dict):
+            continue
+        name = f.get("name") or ""
+        if not name or name in seen:
+            continue
+        entry = _make_field_entry(name, f.get("message") or "")
+        if entry is None:
+            continue  # KNOWN 미등록 — 드롭 (옛날 추측 키 제거)
+        if f.get("optional"):
+            entry["optional"] = True
+        seen.add(name)
+        refreshed.append(entry)
+        # co_required 자동 노출 — 화면에서 항상 진짜 키 그룹으로 정렬됨
+        meta = KNOWN_REQUIRED_FIELDS.get(name) or {}
+        for co_name in meta.get("co_required") or []:
+            if co_name in seen:
+                continue
+            co_entry = _make_field_entry(co_name)
+            if not co_entry:
+                continue
+            co_entry["optional"] = True
+            seen.add(co_name)
+            refreshed.append(co_entry)
+    return refreshed
 
 
 @actions_bp.route("/actions")
@@ -41,10 +88,28 @@ def actions_page():
     signal_type_filter = request.args.get("signal_type", "")
     option_type_filter = request.args.get("option_type", "no_option")
     option_add_kind_filter = request.args.get("option_add_kind", "")  # "new" | "existing" | ""
+    failure_kind_filter = request.args.get("failure_kind", "")  # "tag_blocked" | ""
     search_q = request.args.get("q", "").strip()
 
     from app.store.models import StoreProduct, NaverStore
     query = ActionSignal.query.filter_by(status=status_filter)
+    # failed 탭 안에서 분류별 빠른 필터
+    if status_filter == "failed" and failure_kind_filter == "tag_blocked":
+        # sellerTags 등록불가 단어 에러
+        query = query.filter(ActionSignal.error_message.like("%등록불가인 단어(%"))
+    elif status_filter == "failed" and failure_kind_filter == "consumption_date":
+        # 식품 소비기한 누락 에러 (영어 필드명으로 안전하게 매칭)
+        query = query.filter(ActionSignal.error_message.like("%consumptionDate%"))
+    elif status_filter == "failed" and failure_kind_filter == "close_status":
+        # 자동 복구 불가 상품(CLOSE/PROHIBITION/UNADMISSION) 분류.
+        # 메시지 텍스트가 다양해도(예: "한도 수를 초과" 같은 misleading 메시지 포함)
+        # 상품 상태 기반으로 묶어 운영자가 어드민에서 일괄 복구할 수 있게 함.
+        _close_sub = (db.session.query(StoreProduct.id)
+                      .filter(StoreProduct.store_status.in_(("CLOSE", "PROHIBITION", "UNADMISSION"))))
+        query = query.filter(db.or_(
+            ActionSignal.error_message.like("%판매상태 변경이 가능합니다%"),
+            ActionSignal.store_product_id.in_(_close_sub),
+        ))
     if store_filter:
         sub = db.session.query(StoreProduct.id).filter_by(naver_store_id=store_filter).subquery()
         query = query.filter(ActionSignal.store_product_id.in_(sub))
@@ -54,6 +119,10 @@ def actions_page():
         query = query.filter(ActionSignal.signal_type.in_(["OPTION_PRICE_CHANGE", "OPTION_ADD", "OPTION_STOCK_CHANGE", "OPTION_STOCK_REFILL_NEEDED"]))
     elif signal_type_filter:
         query = query.filter(ActionSignal.signal_type == signal_type_filter)
+    # 실패 분류 빠른 필터 — 옵션 유형과 무관하므로 option_type 필터(기본값 'no_option') 강제 무시.
+    # 안 그러면 옵션 있는 상품의 분류 결과가 모두 화면에서 사라짐.
+    if status_filter == "failed" and failure_kind_filter in ("tag_blocked", "consumption_date", "close_status"):
+        option_type_filter = ""
     if option_type_filter:
         query = query.join(MasterProduct, ActionSignal.master_product_id == MasterProduct.id)
         if option_type_filter == "no_option":
@@ -301,6 +370,11 @@ def actions_page():
             "detected_at": s.detected_at.strftime("%Y-%m-%d %H:%M") if s.detected_at else "-",
             "status": s.status,
             "error_message": s.error_message,
+            "required_fields_missing": s.required_fields_missing,
+            # 시그널이 awaiting_input으로 들어간 시점의 메타가 DB에 박혀 있지만,
+            # 코드(KNOWN_REQUIRED_FIELDS) 변경이 즉시 화면에 반영되도록 매번 fresh 머지.
+            # 키 이름과 optional 플래그만 유지하고 kind/label/hint/options는 최신 메타로 덮음.
+            "required_fields_list": _refresh_required_fields_meta(s.required_fields_missing),
             "sale_label": sale_label,
             "sale_badge": sale_badge,
             "display_label": display_label,
@@ -309,6 +383,32 @@ def actions_page():
         })
     pending_count = ActionSignal.query.filter_by(status="pending").count()
     failed_count = ActionSignal.query.filter_by(status="failed").count()
+    awaiting_input_count = ActionSignal.query.filter_by(status="awaiting_input").count()
+    tag_blocked_count = (
+        ActionSignal.query
+        .filter_by(status="failed")
+        .filter(ActionSignal.error_message.like("%등록불가인 단어(%"))
+        .count()
+    )
+    consumption_date_count = (
+        ActionSignal.query
+        .filter_by(status="failed")
+        .filter(ActionSignal.error_message.like("%consumptionDate%"))
+        .count()
+    )
+    _close_sub_for_count = (
+        db.session.query(StoreProduct.id)
+        .filter(StoreProduct.store_status.in_(("CLOSE", "PROHIBITION", "UNADMISSION")))
+    )
+    close_status_count = (
+        ActionSignal.query
+        .filter_by(status="failed")
+        .filter(db.or_(
+            ActionSignal.error_message.like("%판매상태 변경이 가능합니다%"),
+            ActionSignal.store_product_id.in_(_close_sub_for_count),
+        ))
+        .count()
+    )
 
     def _option_type_count(otype):
         base = ActionSignal.query.filter_by(status="pending").join(
@@ -378,6 +478,11 @@ def actions_page():
 
     return render_template("actions.html", rows=rows, status_filter=status_filter,
                            pending_count=pending_count, failed_count=failed_count,
+                           awaiting_input_count=awaiting_input_count,
+                           tag_blocked_count=tag_blocked_count,
+                           consumption_date_count=consumption_date_count,
+                           close_status_count=close_status_count,
+                           failure_kind_filter=failure_kind_filter,
                            pagination=pagination,
                            per_page=per_page, total=total,
                            all_stores=all_stores, store_filter=store_filter,
@@ -516,6 +621,7 @@ def bulk_resolve():
 
     ok_count = 0
     fail_count = 0
+    awaiting_count = 0
 
     for signal_id in ids:
         signal = ActionSignal.query.get(signal_id)
@@ -525,6 +631,8 @@ def bulk_resolve():
             _execute_signal(signal)
             if signal.status == "executed":
                 ok_count += 1
+            elif signal.status == "awaiting_input":
+                awaiting_count += 1
             else:
                 fail_count += 1
             time.sleep(0.3)  # Naver API rate limit 방지
@@ -545,7 +653,7 @@ def bulk_resolve():
             db.session.commit()
             ok_count += 1
 
-    return jsonify({"ok": True, "ok_count": ok_count, "fail_count": fail_count})
+    return jsonify({"ok": True, "ok_count": ok_count, "fail_count": fail_count, "awaiting_count": awaiting_count})
 
 
 @actions_bp.route("/actions/<int:signal_id>/resolve", methods=["POST"])
@@ -558,6 +666,12 @@ def resolve_signal(signal_id):
         if action == "approve":
             _execute_signal(signal)
             # 실행 후 실제 상태 확인 — 내부 오류로 failed가 됐어도 감지
+            if signal.status == "awaiting_input":
+                return jsonify({
+                    "ok": False,
+                    "status": "awaiting_input",
+                    "required_fields": json.loads(signal.required_fields_missing or "[]"),
+                }), 200
             if signal.status == "failed":
                 return jsonify({"ok": False, "error": signal.error_message or "실행 실패"}), 200
         elif action == "reject":
@@ -606,6 +720,295 @@ def retry_signal(signal_id):
     signal.resolved_at = None
     db.session.commit()
     return jsonify({"ok": True})
+
+
+def _is_tag_blocked_failure(signal: ActionSignal) -> bool:
+    """sellerTags 등록불가 단어로 실패한 시그널인지 판별."""
+    return (
+        signal.status == "failed"
+        and bool(signal.error_message)
+        and "등록불가인 단어(" in signal.error_message
+    )
+
+
+def _force_tag_strip_retry(signal: ActionSignal) -> str:
+    """ContextVar로 강제 모드 켜고 _execute_signal 재실행.
+    반환값: signal.status ('executed' / 'failed' / 'awaiting_input')."""
+    signal.status = "pending"
+    signal.error_message = None
+    signal.required_fields_missing = None
+    signal.resolved_at = None
+    db.session.commit()
+    token = _force_strip_tags_ctx.set(True)
+    try:
+        _execute_signal(signal)
+    finally:
+        _force_strip_tags_ctx.reset(token)
+    return signal.status
+
+
+@actions_bp.route("/actions/<int:signal_id>/retry-tag-strip", methods=["POST"])
+@login_required
+def retry_signal_tag_strip(signal_id):
+    """등록불가 단어로 실패한 시그널을 강제 모드로 재실행.
+    sellerTags의 부분 일치 태그까지 모두 자동 제거 후 PUT 재시도."""
+    signal = ActionSignal.query.get_or_404(signal_id)
+    if not _is_tag_blocked_failure(signal):
+        return jsonify({"ok": False, "error": "등록불가 태그 실패 항목만 처리할 수 있습니다."}), 400
+    final_status = _force_tag_strip_retry(signal)
+    return jsonify({
+        "ok": final_status == "executed",
+        "status": final_status,
+        "error": signal.error_message if final_status != "executed" else None,
+    })
+
+
+@actions_bp.route("/actions/bulk-retry-tag-strip", methods=["POST"])
+@login_required
+def bulk_retry_tag_strip():
+    """등록불가 단어 실패 시그널 일괄 강제 재시도. body: {"ids": [...]}"""
+    import time
+    ids = (request.json or {}).get("ids", []) or []
+    ok_count = 0
+    fail_count = 0
+    skipped = 0
+    for signal_id in ids:
+        signal = ActionSignal.query.get(signal_id)
+        if not signal or not _is_tag_blocked_failure(signal):
+            skipped += 1
+            continue
+        try:
+            final_status = _force_tag_strip_retry(signal)
+            if final_status == "executed":
+                ok_count += 1
+            else:
+                fail_count += 1
+        except Exception:
+            fail_count += 1
+        time.sleep(0.3)  # Naver API rate limit 방지
+    return jsonify({
+        "ok": True,
+        "ok_count": ok_count,
+        "fail_count": fail_count,
+        "skipped": skipped,
+    })
+
+
+@actions_bp.route("/actions/export/close-status.xlsx", methods=["GET"])
+@login_required
+def export_close_status_xlsx():
+    """판매종료(CLOSE) 등 statusType 변경 불가로 failed된 시그널 일괄 엑셀 다운로드.
+    Naver API change_status는 SALE/SUSPENSION/WAIT/SOLDOUT만 변경 가능 — CLOSE/PROHIBITION은
+    어드민에서 수동 복구 필요. 운영자가 일괄 확인할 수 있게 export."""
+    import openpyxl
+    from openpyxl.styles import Font, PatternFill
+    from datetime import datetime
+
+    _close_sub_for_xlsx = (
+        db.session.query(StoreProduct.id)
+        .filter(StoreProduct.store_status.in_(("CLOSE", "PROHIBITION", "UNADMISSION")))
+    )
+    rows = (
+        ActionSignal.query
+        .filter_by(status="failed")
+        .filter(db.or_(
+            ActionSignal.error_message.like("%판매상태 변경이 가능합니다%"),
+            ActionSignal.store_product_id.in_(_close_sub_for_xlsx),
+        ))
+        .order_by(ActionSignal.detected_at.desc())
+        .all()
+    )
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "판매종료 복구필요"
+
+    headers = [
+        "signal_id",
+        "signal_type",
+        "도매처",
+        "스토어",
+        "상품명",
+        "판매자관리코드",
+        "원상품번호",
+        "채널상품번호",
+        "현재 판매상태",
+        "감지일시",
+        "오류 내용",
+    ]
+    ws.append(headers)
+    header_font = Font(bold=True)
+    header_fill = PatternFill(start_color="FFE5E7EB", end_color="FFE5E7EB", fill_type="solid")
+    for cell in ws[1]:
+        cell.font = header_font
+        cell.fill = header_fill
+
+    for s in rows:
+        store = s.store
+        master = s.master
+        wholesaler = master.wholesaler.name if master and master.wholesaler else ""
+        store_name = store.naver_store.store_name if store and store.naver_store else ""
+        ws.append([
+            s.id,
+            s.signal_type or "",
+            wholesaler,
+            store_name,
+            master.product_name if master else (store.product_name if store else ""),
+            store.seller_management_code if store else "",
+            store.origin_product_no if store else "",
+            store.channel_product_no if store else "",
+            store.store_status if store else "",
+            s.detected_at.strftime("%Y-%m-%d %H:%M") if s.detected_at else "",
+            (s.error_message or "")[:500],
+        ])
+
+    widths = [10, 22, 14, 14, 50, 28, 14, 14, 14, 18, 80]
+    for i, w in enumerate(widths, start=1):
+        col = chr(64 + i) if i <= 26 else ("A" + chr(64 + i - 26))
+        ws.column_dimensions[col].width = w
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+
+    filename = f"actions_close_status_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return send_file(
+        bio,
+        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        as_attachment=True,
+        download_name=filename,
+    )
+
+
+@actions_bp.route("/actions/<int:signal_id>/dump-origin-notice", methods=["GET"])
+@login_required
+def dump_origin_notice(signal_id):
+    """디버그 — 시그널의 store_product의 originProduct를 GET해서 productInfoProvidedNotice 부분을
+    JSON으로 그대로 반환. 어드민에서 직접입력 모드로 처리해놓은 상품에 호출하면, 자유 텍스트가
+    어떤 필드명에 들어가는지 정확히 보인다 (Naver의 비공개 스키마 역엔지니어링용)."""
+    signal = ActionSignal.query.get_or_404(signal_id)
+    store = signal.store
+    if not store or not store.naver_store or not store.origin_product_no:
+        return jsonify({"ok": False, "error": "store / origin_product_no 정보 없음"}), 400
+    from store.naver.products import get_origin_product
+    try:
+        product_data = get_origin_product(
+            store.origin_product_no,
+            store.naver_store.client_id,
+            store.naver_store.client_secret,
+        )
+    except Exception as e:
+        return jsonify({"ok": False, "error": _parse_naver_error(e)}), 500
+    origin = product_data.get("originProduct", {}) or {}
+    detail = origin.get("detailAttribute", {}) or {}
+    return jsonify({
+        "ok": True,
+        "origin_product_no": store.origin_product_no,
+        "productInfoProvidedNoticeType": detail.get("productInfoProvidedNoticeType"),
+        "productInfoProvidedNotice": detail.get("productInfoProvidedNotice"),
+        # 단위가격도 함께 — 같은 디버그 흐름에서 정확한 키 확인
+        "unitCapacity": detail.get("unitCapacity"),
+    })
+
+
+@actions_bp.route("/actions/<int:signal_id>/detail-html", methods=["GET"])
+@login_required
+def signal_detail_html(signal_id):
+    """필수값 입력 모달에서 상품 정체 확인용 상세 HTML 미리보기.
+    master.detail_description(도매처 수집본)을 sanitize 후 반환."""
+    signal = ActionSignal.query.get_or_404(signal_id)
+    raw = (signal.master.detail_description if signal.master else "") or ""
+    if not str(raw).strip():
+        return jsonify({"ok": False, "error": "도매처 상세 HTML이 비어 있습니다."})
+    try:
+        from store.naver.detail_html import sanitize_detail_html
+        cleaned, _ = sanitize_detail_html(str(raw))
+    except Exception:
+        cleaned = str(raw)  # sanitize 실패 시 원본 폴백 (iframe sandbox로 격리됨)
+    return jsonify({
+        "ok": True,
+        "html": cleaned,
+        "raw_length": len(str(raw)),
+    })
+
+
+# 입력대기(awaiting_input) 흐름이 지원되는 시그널 타입 화이트리스트.
+# _put_with_safe_retry를 거치는 모든 시그널이 ContextVar로 자동 적용되므로 추가 코드 변경 없이 확장 가능.
+SUPPORTED_AWAITING_INPUT_TYPES = frozenset({
+    "RESUME_POSSIBLE",
+    "OPTION_ADD",
+    "OPTION_PRICE_CHANGE",
+    "OPTION_STOCK_CHANGE",
+    "OPTION_STOCK_REFILL_NEEDED",
+})
+
+
+@actions_bp.route("/actions/<int:signal_id>/fill-required-fields", methods=["POST"])
+@login_required
+def fill_required_fields(signal_id):
+    """awaiting_input 상태의 시그널에 운영자가 필수값을 채워 PUT 재시도.
+
+    body: {"values": {"<dotted.field.path>": "<user_value>", ...}}
+
+    동작:
+      - 입력값을 ContextVar로 흘려 _execute_signal 재실행 → 모든 PUT에 자동 주입.
+      - 성공: executed
+      - KNOWN 필드 또 누락: required_fields_missing 갱신 후 awaiting_input 유지
+      - 매치 없는 다른 에러: failed
+    """
+    from app.actions.required_fields import KNOWN_REQUIRED_FIELDS
+
+    signal = ActionSignal.query.get_or_404(signal_id)
+    if signal.status != "awaiting_input":
+        return jsonify({"ok": False, "error": "입력 대기 상태 항목만 처리할 수 있습니다."}), 400
+    if signal.signal_type not in SUPPORTED_AWAITING_INPUT_TYPES:
+        return jsonify({"ok": False, "error": f"입력대기 지원 시그널이 아닙니다: {signal.signal_type}"}), 400
+
+    body = request.get_json(silent=True) or {}
+    raw_values = body.get("values") or {}
+    if not isinstance(raw_values, dict) or not raw_values:
+        return jsonify({"ok": False, "error": "입력값이 비어 있습니다."}), 400
+
+    # 알려진 필드만 통과 + 빈 값은 페이로드에서 제외(보조 필드는 비울 수 있음).
+    user_values: dict[str, str] = {}
+    for k, v in raw_values.items():
+        if k not in KNOWN_REQUIRED_FIELDS:
+            return jsonify({"ok": False, "error": f"허용되지 않은 필드: {k}"}), 400
+        if v is None or str(v).strip() == "":
+            continue  # 빈 값은 PUT 본문에 안 넣음 — Naver가 알아서 처리
+        user_values[k] = str(v).strip()
+    if not user_values:
+        return jsonify({"ok": False, "error": "최소 1개 이상의 값을 입력해야 합니다."}), 400
+
+    _execute_signal_with_user_values(signal, user_values)
+
+    if signal.status == "executed":
+        return jsonify({"ok": True, "status": "executed"})
+    if signal.status == "awaiting_input":
+        return jsonify({
+            "ok": False,
+            "status": "awaiting_input",
+            "required_fields": json.loads(signal.required_fields_missing or "[]"),
+        })
+    return jsonify({"ok": False, "status": "failed", "error": signal.error_message or "실행 실패"})
+
+
+def _execute_signal_with_user_values(signal: ActionSignal, user_values: dict[str, str]):
+    """fill_required_fields 라우트 전용 — 입력값을 ContextVar로 set하고 _execute_signal 재실행.
+    시그널 타입(RESUME_POSSIBLE / OPTION_*)에 무관하게 디스패처가 알아서 분기.
+    PUT 호출은 _put_with_safe_retry가 컨텍스트의 입력값을 자동 주입한다."""
+    # 입력대기 → pending으로 되돌리고 _execute_signal이 정상 흐름 재실행하도록.
+    signal.status = "pending"
+    signal.error_message = None
+    signal.required_fields_missing = None
+    signal.resolved_at = None
+    db.session.commit()
+
+    token = _pending_user_values_ctx.set(dict(user_values))
+    try:
+        _execute_signal(signal)  # 결과 status/error_message/required_fields_missing은 디스패처가 갱신
+    finally:
+        _pending_user_values_ctx.reset(token)
 
 
 @actions_bp.route("/actions/<int:signal_id>/revert", methods=["POST"])
@@ -697,13 +1100,82 @@ def _extract_naver_invalid_inputs(e) -> list:
 
 
 def _extract_forbidden_tag_word(message: str):
-    """'태그 항목에 등록불가인 단어(WORD)가 포함되어 있습니다' 메시지에서 WORD 추출.
-    매치 안 되면 None 반환."""
+    """'태그 항목에 등록불가인 단어(WORD)가 포함되어 있습니다' 메시지에서 단일 WORD 추출.
+    Naver가 단어 여러 개를 콤마로 묶어 보내는 경우는 _extract_forbidden_tag_words 사용.
+    매치 안 되면 None 반환. (하위 호환용 — 신규 코드는 복수형 사용)"""
     if not message:
         return None
     import re
     m = re.search(r"등록불가인 단어\(([^)]+)\)", message)
     return m.group(1).strip() if m else None
+
+
+def _extract_forbidden_tag_words(message: str) -> list[str]:
+    """'등록불가인 단어(W1,W2 ...)' 메시지에서 단어 리스트 추출.
+    Naver가 단어 여러 개를 한 entry에 콤마/공백으로 묶어 보내는 케이스 대응.
+    빈 토큰은 제거. 매치 없으면 빈 리스트.
+    """
+    if not message:
+        return []
+    import re
+    m = re.search(r"등록불가인 단어\(([^)]+)\)", message)
+    if not m:
+        return []
+    inner = m.group(1)
+    # 콤마/공백/탭/슬래시(드물지만) 모두 분리자로 취급
+    tokens = re.split(r"[,\s/]+", inner)
+    return [t.strip() for t in tokens if t and t.strip()]
+
+
+def _remove_seller_tags_containing(payload: dict, word: str) -> int:
+    """payload의 sellerTags에서 word를 부분 문자열로 포함하는 모든 태그 제거.
+
+    정확 일치는 물론 '강력양면테이프' ⊃ '양면테이프' 같은 부분 일치도 잡는다.
+    안전장치 없는 강제 모드 — 강제 재시도 라우트에서만 사용.
+    제거 개수 반환.
+    """
+    if not word:
+        return 0
+    word_norm = word.strip()
+    if not word_norm:
+        return 0
+    origin = (payload or {}).get("originProduct")
+    if not isinstance(origin, dict):
+        return 0
+    detail = origin.get("detailAttribute")
+    if not isinstance(detail, dict):
+        return 0
+    seo = detail.get("seoInfo")
+    if not isinstance(seo, dict):
+        return 0
+    tags = seo.get("sellerTags")
+    if not isinstance(tags, list):
+        return 0
+    new_tags = []
+    removed = 0
+    for tag in tags:
+        if isinstance(tag, dict):
+            tag_text = (tag.get("text") or "").strip()
+        else:
+            tag_text = str(tag or "").strip()
+        if word_norm in tag_text:  # 부분 일치 포함
+            removed += 1
+            continue
+        new_tags.append(tag)
+    if removed:
+        seo["sellerTags"] = new_tags
+    return removed
+
+
+# 강제 모드 컨텍스트 — bulk_retry_tag_strip / retry_tag_strip 라우트에서만 True로 set.
+# _put_with_safe_retry가 sellerTags 등록불가 단어 에러를 만나면 부분 일치까지 강제로 제거.
+from contextvars import ContextVar
+_force_strip_tags_ctx: ContextVar[bool] = ContextVar("force_strip_forbidden_tags", default=False)
+
+# 입력대기(awaiting_input) → 사용자 입력값 컨텍스트.
+# fill_required_fields 라우트가 _execute_signal 재실행 시 set해두면, 모든 PUT(_put_with_safe_retry)이
+# 자동으로 payload에 입력값을 주입. 시그널 타입(RESUME_POSSIBLE / OPTION_*)에 무관하게 동작.
+_pending_user_values_ctx: ContextVar[dict] = ContextVar("pending_user_values", default={})
 
 
 def _remove_exact_seller_tag(payload: dict, target: str) -> bool:
@@ -749,39 +1221,215 @@ def _remove_exact_seller_tag(payload: dict, target: str) -> bool:
     return removed
 
 
+class AwaitingInputNeeded(Exception):
+    """Naver PUT이 KNOWN_REQUIRED_FIELDS 매치 누락으로 거부됐을 때 발생.
+    _execute_signal의 except 블록이 잡아 status='awaiting_input'으로 보존한다."""
+    def __init__(self, fields: list[dict]):
+        super().__init__(f"awaiting input: {[f.get('name') for f in fields]}")
+        self.fields = fields
+
+
 def _put_with_safe_retry(origin_product_no, payload: dict, client_id: str, client_secret: str):
-    """update_origin_product 호출 + 화이트리스트 기반 1회 재시도.
+    """update_origin_product 호출 + 자동 보강 + 입력대기(awaiting_input) 분류.
 
-    화이트리스트 (이번 작업에서는 단 1개):
-      - originProduct.detailAttribute.seoInfo.sellerTags 등록불가 단어 → 정확 일치 태그 1개 제거 후 재시도
+    1) PUT 직전: _pending_user_values_ctx(awaiting_input → 사용자 입력값)이 있으면
+       payload에 자동 주입 (fill_required_fields 라우트가 set한 컨텍스트).
+       이로써 RESUME_POSSIBLE / OPTION_* 모든 시그널이 동일한 흐름으로 동작.
 
-    화이트리스트 외 모든 에러는 보강하지 않고 그대로 raise → 기존 failed 처리 흐름 유지.
-    재시도는 hard cap 1회. 재시도도 실패하면 그대로 raise.
+    2) sellerTags 등록불가 단어 자동 보강:
+       - 단어 여러 개를 콤마/공백으로 묶어 보내는 케이스 포함, 각 단어를
+         sellerTags 안에서 정확 일치로 제거 시도. (안전장치: 부분 일치 안 함)
+       - 강제 모드(_force_strip_tags_ctx=True)일 때만 부분 일치까지 제거.
+       하나라도 제거되면 1회 재시도.
+
+    3) 자동 보강이 안 되는 경우 KNOWN_REQUIRED_FIELDS 매치 시도:
+       - 매치 ≥ 1: AwaitingInputNeeded raise → 외부 except가 status='awaiting_input'로 보존.
+       - 매치 0: 그대로 raise → 기존 failed 처리.
     """
     from store.naver.products import update_origin_product
+    from app.actions.required_fields import (
+        classify_invalid_inputs, apply_user_input, coerce_payload_booleans,
+    )
+
+    # (1) 입력대기 컨텍스트가 있으면 PUT 직전 주입 (Naver 타입 자동 변환 포함)
+    user_values = _pending_user_values_ctx.get() or {}
+    if user_values:
+        apply_user_input(payload, user_values)
+
+    # (1a) boolean 필드 방어 정규화 — 화이트리스트(NAVER_BOOLEAN_PATHS) 매치만 변환.
+    # Yn 접미사 자동 변환은 절대 안 함(예: kcCertifiedProductExclusionYn은 enum 타입이라 거부됨).
+    _bool_converted, _bool_paths = coerce_payload_booleans(payload)
+    if _bool_converted:
+        logger.info(f"[bool-coerce] origin_no={origin_product_no} converted={_bool_converted} paths={_bool_paths}")
+
+    # (1b) statusType 안전 정규화 — Naver PUT은 시스템 관리값을 거부.
+    # _execute_resume은 이미 SUSPENSION으로 강제하지만, OPTION_* 분기들은 GET 응답을 그대로 쓰므로
+    # 여기서 한 번 더 안전하게 교체. 정상값(SALE/SUSPENSION/WAIT)은 그대로 유지.
+    # PUT 거부 enum: SOLDOUT, CLOSE, PROHIBITION, UNADMISSION(미승인) — 모두 SUSPENSION으로 교체.
+    _origin = (payload or {}).get("originProduct")
+    if isinstance(_origin, dict):
+        _st = _origin.get("statusType")
+        if _st in ("SOLDOUT", "CLOSE", "PROHIBITION", "UNADMISSION") or not _st:
+            logger.info(f"[statusType-coerce] origin_no={origin_product_no} {_st!r} -> SUSPENSION")
+            _origin["statusType"] = "SUSPENSION"
+
+    # (1c) 오늘출발 재고수량(todayStockQuantity) 정규화 — 이 값을 1로 강제.
+    # Naver 검증: originProduct.stockQuantity ≥ deliveryInfo.todayStockQuantity.
+    # 우리가 옵션 재고를 줄이면 합산 stockQuantity가 todayStockQuantity 이하로 떨어져 거부됨.
+    # 다른 deliveryInfo 필드는 절대 건드리지 않고, todayStockQuantity 키가 존재할 때만 1로 설정.
+    if isinstance(_origin, dict):
+        _di = _origin.get("deliveryInfo")
+        if isinstance(_di, dict) and "todayStockQuantity" in _di:
+            _prev = _di.get("todayStockQuantity")
+            if _prev != 1:
+                _di["todayStockQuantity"] = 1
+                logger.info(f"[todayStock-coerce] origin_no={origin_product_no} {_prev!r} -> 1")
+
+    # 디버그: PUT 직전 페이로드 진단 dump
+    try:
+        import json as _json
+        _origin = (payload or {}).get("originProduct") or {}
+        _detail = _origin.get("detailAttribute") or {}
+        _full = _json.dumps(payload, ensure_ascii=False)
+        logger.info(
+            f"[put] origin_no={origin_product_no} payload_len={len(_full)} "
+            f"user_keys={list(user_values.keys())}\n"
+            f"        unitCapacity={_detail.get('unitCapacity')}\n"
+            f"        productInfoProvidedNotice={_json.dumps(_detail.get('productInfoProvidedNotice'), ensure_ascii=False)[:1500]}"
+        )
+        # column 위치 디버깅: 길이가 4000자 근처 미만이면 본문 일부 로그(최대 4KB)
+        if len(_full) <= 8000:
+            logger.info(f"[put-payload] origin_no={origin_product_no} body={_full}")
+    except Exception:
+        pass
+
     try:
         return update_origin_product(origin_product_no, payload, client_id, client_secret)
     except Exception as e:
         invalids = _extract_naver_invalid_inputs(e)
         if not invalids:
             raise
-        # 화이트리스트 매치 시도 — sellerTags 등록불가 단어만
+        # (2) sellerTags 자동 보강 시도
+        force_mode = _force_strip_tags_ctx.get()
         modified = False
         for inv in invalids:
             name = (inv.get("name") or "").strip()
             msg = inv.get("message") or ""
-            if name == "originProduct.detailAttribute.seoInfo.sellerTags":
-                forbidden = _extract_forbidden_tag_word(msg)
-                if forbidden and _remove_exact_seller_tag(payload, forbidden):
-                    modified = True
-                    logger.info(
-                        f"[autofix] sellerTags 등록불가 단어 정확 일치 제거: '{forbidden}' "
-                        f"(origin_no={origin_product_no})"
-                    )
-        if not modified:
-            raise  # 화이트리스트 외 케이스 — 자동 보강 안 함
-        # 1회 재시도
-        return update_origin_product(origin_product_no, payload, client_id, client_secret)
+            if name != "originProduct.detailAttribute.seoInfo.sellerTags":
+                continue
+            words = _extract_forbidden_tag_words(msg)
+            if not words:
+                continue
+            for w in words:
+                if force_mode:
+                    removed = _remove_seller_tags_containing(payload, w)
+                    if removed > 0:
+                        modified = True
+                        logger.info(
+                            f"[autofix-force] sellerTags '{w}' 포함 태그 {removed}개 제거 "
+                            f"(origin_no={origin_product_no})"
+                        )
+                else:
+                    if _remove_exact_seller_tag(payload, w):
+                        modified = True
+                        logger.info(
+                            f"[autofix] sellerTags 등록불가 단어 정확 일치 제거: '{w}' "
+                            f"(origin_no={origin_product_no})"
+                        )
+        if modified:
+            return update_origin_product(origin_product_no, payload, client_id, client_secret)
+
+        # (3) KNOWN 필드 매치 — 운영자 입력 대기 흐름으로 보존
+        matched = classify_invalid_inputs(invalids)
+        # 진단 로그: invalidInputs 원본 전체를 떠서 정확한 키/메시지 단서 확보
+        try:
+            logger.warning(
+                "[put_failed] origin_no=%s invalidInputs=%s matched=%s",
+                origin_product_no,
+                json.dumps(invalids, ensure_ascii=False),
+                [m.get("name") for m in matched],
+            )
+        except Exception:
+            pass
+        if matched:
+            raise AwaitingInputNeeded(matched)
+        raise  # 자동 처리 불가능한 다른 에러 → failed
+
+
+# ---------------------------------------------------------------------------
+# 판매재개(RESUME_POSSIBLE) 실행 헬퍼
+# ---------------------------------------------------------------------------
+
+def _execute_resume(signal, master, store, suggested: dict,
+                    client_id: str, client_secret: str):
+    """RESUME_POSSIBLE 실행: 재고 0 → 999 보강 후 SALE 전환.
+
+    Naver는 재고 0 상태에서 SALE 전환을 거부함("재고수량 항목을 입력해 주세요").
+    도매처가 active로 돌아온 시점이므로 999로 보강해 재개 가능 상태로 만든다.
+
+    운영자 입력값(awaiting_input)은 _pending_user_values_ctx 컨텍스트로 전달되며,
+    _put_with_safe_retry가 PUT 직전에 자동으로 payload에 주입한다. KNOWN 필드 매치 시
+    AwaitingInputNeeded raise → 외부 except가 status='awaiting_input'으로 보존.
+    """
+    from store.naver import change_status
+    from store.naver.products import get_origin_product
+
+    new_status = suggested.get("store_status")  # "SALE"
+    if not new_status:
+        raise ValueError("RESUME_POSSIBLE: store_status 정보 없음")
+
+    product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
+    origin = product_data.get("originProduct", {})
+    option_info = origin.get("detailAttribute", {}).get("optionInfo", {}) or {}
+    combinations = option_info.get("optionCombinations", []) or []
+
+    refilled = 0
+    needs_update = False
+
+    if _has_options(master):
+        # 옵션 상품: usable=True 옵션의 재고 0만 999로
+        for combo in combinations:
+            if combo.get("usable", True) is False:
+                continue
+            if (combo.get("stockQuantity") or 0) == 0:
+                combo["stockQuantity"] = 999
+                refilled += 1
+                needs_update = True
+    else:
+        # 단품: originProduct.stockQuantity + Naver 잔존 옵션 모두 보정
+        if (origin.get("stockQuantity") or 0) == 0:
+            origin["stockQuantity"] = 999
+            refilled += 1
+            needs_update = True
+        for combo in combinations:
+            if combo.get("usable", True) is False:
+                continue
+            if (combo.get("stockQuantity") or 0) == 0:
+                combo["stockQuantity"] = 999
+                refilled += 1
+                needs_update = True
+
+    # 운영자 입력값이 있으면 PUT을 무조건 실행(재고 보정이 없어도 입력값 반영 필요).
+    must_put = needs_update or bool(_pending_user_values_ctx.get())
+
+    if must_put:
+        if combinations:
+            option_info["optionCombinations"] = combinations
+            origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
+        # Naver PUT은 originProduct.statusType을 필수로 요구하며 SOLDOUT 등 시스템 관리값은 거부함.
+        # writable 값인 SUSPENSION으로 명시 → 검증 통과. 실제 SALE 전환은 아래 change_status가 담당.
+        origin["statusType"] = "SUSPENSION"
+        payload = {"originProduct": origin}
+        logger.info(
+            f"[actions][resume] PUT 직전 statusType={origin.get('statusType')!r}, "
+            f"refilled={refilled} (store_id={store.id})"
+        )
+        # _put_with_safe_retry가 컨텍스트의 입력값 주입 + KNOWN 매치 시 AwaitingInputNeeded raise
+        _put_with_safe_retry(store.origin_product_no, payload, client_id, client_secret)
+        logger.info(f"[actions][resume] 재고 보강 {refilled}개 → 999 (store_id={store.id})")
+
+    change_status(store.origin_product_no, new_status, client_id=client_id, client_secret=client_secret)
+    store.store_status = new_status
 
 
 # ---------------------------------------------------------------------------
@@ -1138,64 +1786,8 @@ def _execute_signal(signal: ActionSignal):
                 _execute_price_option_with_extra(store, master, suggested, client_id, client_secret, signal)
 
         # ── 판매재개: 재고 0 옵션/단품을 999로 보강 후 SALE 전환 ─────────
-        # Naver는 재고 0 상태에서 SALE 전환을 거부함("재고수량 항목을 입력해 주세요").
-        # 도매처가 active로 돌아온 시점이므로 999로 보강해 재개 가능 상태로 만든다.
         elif signal.signal_type == "RESUME_POSSIBLE":
-            from store.naver.products import get_origin_product, update_origin_product
-
-            new_status = suggested.get("store_status")  # "SALE"
-            if not new_status:
-                raise ValueError("RESUME_POSSIBLE: store_status 정보 없음")
-
-            product_data = get_origin_product(store.origin_product_no, client_id, client_secret)
-            origin = product_data.get("originProduct", {})
-            option_info = origin.get("detailAttribute", {}).get("optionInfo", {}) or {}
-            combinations = option_info.get("optionCombinations", []) or []
-
-            refilled = 0
-            needs_update = False
-
-            if _has_options(master):
-                # 옵션 상품: usable=True 옵션의 재고 0만 999로
-                for combo in combinations:
-                    if combo.get("usable", True) is False:
-                        continue
-                    if (combo.get("stockQuantity") or 0) == 0:
-                        combo["stockQuantity"] = 999
-                        refilled += 1
-                        needs_update = True
-            else:
-                # 단품: originProduct.stockQuantity + Naver 잔존 옵션 모두 보정
-                if (origin.get("stockQuantity") or 0) == 0:
-                    origin["stockQuantity"] = 999
-                    refilled += 1
-                    needs_update = True
-                for combo in combinations:
-                    if combo.get("usable", True) is False:
-                        continue
-                    if (combo.get("stockQuantity") or 0) == 0:
-                        combo["stockQuantity"] = 999
-                        refilled += 1
-                        needs_update = True
-
-            # 재고 변경이 발생한 경우에만 PUT (불필요한 update 회피)
-            # update 실패 시 예외 → 같은 try 블록에서 잡혀 SALE 호출 안 됨
-            if needs_update:
-                if combinations:
-                    option_info["optionCombinations"] = combinations
-                    origin.setdefault("detailAttribute", {})["optionInfo"] = option_info
-                # Naver PUT은 originProduct.statusType을 필수로 요구하며 SOLDOUT 등 시스템 관리값은 거부함.
-                # writable 값인 SUSPENSION으로 명시 → 검증 통과. 실제 SALE 전환은 아래 change_status가 담당.
-                origin["statusType"] = "SUSPENSION"
-                logger.info(
-                    f"[actions][resume] PUT 직전 statusType={origin.get('statusType')!r}, "
-                    f"refilled={refilled} (store_id={store.id})"
-                )
-                _put_with_safe_retry(store.origin_product_no, {"originProduct": origin}, client_id, client_secret)
-                logger.info(f"[actions][resume] 재고 보강 {refilled}개 → 999 (store_id={store.id})")
-
-            change_status(store.origin_product_no, new_status, client_id=client_id, client_secret=client_secret)
-            store.store_status = new_status
+            _execute_resume(signal, master, store, suggested, client_id, client_secret)
 
         # ── 판매중지·단종: 상태만 전환 ───────────────────────────────────
         elif signal.signal_type in ("SUSPEND_NEEDED", "DISCONTINUE_NEEDED"):
@@ -1498,8 +2090,15 @@ def _execute_signal(signal: ActionSignal):
                 return 999
 
             # 오너클랜 다차원 안전 매칭 시도 — 완전 일치하면 (n1, n2)로 다차원 PUT
-            from app.store import _match_ownerclan_dim
+            from app.store import _match_ownerclan_dim, _is_ownerclan, _split_ownerclan_options
             ownerclan_match = _match_ownerclan_dim(master, existing_combos)
+
+            # 오너클랜이고 master 모든 줄이 '_' 1개로 깨끗이 분리되면 다차원 빌드 자격.
+            # _match_ownerclan_dim의 set equality가 안 맞아도(=master에 신규 옵션 추가됨)
+            # master 기준 다차원 강제 빌드. 다른 도매처는 _is_ownerclan False로 영향 없음.
+            ownerclan_master_pairs = (
+                _split_ownerclan_options(master.options_text or "") if _is_ownerclan(master) else None
+            )
 
             if ownerclan_match:
                 pair_to_idx = ownerclan_match["combo_index_by_pair"]
@@ -1525,7 +2124,35 @@ def _execute_signal(signal: ActionSignal):
                 logger.info(
                     f"[actions][option_add] 오너클랜 다차원 매칭 적용 — {len(new_combos)}개 콤보 (store_id={store.id})"
                 )
-            else:
+            elif ownerclan_master_pairs:
+                # 오너클랜 + master 모든 줄 '_' 1개 → master 기준 다차원 강제 빌드.
+                # Naver 기존 콤보의 optionName1/2 차원과 master의 차원이 동일하다는 전제하에 동작.
+                # 기존 그룹명 보존하되, 1차원 등록된 상품에서 다차원으로 강제 변환은 안 함.
+                existing_groups = option_info.get("optionCombinationGroupNames") or {}
+                has_dim2_group = bool(existing_groups.get("optionGroupName2"))
+                if has_dim2_group:
+                    new_combos = []
+                    for i, (n1, n2) in enumerate(ownerclan_master_pairs):
+                        policy_key = master_names[i] if i < len(master_names) else ""
+                        decision = policies.get(policy_key, "keep")
+                        if decision in ("addon", "exclude"):
+                            continue
+                        new_combos.append({
+                            "optionName1": n1,
+                            "optionName2": n2,
+                            "price": additions[i] if i < len(additions) else 0,
+                            "stockQuantity": _stock_for(i),
+                            "usable": True,
+                        })
+                    logger.info(
+                        f"[actions][option_add] 오너클랜 master 기준 다차원 강제 빌드 — "
+                        f"{len(new_combos)}개 콤보 (store_id={store.id})"
+                    )
+                else:
+                    # Naver가 1차원 등록 상태면 강제 다차원 변환 위험 → 기존 1차원 흐름으로 폴백
+                    ownerclan_master_pairs = None  # 아래 1차원 분기로 떨어뜨림
+
+            if not ownerclan_match and not (ownerclan_master_pairs):
                 # 기존 1차원 매칭 (옵션명 직접 비교 + 마스터에 없는 옵션 제거 + 신규 추가)
                 new_combos = []
                 handled_master_idx = set()
@@ -1627,11 +2254,48 @@ def _execute_signal(signal: ActionSignal):
                 pending_price.error_message = "OPTION_ADD 실행 시 옵션 가격도 함께 처리됨"
                 pending_price.resolved_at = kst_now()
 
+            # OPTION_ADD PUT 성공으로 master와 네이버 옵션이 동기화됨 →
+            # 이 상품의 옵션 불일치(pending)도 자동 해소. 화면 옛 캐시 잔상 방지.
+            try:
+                from app.store.models import StoreOptionMismatch
+                for _mm in StoreOptionMismatch.query.filter_by(
+                    store_product_id=store.id, status="pending"
+                ).all():
+                    _mm.status = "resolved"
+                    _mm.resolved_at = kst_now()
+            except Exception as _e:
+                logger.debug(f"[option_add] mismatch 자동 해소 실패(무시): {_e}")
+
+        # ── 상세페이지 갱신: 도매처 detail_description → 네이버 detailContent ──
+        elif signal.signal_type == "DETAIL_CHANGE":
+            from store.naver.products import sync_detail_content
+            raw_html = (master.detail_description or "") if master else ""
+            if not raw_html.strip():
+                raise ValueError("DETAIL_CHANGE: master에 상세페이지 HTML 없음")
+            sync_detail_content(
+                store.origin_product_no,
+                raw_html,
+                client_id,
+                client_secret,
+            )
+
         signal.status = "executed"
         signal.error_message = None
+        signal.required_fields_missing = None
         signal.resolved_at = kst_now()
         db.session.commit()
         log_buffer.push(f"[액션] 완료: {signal.signal_type} | {_sc}")
+
+    except AwaitingInputNeeded as ai:
+        # KNOWN_REQUIRED_FIELDS 매치된 PUT 거부 — 운영자 입력 대기 상태로 보존
+        db.session.rollback()
+        signal.status = "awaiting_input"
+        signal.required_fields_missing = json.dumps(ai.fields, ensure_ascii=False)
+        signal.error_message = None
+        signal.resolved_at = None
+        db.session.commit()
+        _missing = ", ".join(f.get("label", f.get("name", "?")) for f in ai.fields)
+        log_buffer.push(f"[액션] 입력대기: {signal.signal_type} | {_sc} | 누락: {_missing}")
 
     except Exception as e:
         db.session.rollback()

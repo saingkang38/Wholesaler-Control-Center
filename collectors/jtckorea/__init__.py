@@ -116,16 +116,21 @@ class JtckoreaCollector(BaseCollector):
         resp.encoding = "utf-8"
         soup = BeautifulSoup(resp.text, "html.parser")
 
-        # 가격: item_info_box 안의 dl 판매가
+        # 가격: item_info_box 안의 dl 판매가.
+        # dd 텍스트에 "(N일 입고예정)" 등이 박혀있으면 일시 품절을 의미하므로
+        # status='out_of_stock'으로 표시 (실제 가격은 정상 추출 — _parse_price가
+        # 괄호 안 텍스트는 제거).
         price = None
+        price_dd_text = ""
         info_box = soup.select_one("div.item_info_box")
         if info_box:
             for dl in info_box.select("dl"):
                 for dt, dd in zip(dl.select("dt"), dl.select("dd")):
                     if dt.get_text(strip=True) == "판매가":
-                        price = self._parse_price(dd.get_text(strip=True))
+                        price_dd_text = dd.get_text(" ", strip=True)
+                        price = self._parse_price(price_dd_text)
                         break
-                if price is not None:
+                if price is not None or price_dd_text:
                     break
 
         # dl > dt/dd 에서 원산지, 자체코드, 배송비 파싱
@@ -195,6 +200,17 @@ class JtckoreaCollector(BaseCollector):
                     opt_name = opt.get_text(strip=True).split("\n")[0].strip()
                 if not opt_name:
                     continue
+                # JTC는 옵션 value(공식 옵션명)에는 [품절] 표기를 넣지 않고
+                # option의 화면 표시 텍스트(옵션 태그 내부 text)에만 별도 줄로
+                # "[품절]"/"[일시품절]"/"[장기품절]"을 박아 알려줌. 옵션명 자체에
+                # 표기를 합쳐 마스터 처리 단계의 옵션 품절 정리 흐름으로 흘려보냄.
+                opt_text = opt.get_text(" ", strip=True)
+                if "[장기품절]" in opt_text:
+                    opt_name = f"{opt_name}[장기품절]"
+                elif "[일시품절]" in opt_text:
+                    opt_name = f"{opt_name}[일시품절]"
+                elif "[품절]" in opt_text:
+                    opt_name = f"{opt_name}[품절]"
                 # 가격차액: parts[1] (음수 가능)
                 try:
                     diff_val = int(parts[1].strip()) if parts[1].strip() else 0
@@ -221,6 +237,11 @@ class JtckoreaCollector(BaseCollector):
         }
         if price is not None:
             result["price"] = price
+        # 가격 dd에 "입고예정" 안내가 박혀있으면 일시 품절로 분류.
+        # run() 의 item.update(detail) 호출이 list-page status('active')를
+        # 자동으로 덮어써서 process_master_update까지 흘러감.
+        if price_dd_text and re.search(r"입고\s*예정", price_dd_text):
+            result["status"] = "out_of_stock"
         return result
 
     def _parse_shipping(self, text: str):
@@ -309,7 +330,11 @@ class JtckoreaCollector(BaseCollector):
     def _parse_price(self, text) -> int:
         if not text:
             return None
-        cleaned = "".join(c for c in str(text) if c.isdigit())
+        # 괄호 안 부가설명("(6일 입고예정)" 등) 제거 후 숫자만 추출.
+        # JTC 사이트가 가격 옆에 안내문을 같이 박는 케이스가 있어
+        # 그대로 digits-only로 뽑으면 "(6일...)"의 6이 가격에 붙어버림.
+        s = re.sub(r"\([^)]*\)", "", str(text))
+        cleaned = "".join(c for c in s if c.isdigit())
         return int(cleaned) if cleaned else None
 
     def _has_next_page(self, soup: BeautifulSoup, current_page: int) -> bool:

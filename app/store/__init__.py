@@ -977,9 +977,10 @@ def preview_option_removal(mismatch_id):
 @store_bp.route("/option-mismatch/<int:mismatch_id>/resolve", methods=["POST"])
 @login_required
 def resolve_option_mismatch(mismatch_id):
-    """옵션 자체를 제거하고 도매가 기준 가격을 적용 → resolved.
-    도매처가 단품인데 스마트스토어에 옵션이 있는 케이스를 도매처 기준으로 원복."""
-    from store.naver.products import get_origin_product, update_origin_product
+    """옵션 자체를 제거하고 도매가 기준 가격 + 도매처 상세페이지를 적용 → resolved.
+    도매처가 단품인데 스마트스토어에 옵션이 있는 케이스(ZEN_3982류)를 도매처 기준으로 원복.
+    상세페이지도 함께 갱신하므로 옵션을 어느 색상으로 좁힐지 모르는 케이스도 안전하게 처리."""
+    from store.naver.products import get_origin_product, update_origin_product, sync_detail_content
     from store.naver import update_price as _naver_update_price
     from app.settings import apply_margin
 
@@ -1020,6 +1021,29 @@ def resolve_option_mismatch(mismatch_id):
         # Step 2: 도매가 기준 새 salePrice 적용 (옵션 비웠으니 안전)
         _naver_update_price(sp.origin_product_no, new_price, client_id=client_id, client_secret=client_secret)
         logger.info(f"[mismatch] Step2: 가격 반영 (store_product_id={sp.id}, price={new_price})")
+
+        # Step 3: 도매처 상세페이지로 detailContent 갱신.
+        # 어느 옵션을 남겼는지 모르는 상태에서도 도매처 상세페이지로 함께 교체하면
+        # 손님이 보는 상품 설명이 도매처 단품과 일치하게 됨.
+        # 상세 HTML 없거나 비어있으면 갱신 skip (옵션 제거는 그대로 진행).
+        raw_detail = (master.detail_description or "") if master else ""
+        if raw_detail.strip():
+            try:
+                sync_detail_content(sp.origin_product_no, raw_detail, client_id, client_secret)
+                logger.info(f"[mismatch] Step3: 상세페이지 갱신 (store_product_id={sp.id})")
+                # 같은 상품에 떠있는 pending DETAIL_CHANGE 시그널 함께 해소
+                from app.actions.models import ActionSignal
+                _pending_detail = ActionSignal.query.filter_by(
+                    store_product_id=sp.id, signal_type="DETAIL_CHANGE", status="pending"
+                ).first()
+                if _pending_detail:
+                    _pending_detail.status = "executed"
+                    _pending_detail.resolved_at = kst_now()
+            except Exception as _e:
+                # 상세페이지 갱신 실패해도 옵션 제거 성공은 유지
+                logger.warning(f"[mismatch] Step3 상세페이지 갱신 실패(무시): {_e}")
+        else:
+            logger.info(f"[mismatch] Step3 skip: master.detail_description 비어있음 (store_product_id={sp.id})")
 
         # 단품 상태로 store_products 캐시 정리
         sp.sale_price = new_price
