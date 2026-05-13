@@ -92,7 +92,23 @@ def actions_page():
     search_q = request.args.get("q", "").strip()
 
     from app.store.models import StoreProduct, NaverStore
-    query = ActionSignal.query.filter_by(status=status_filter)
+
+    # 자동 복구 불가 상품(CLOSE/PROHIBITION/UNADMISSION) 서브쿼리 — 모든 필터에서 공통 사용
+    _close_sub = (db.session.query(StoreProduct.id)
+                  .filter(StoreProduct.store_status.in_(("CLOSE", "PROHIBITION", "UNADMISSION"))))
+
+    if failure_kind_filter == "close_status":
+        # 판매종료 복구필요: 운영자가 어드민에서 일괄 복구 후 다시 처리할 상품.
+        # status_filter 무시 — 모든 미완료 시그널(pending/failed/awaiting_input) 한 곳에서 본다.
+        query = ActionSignal.query.filter(
+            ActionSignal.store_product_id.in_(_close_sub),
+            ActionSignal.status.in_(["pending", "failed", "awaiting_input"]),
+        )
+    else:
+        # 일반 필터 — CLOSE 상품은 "판매종료 복구필요" 탭에서만 보이도록 자동 제외
+        query = ActionSignal.query.filter_by(status=status_filter)
+        query = query.filter(~ActionSignal.store_product_id.in_(_close_sub))
+
     # failed 탭 안에서 분류별 빠른 필터
     if status_filter == "failed" and failure_kind_filter == "tag_blocked":
         # sellerTags 등록불가 단어 에러
@@ -100,16 +116,6 @@ def actions_page():
     elif status_filter == "failed" and failure_kind_filter == "consumption_date":
         # 식품 소비기한 누락 에러 (영어 필드명으로 안전하게 매칭)
         query = query.filter(ActionSignal.error_message.like("%consumptionDate%"))
-    elif status_filter == "failed" and failure_kind_filter == "close_status":
-        # 자동 복구 불가 상품(CLOSE/PROHIBITION/UNADMISSION) 분류.
-        # 메시지 텍스트가 다양해도(예: "한도 수를 초과" 같은 misleading 메시지 포함)
-        # 상품 상태 기반으로 묶어 운영자가 어드민에서 일괄 복구할 수 있게 함.
-        _close_sub = (db.session.query(StoreProduct.id)
-                      .filter(StoreProduct.store_status.in_(("CLOSE", "PROHIBITION", "UNADMISSION"))))
-        query = query.filter(db.or_(
-            ActionSignal.error_message.like("%판매상태 변경이 가능합니다%"),
-            ActionSignal.store_product_id.in_(_close_sub),
-        ))
     if store_filter:
         sub = db.session.query(StoreProduct.id).filter_by(naver_store_id=store_filter).subquery()
         query = query.filter(ActionSignal.store_product_id.in_(sub))
@@ -381,37 +387,43 @@ def actions_page():
             "display_badge": display_badge,
             "is_new_option": (s.signal_type == "OPTION_ADD" and s.store and not s.store.applied_options_text),
         })
-    pending_count = ActionSignal.query.filter_by(status="pending").count()
-    failed_count = ActionSignal.query.filter_by(status="failed").count()
-    awaiting_input_count = ActionSignal.query.filter_by(status="awaiting_input").count()
+    # 모든 일반 카운트는 CLOSE/PROHIBITION/UNADMISSION 상품 제외 — "판매종료 복구필요" 탭에서만 노출
+    _close_sub_for_count = (
+        db.session.query(StoreProduct.id)
+        .filter(StoreProduct.store_status.in_(("CLOSE", "PROHIBITION", "UNADMISSION")))
+    )
+    _ex_close = ~ActionSignal.store_product_id.in_(_close_sub_for_count)
+
+    pending_count = ActionSignal.query.filter_by(status="pending").filter(_ex_close).count()
+    failed_count = ActionSignal.query.filter_by(status="failed").filter(_ex_close).count()
+    awaiting_input_count = ActionSignal.query.filter_by(status="awaiting_input").filter(_ex_close).count()
     tag_blocked_count = (
         ActionSignal.query
         .filter_by(status="failed")
+        .filter(_ex_close)
         .filter(ActionSignal.error_message.like("%등록불가인 단어(%"))
         .count()
     )
     consumption_date_count = (
         ActionSignal.query
         .filter_by(status="failed")
+        .filter(_ex_close)
         .filter(ActionSignal.error_message.like("%consumptionDate%"))
         .count()
     )
-    _close_sub_for_count = (
-        db.session.query(StoreProduct.id)
-        .filter(StoreProduct.store_status.in_(("CLOSE", "PROHIBITION", "UNADMISSION")))
-    )
+    # 판매종료 복구필요 카운트: status 무관, 미완료(pending/failed/awaiting_input) 전체.
+    # 모두 한 곳("판매종료 복구필요" 탭)에서만 보이도록 분리 (CLAUDE.md 9-6).
     close_status_count = (
         ActionSignal.query
-        .filter_by(status="failed")
-        .filter(db.or_(
-            ActionSignal.error_message.like("%판매상태 변경이 가능합니다%"),
+        .filter(
             ActionSignal.store_product_id.in_(_close_sub_for_count),
-        ))
+            ActionSignal.status.in_(["pending", "failed", "awaiting_input"]),
+        )
         .count()
     )
 
     def _option_type_count(otype):
-        base = ActionSignal.query.filter_by(status="pending").join(
+        base = ActionSignal.query.filter_by(status="pending").filter(_ex_close).join(
             MasterProduct, ActionSignal.master_product_id == MasterProduct.id
         )
         if otype == "no_option":
@@ -441,14 +453,16 @@ def actions_page():
     option_no_extra_count = _option_type_count("option_no_extra")
     option_with_extra_count = _option_type_count("option_with_extra")
 
-    # OPTION_ADD 신규/기존 카운트 (검수 흐름 안내용)
+    # OPTION_ADD 신규/기존 카운트 (검수 흐름 안내용) — CLOSE 상품 제외
     opt_add_new_count = (
         ActionSignal.query.filter_by(status="pending", signal_type="OPTION_ADD")
+        .filter(_ex_close)
         .join(StoreProduct, ActionSignal.store_product_id == StoreProduct.id)
         .filter(StoreProduct.applied_options_text.is_(None)).count()
     )
     opt_add_existing_count = (
         ActionSignal.query.filter_by(status="pending", signal_type="OPTION_ADD")
+        .filter(_ex_close)
         .join(StoreProduct, ActionSignal.store_product_id == StoreProduct.id)
         .filter(StoreProduct.applied_options_text.isnot(None)).count()
     )
@@ -2293,17 +2307,46 @@ def _execute_signal(signal: ActionSignal):
         signal.required_fields_missing = json.dumps(ai.fields, ensure_ascii=False)
         signal.error_message = None
         signal.resolved_at = None
+        # 같은 상품의 옛 failed + 옛 awaiting_input 시그널들 자동 정리.
+        # 입력대기 흐름으로 들어왔으니 운영자가 이 한 건만 입력하면 처리됨.
+        # 옛 failed들은 같은 사유라 의미 없고, 옛 awaiting_input들은 중복 노출이라 정리.
+        if signal.store_product_id:
+            _old_to_skip = ActionSignal.query.filter(
+                ActionSignal.store_product_id == signal.store_product_id,
+                ActionSignal.status.in_(("failed", "awaiting_input")),
+                ActionSignal.id != signal.id,
+            ).all()
+            for _sig in _old_to_skip:
+                _sig.status = "skipped"
+                _sig.error_message = "같은 상품의 최신 입력대기 시그널에서 처리 대기 중 — 자동 정리"
+                _sig.resolved_at = kst_now()
         db.session.commit()
         _missing = ", ".join(f.get("label", f.get("name", "?")) for f in ai.fields)
         log_buffer.push(f"[액션] 입력대기: {signal.signal_type} | {_sc} | 누락: {_missing}")
 
     except Exception as e:
         db.session.rollback()
-        signal.status = "failed"
-        signal.error_message = _parse_naver_error(e)
-        signal.resolved_at = kst_now()
+        # 같은 상품에 이미 awaiting_input(운영자 입력 대기) 시그널이 있으면
+        # 이 실패는 같은 사유의 재시도라 의미 없음 — 실패 누적 대신 skipped로 흡수.
+        _has_awaiting = False
+        if signal.store_product_id:
+            _has_awaiting = (
+                ActionSignal.query.filter(
+                    ActionSignal.store_product_id == signal.store_product_id,
+                    ActionSignal.status == "awaiting_input",
+                    ActionSignal.id != signal.id,
+                ).first() is not None
+            )
+        if _has_awaiting:
+            signal.status = "skipped"
+            signal.error_message = "같은 상품의 입력대기 시그널에서 처리 대기 중 — 실패항목 누적 방지로 자동 skip"
+            signal.resolved_at = kst_now()
+        else:
+            signal.status = "failed"
+            signal.error_message = _parse_naver_error(e)
+            signal.resolved_at = kst_now()
         db.session.commit()
-        log_buffer.push(f"[액션] 실패: {signal.signal_type} | {_sc} | {signal.error_message}")
+        log_buffer.push(f"[액션] {'스킵(입력대기 중)' if _has_awaiting else '실패'}: {signal.signal_type} | {_sc} | {signal.error_message or _parse_naver_error(e)}")
 
 
 def detect_action_signals(wholesaler_id: int) -> dict:

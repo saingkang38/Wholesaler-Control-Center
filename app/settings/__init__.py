@@ -171,6 +171,27 @@ def delete_margin_rule(rule_id):
     return redirect(url_for("settings.margin_page"))
 
 
+@settings_bp.route("/settings/margin/<int:rule_id>/edit", methods=["POST"])
+@login_required
+def edit_margin_rule(rule_id):
+    rule = MarginRule.query.get_or_404(rule_id)
+    price_from = request.form.get("price_from", type=int)
+    price_to = request.form.get("price_to", type=int) or None
+    margin_rate = request.form.get("margin_rate", type=float)
+
+    if price_from is None or margin_rate is None:
+        flash("가격과 마진율을 입력해주세요.", "error")
+        return redirect(url_for("settings.margin_page"))
+
+    rule.price_from = price_from
+    rule.price_to = price_to
+    rule.margin_rate = margin_rate / 100
+    db.session.commit()
+    _invalidate_margin_cache()
+    flash("마진 규칙이 수정됐습니다.", "success")
+    return redirect(url_for("settings.margin_page"))
+
+
 @settings_bp.route("/settings/option-sync")
 @login_required
 def option_sync_page():

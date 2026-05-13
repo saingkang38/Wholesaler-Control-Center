@@ -139,7 +139,7 @@
        style="padding:5px 12px; border-radius:4px; font-size:13px; text-decoration:none;
               background:{{ '#d97706' if failure_kind_filter == 'consumption_date' else '#fef3c7' }};
               color:{{ 'white' if failure_kind_filter == 'consumption_date' else '#92400e' }};">🍞 소비기한 ({{ consumption_date_count }})</a>
-    <a href="/actions?status=failed&per_page={{ per_page }}&failure_kind=close_status"
+    <a href="/actions?per_page={{ per_page }}&failure_kind=close_status"
        style="padding:5px 12px; border-radius:4px; font-size:13px; text-decoration:none;
               background:{{ '#7c3aed' if failure_kind_filter == 'close_status' else '#ede9fe' }};
               color:{{ 'white' if failure_kind_filter == 'close_status' else '#5b21b6' }};">🚫 판매종료 복구필요 ({{ close_status_count }})</a>

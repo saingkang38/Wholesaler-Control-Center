@@ -10,7 +10,12 @@
   .btn { padding: 7px 14px; border: none; border-radius: 4px; cursor: pointer; font-size: 13px; }
   .btn-primary { background: #2c3e50; color: white; }
   .btn-danger { background: #dc2626; color: white; }
+  .btn-edit { background: #2563eb; color: white; }
+  .btn-save { background: #059669; color: white; }
+  .btn-cancel { background: #9ca3af; color: white; }
   .btn:hover { opacity: 0.85; }
+  .edit-input { width: 110px; padding: 5px 8px; border: 1px solid #d1d5db; border-radius: 4px; font-size: 13px; }
+  tr.editing { background: #f0f9ff; }
   .flash-success { background: #d1fae5; color: #065f46; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; }
   .flash-error { background: #fee2e2; color: #991b1b; padding: 10px 14px; border-radius: 6px; margin-bottom: 16px; }
   .hint { font-size: 12px; color: #9ca3af; margin-top: 4px; }
@@ -38,17 +43,44 @@
     </thead>
     <tbody>
       {% for r in rules %}
-      <tr>
+      <tr id="row-view-{{ r.id }}">
         <td>{{ '{:,}'.format(r.price_from) }}원</td>
         <td>{{ '{:,}'.format(r.price_to) ~ '원' if r.price_to else '제한없음' }}</td>
         <td>{{ (r.margin_rate * 100) | round(1) }}%</td>
         <td style="color:#059669;">
           예) 10,000원 → {{ '{:,}'.format((10000 * (1 + r.margin_rate) / 10) | round | int * 10) }}원
         </td>
-        <td>
+        <td style="white-space:nowrap;">
+          <button type="button" class="btn btn-edit"
+                  onclick="toggleEdit({{ r.id }}, true)">수정</button>
           <form method="post" action="/settings/margin/{{ r.id }}/delete" style="display:inline;">
             <button class="btn btn-danger" onclick="return confirm('삭제할까요?')">삭제</button>
           </form>
+        </td>
+      </tr>
+      <tr id="row-edit-{{ r.id }}" class="editing" style="display:none;">
+        <form method="post" action="/settings/margin/{{ r.id }}/edit" id="form-edit-{{ r.id }}">
+        </form>
+        <td>
+          <input type="number" name="price_from" form="form-edit-{{ r.id }}"
+                 class="edit-input" value="{{ r.price_from }}" min="0" required>
+        </td>
+        <td>
+          <input type="number" name="price_to" form="form-edit-{{ r.id }}"
+                 class="edit-input" value="{{ r.price_to if r.price_to else '' }}"
+                 placeholder="제한없음" min="0">
+        </td>
+        <td>
+          <input type="number" name="margin_rate" form="form-edit-{{ r.id }}"
+                 class="edit-input" value="{{ (r.margin_rate * 100) | round(1) }}"
+                 min="0" max="1000" step="0.1" required>
+          <span style="font-size:12px; color:#666;">%</span>
+        </td>
+        <td style="color:#9ca3af; font-size:12px;">수정 후 저장</td>
+        <td style="white-space:nowrap;">
+          <button type="submit" form="form-edit-{{ r.id }}" class="btn btn-save">저장</button>
+          <button type="button" class="btn btn-cancel"
+                  onclick="toggleEdit({{ r.id }}, false)">취소</button>
         </td>
       </tr>
       {% endfor %}
@@ -85,4 +117,11 @@
     규칙은 <strong>도매가 이상</strong> 기준으로 오름차순 적용됩니다. 여러 규칙이 겹치면 price_from이 작은 것부터 매칭됩니다.
   </div>
 </div>
+
+<script>
+function toggleEdit(ruleId, on) {
+  document.getElementById('row-view-' + ruleId).style.display = on ? 'none' : '';
+  document.getElementById('row-edit-' + ruleId).style.display = on ? '' : 'none';
+}
+</script>
 {% endblock %}
