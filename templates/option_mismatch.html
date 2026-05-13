@@ -168,10 +168,11 @@
               <button class="btn" style="background:#9ca3af;color:white; margin-top:4px;"
                       onclick="ignoreRow({{ row.id }}, this)">무시</button>
             {% else %}
-              {# dimension_mismatch — 자동 보정 안 함, 무시 처리만 가능 #}
-              <button class="btn" style="background:#9ca3af;color:white;"
+              {# dimension_mismatch — 단품화(옵션 제거 + 도매처 상세페이지 갱신) 흐름 가능 #}
+              <button class="btn" style="background:#dc2626;color:white;"
+                      onclick="openPreview({{ row.id }}, this)" title="옵션 모두 제거 + 도매처 상세페이지로 교체">단품화 미리보기</button>
+              <button class="btn" style="background:#9ca3af;color:white; margin-top:4px;"
                       onclick="ignoreRow({{ row.id }}, this)">무시</button>
-              <div style="font-size:11px; color:#6b7280; margin-top:4px;">자동 처리 차단됨</div>
             {% endif %}
           {% endif %}
         </td>

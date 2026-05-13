@@ -319,10 +319,13 @@ def process_master_update(wholesaler_id: int, items: list, snapshot_date: date =
                 # 매칭된 네이버 스토어 상품마다 상세페이지 갱신 시그널 생성.
                 # 운영자가 액션관리 화면에서 승인하면 네이버 detailContent로 PUT.
                 # 중복 방지: 같은 (master, store) 쌍에 pending이 이미 있으면 skip.
+                # CLOSE/PROHIBITION/UNADMISSION 상품은 PUT 거부됨 → 시그널 생성 차단.
                 from app.store.models import StoreProduct
                 from app.actions.models import ActionSignal
                 for _sp in StoreProduct.query.filter_by(master_product_id=master.id).all():
                     if not _sp.origin_product_no:
+                        continue
+                    if _sp.store_status in ("CLOSE", "PROHIBITION", "UNADMISSION"):
                         continue
                     _exists = ActionSignal.query.filter_by(
                         master_product_id=master.id,

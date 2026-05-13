@@ -870,6 +870,9 @@ def option_mismatch_page():
         .join(StoreProduct, StoreOptionMismatch.store_product_id == StoreProduct.id)
         .join(MasterProduct, StoreProduct.master_product_id == MasterProduct.id)
     )
+    # 자동 복구 불가 상품(CLOSE/PROHIBITION/UNADMISSION)은 옵션 불일치 화면에서 숨김.
+    # 액션관리 "판매종료 복구필요" 한 곳에서만 관리 (CLAUDE.md 9-6).
+    q = q.filter(StoreProduct.store_status.notin_(("CLOSE", "PROHIBITION", "UNADMISSION")))
     if status_filter != "all":
         q = q.filter(StoreOptionMismatch.status == status_filter)
     if store_filter:
@@ -900,9 +903,16 @@ def option_mismatch_page():
             "resolved_at": m.resolved_at.strftime("%Y-%m-%d %H:%M") if m.resolved_at else None,
         })
 
-    pending_count = StoreOptionMismatch.query.filter_by(status="pending").count()
-    pending_struct_count = StoreOptionMismatch.query.filter_by(status="pending", mismatch_type="structure_naver_only").count()
-    pending_dim_count = StoreOptionMismatch.query.filter_by(status="pending", mismatch_type="dimension_mismatch").count()
+    # 카운트도 CLOSE 상품 제외 — 화면 분류와 일치
+    _close_excl = db.session.query(StoreProduct.id).filter(
+        StoreProduct.store_status.in_(("CLOSE", "PROHIBITION", "UNADMISSION"))
+    )
+    _base_cnt = StoreOptionMismatch.query.filter(
+        ~StoreOptionMismatch.store_product_id.in_(_close_excl)
+    )
+    pending_count = _base_cnt.filter_by(status="pending").count()
+    pending_struct_count = _base_cnt.filter_by(status="pending", mismatch_type="structure_naver_only").count()
+    pending_dim_count = _base_cnt.filter_by(status="pending", mismatch_type="dimension_mismatch").count()
     naver_stores = NaverStore.query.filter_by(is_active=True).order_by(NaverStore.store_name).all()
     with _detect_mismatch_lock:
         detect_status = dict(_detect_mismatch_status)
@@ -1052,6 +1062,26 @@ def resolve_option_mismatch(mismatch_id):
         sp.applied_option_diffs = None
         sp.applied_options_text = None
         sp.applied_option_base_price = master.price
+
+        # 같은 상품에 떠있는 옵션/가격 관련 미완료 시그널을 통합 처리됨으로 마킹.
+        # 단품화 + 상세페이지 갱신으로 모두 흡수되었으므로 화면에서 깔끔히 제거됨.
+        from app.actions.models import ActionSignal
+        _absorb_types = (
+            "OPTION_ADD", "OPTION_PRICE_CHANGE", "OPTION_STOCK_CHANGE",
+            "OPTION_STOCK_REFILL_NEEDED",
+            "PRICE_UP_NEEDED", "PRICE_DOWN_POSSIBLE",
+        )
+        _absorbed = ActionSignal.query.filter(
+            ActionSignal.store_product_id == sp.id,
+            ActionSignal.signal_type.in_(_absorb_types),
+            ActionSignal.status.in_(("pending", "failed", "awaiting_input")),
+        ).all()
+        for _sig in _absorbed:
+            _sig.status = "skipped"
+            _sig.error_message = "단품화(옵션 제거 + 상세페이지 갱신)로 통합 처리됨"
+            _sig.resolved_at = kst_now()
+        if _absorbed:
+            logger.info(f"[mismatch] 통합 처리로 흡수된 시그널 {len(_absorbed)}건 정리 (store_product_id={sp.id})")
 
         m.status = "resolved"
         m.resolved_at = kst_now()
